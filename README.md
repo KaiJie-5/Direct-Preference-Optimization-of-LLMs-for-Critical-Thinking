@@ -1,1 +1,78 @@
 # Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking
+
+## Installation
+
+This repository was developed and tested on a Linux-based HPC environment using Conda, Python 3.10, and NVIDIA GPUs. The project uses large open-source language models, so model files are stored on scratch storage and are not tracked by Git.
+
+### Environment setup
+
+Create and activate the Conda environment:
+
+```bash
+conda create -n dpo python=3.10 -y
+conda activate dpo
+```
+
+Upgrade `pip` and install the Hugging Face command line tools:
+
+```bash
+python -m pip install -U pip
+python -m pip install -U "huggingface_hub[cli]" hf_transfer
+```
+
+Check the Python version:
+
+```bash
+python --version
+```
+
+This project was tested with:
+
+```text
+Python 3.10
+Conda
+Hugging Face CLI
+Linux-based HPC environment
+NVIDIA GPU support
+```
+
+### Hugging Face access
+
+Some model downloads may require a Hugging Face access token. Log in before running the download script:
+
+```bash
+hf auth login
+```
+
+If the download script uses a custom Hugging Face cache directory on scratch storage, also export the token:
+
+```bash
+export HF_TOKEN=$(cat ~/.cache/huggingface/token)
+```
+
+Do not write the Hugging Face token directly inside the repository or commit it to GitHub.
+
+### Download required models
+
+The required models are downloaded using the provided bash script:
+
+```bash
+bash download_models.sh
+```
+
+The script downloads the models into scratch storage, for example:
+
+```text
+/iridisfs/scratch/kjl1a21/DPO/models/
+```
+
+Large files such as model weights, checkpoints, private datasets, and generated outputs should not be committed to GitHub.
+
+After downloading, check that the model folders exist:
+
+```bash
+ls /iridisfs/scratch/kjl1a21/DPO/models/student
+ls /iridisfs/scratch/kjl1a21/DPO/models/teacher
+```
+
+A successful setup should contain the student model and teacher model under the scratch `models/` directory.
