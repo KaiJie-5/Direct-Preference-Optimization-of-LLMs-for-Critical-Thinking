@@ -15,7 +15,6 @@ python -m pip install -e .
 Install optional dependencies only when needed:
 
 ```bash
-python -m pip install -e ".[html]"
 python -m pip install -e ".[transformers]"
 ```
 
@@ -30,6 +29,7 @@ python -m dpo_critical_thinking.enrichment.cli \
   --prompt-path prompts/enrichment/self_consistency_placeholder.txt \
   --teacher-backend dry-run \
   --self-consistency-samples 2 \
+  --self-consistency-aggregation scaffold \
   --limit 1
 ```
 
@@ -47,7 +47,7 @@ python -m dpo_critical_thinking.enrichment.cli \
   --temperature 0.6 \
   --max-new-tokens 2048 \
   --self-consistency-samples 5 \
-  --self-consistency-selection none \
+  --self-consistency-aggregation scaffold \
   --force-think-prefix
 ```
 
@@ -67,6 +67,8 @@ python -m dpo_critical_thinking.enrichment.cli \
   --temperature 0.6 \
   --max-new-tokens 2048 \
   --refine-rounds 2 \
+  --refine-stop-parser json \
+  --refine-history-format text \
   --force-think-prefix
 ```
 
@@ -74,13 +76,21 @@ Use `--teacher-backend dry-run` for a smoke test that does not load any model.
 
 ## HTML Inputs
 
-By default, an HTML file is treated as one record after stripping tags. If the transcript HTML has repeated interview blocks, pass CSS selectors:
+By default, an HTML file is split into one record per participant section using `h2` headings such as `P1`, `P2`, and so on. Demographic tables and role-labelled dialogue turns are preserved in record metadata.
+
+To treat an entire HTML file as one record:
 
 ```bash
---html-record-selector ".interview" --html-text-selector ".transcript" --html-id-attr id
+--html-split-mode whole
 ```
 
-Installing `beautifulsoup4` is required only when CSS selectors are used.
+If another HTML file needs CSS selectors:
+
+```bash
+--html-split-mode css --html-record-selector ".interview" --html-text-selector ".transcript" --html-id-attr id
+```
+
+`beautifulsoup4` is a core dependency because participant splitting is part of this phase.
 
 ## Outputs
 
@@ -88,7 +98,7 @@ Each output directory contains:
 
 - `run_manifest.json`: exact command arguments, environment, generation options, and teacher backend metadata.
 - `events.jsonl`: every model call with rendered prompt, raw response, generation options, timing, and strategy step.
-- `enriched_records.jsonl`: one record per input item with selected output plus full self-consistency samples or self-refine trace.
+- `enriched_records.jsonl`: one record per input item with full self-consistency samples or self-refine trace. Self-consistency scaffold runs intentionally leave `selected_output` as `null`.
 - `failures.jsonl`: per-record failures if `--continue-on-error` is enabled.
 
 ## Prompt Variables
@@ -99,6 +109,7 @@ Templates can use:
 - `{input_text}`
 - `{record_json}`
 - `{metadata_FIELDNAME}` for structured metadata fields
+- `{current_answer}`, `{feedback}`, and `{refinement_history}` inside Self-Refine feedback/revision prompts
 
 Extra variables can be injected from the command line:
 

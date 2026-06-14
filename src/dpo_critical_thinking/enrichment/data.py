@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from dataclasses import dataclass, field
 from html.parser import HTMLParser
 from pathlib import Path
@@ -54,6 +55,7 @@ def load_records(
     input_format: str = "auto",
     text_field: str = "text",
     record_id_field: str | None = None,
+    html_split_mode: str = "participant",
     html_record_selector: str | None = None,
     html_text_selector: str | None = None,
     html_id_attr: str | None = None,
@@ -73,6 +75,7 @@ def load_records(
     elif resolved_format == "html":
         records = _load_html(
             input_path,
+            html_split_mode=html_split_mode,
             html_record_selector=html_record_selector,
             html_text_selector=html_text_selector,
             html_id_attr=html_id_attr,
@@ -139,12 +142,15 @@ def _load_csv(
 def _load_html(
     input_path: Path,
     *,
+    html_split_mode: str,
     html_record_selector: str | None,
     html_text_selector: str | None,
     html_id_attr: str | None,
 ) -> list[DatasetRecord]:
     html = input_path.read_text(encoding="utf-8")
-    if html_record_selector or html_text_selector:
+    if html_split_mode == "participant":
+        return _load_html_participants(input_path, html)
+    if html_split_mode == "css":
         return _load_html_with_bs4(
             input_path,
             html,
@@ -152,10 +158,65 @@ def _load_html(
             html_text_selector=html_text_selector,
             html_id_attr=html_id_attr,
         )
+    if html_split_mode != "whole":
+        raise ValueError(
+            f"Unsupported HTML split mode: {html_split_mode}. "
+            "Use one of: participant, whole, css."
+        )
 
     parser = _TextOnlyHTMLParser()
     parser.feed(html)
     return [_text_record(input_path, parser.text(), source_format="html")]
+
+
+def _load_html_participants(input_path: Path, html: str) -> list[DatasetRecord]:
+    soup = _beautiful_soup(html)
+    sections = soup.find_all("h2")
+    records: list[DatasetRecord] = []
+
+    for section_index, heading in enumerate(sections, start=1):
+        participant_id = heading.get_text(" ", strip=True)
+        section_nodes = []
+        for sibling in heading.next_siblings:
+            if getattr(sibling, "name", None) == "h2":
+                break
+            section_nodes.append(sibling)
+
+        demographics = _extract_demographics(section_nodes)
+        turns = _extract_dialogue_turns(section_nodes)
+        text = _format_turns(turns)
+        records.append(
+            DatasetRecord(
+                record_id=participant_id,
+                text=text,
+                metadata={
+                    "participant_id": participant_id,
+                    "demographics": demographics,
+                    "turn_count": len(turns),
+                    "interviewer_turn_count": sum(
+                        1 for turn in turns if turn["role"] == "Interviewer"
+                    ),
+                    "participant_turn_count": sum(
+                        1 for turn in turns if turn["role"] == "Participant"
+                    ),
+                    "turns": turns,
+                    "html_split_mode": "participant",
+                },
+                source={
+                    "path": str(input_path),
+                    "format": "html",
+                    "section_index": section_index,
+                },
+            )
+        )
+
+    if not records:
+        raise ValueError(
+            f"No participant sections found in {input_path}. "
+            "Participant HTML mode expects headings such as <h2>P1</h2>."
+        )
+
+    return records
 
 
 def _load_html_with_bs4(
@@ -166,15 +227,10 @@ def _load_html_with_bs4(
     html_text_selector: str | None,
     html_id_attr: str | None,
 ) -> list[DatasetRecord]:
-    try:
-        from bs4 import BeautifulSoup
-    except ImportError as exc:
-        raise RuntimeError(
-            "Install beautifulsoup4 or omit HTML CSS selectors. "
-            "For example: python -m pip install beautifulsoup4"
-        ) from exc
+    if not html_record_selector:
+        raise ValueError("--html-record-selector is required when --html-split-mode css.")
 
-    soup = BeautifulSoup(html, "html.parser")
+    soup = _beautiful_soup(html)
     elements = soup.select(html_record_selector) if html_record_selector else [soup]
     records: list[DatasetRecord] = []
 
@@ -199,6 +255,60 @@ def _load_html_with_bs4(
         )
 
     return records
+
+
+def _beautiful_soup(html: str) -> Any:
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError as exc:
+        raise RuntimeError(
+            "beautifulsoup4 is required for HTML participant/css splitting. "
+            "Install the project dependencies from pyproject.toml."
+        ) from exc
+
+    return BeautifulSoup(html, "html.parser")
+
+
+def _extract_demographics(section_nodes: list[Any]) -> dict[str, str]:
+    demographics: dict[str, str] = {}
+    for node in section_nodes:
+        if getattr(node, "name", None) != "table":
+            continue
+        for row in node.find_all("tr"):
+            cells = [cell.get_text(" ", strip=True) for cell in row.find_all("td")]
+            if len(cells) >= 2:
+                demographics[cells[0]] = cells[1]
+        break
+    return demographics
+
+
+def _extract_dialogue_turns(section_nodes: list[Any]) -> list[dict[str, Any]]:
+    turns: list[dict[str, Any]] = []
+    for node in section_nodes:
+        if getattr(node, "name", None) != "p":
+            continue
+        classes = set(node.get("class", []))
+        if "interviewer" not in classes and "participant" not in classes:
+            continue
+        role = "Interviewer" if "interviewer" in classes else "Participant"
+        raw_text = node.get_text(" ", strip=True)
+        utterance = _strip_role_prefix(raw_text, role)
+        turns.append(
+            {
+                "turn_index": len(turns) + 1,
+                "role": role,
+                "text": utterance,
+            }
+        )
+    return turns
+
+
+def _strip_role_prefix(text: str, role: str) -> str:
+    return re.sub(rf"^{re.escape(role)}\s+", "", text).strip()
+
+
+def _format_turns(turns: list[dict[str, Any]]) -> str:
+    return "\n\n".join(f"{turn['role']}: {turn['text']}" for turn in turns)
 
 
 def _record_from_mapping(

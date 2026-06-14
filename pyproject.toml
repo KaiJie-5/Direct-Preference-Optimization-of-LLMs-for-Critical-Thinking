@@ -7,10 +7,10 @@ name = "dpo-critical-thinking"
 version = "0.1.0"
 description = "Enrichment utilities for DPO critical-thinking data preparation."
 requires-python = ">=3.10"
-dependencies = []
+dependencies = ["beautifulsoup4>=4.12"]
 
 [project.optional-dependencies]
-html = ["beautifulsoup4>=4.12"]
+dev = ["pytest>=8"]
 transformers = ["torch", "transformers>=4.40", "accelerate"]
 
 [project.scripts]

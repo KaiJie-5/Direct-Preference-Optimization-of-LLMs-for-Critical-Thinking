@@ -28,6 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     io_group.add_argument("--limit", type=int)
     io_group.add_argument("--text-field", default="text")
     io_group.add_argument("--record-id-field")
+    io_group.add_argument("--html-split-mode", choices=["participant", "whole", "css"], default="participant")
     io_group.add_argument("--html-record-selector")
     io_group.add_argument("--html-text-selector")
     io_group.add_argument("--html-id-attr")
@@ -38,10 +39,12 @@ def build_parser() -> argparse.ArgumentParser:
     strategy_group.add_argument("--prompt-path", required=True, type=Path)
     strategy_group.add_argument("--prompt-var", action="append", default=[], help="Extra template variable in KEY=VALUE form. May be repeated.")
     strategy_group.add_argument("--self-consistency-samples", type=int, default=5)
-    strategy_group.add_argument("--self-consistency-selection", choices=["none", "first", "longest"], default="none")
+    strategy_group.add_argument("--self-consistency-aggregation", choices=["scaffold"], default="scaffold")
     strategy_group.add_argument("--refine-rounds", type=int, default=2)
     strategy_group.add_argument("--refine-critique-prompt-path", type=Path)
     strategy_group.add_argument("--refine-revision-prompt-path", type=Path)
+    strategy_group.add_argument("--refine-stop-parser", choices=["json", "text"], default="json")
+    strategy_group.add_argument("--refine-history-format", choices=["text", "json"], default="text")
 
     teacher_group = parser.add_argument_group("teacher backend")
     teacher_group.add_argument("--teacher-backend", choices=["dry-run", "transformers", "openai-compatible"], default="dry-run")
@@ -91,6 +94,7 @@ def main(argv: list[str] | None = None) -> int:
         input_format=args.input_format,
         text_field=args.text_field,
         record_id_field=args.record_id_field,
+        html_split_mode=args.html_split_mode,
         html_record_selector=args.html_record_selector,
         html_text_selector=args.html_text_selector,
         html_id_attr=args.html_id_attr,
@@ -186,7 +190,7 @@ def _run_strategy(
             prompt_vars=prompt_vars,
             generation_options=generation_options,
             num_samples=args.self_consistency_samples,
-            selection=args.self_consistency_selection,
+            aggregation=args.self_consistency_aggregation,
             logger=logger,
         )
 
@@ -202,6 +206,8 @@ def _run_strategy(
             prompt_vars=prompt_vars,
             generation_options=generation_options,
             refine_rounds=args.refine_rounds,
+            stop_parser=args.refine_stop_parser,
+            history_format=args.refine_history_format,
             logger=logger,
         )
 

@@ -1,6 +1,15 @@
 You are helping enrich an interview dataset for a critical-thinking DPO project.
 
-This is a placeholder critique prompt for self-refine round {round_index}. Replace it after the prompt-design phase is fixed.
+This is a placeholder feedback prompt for self-refine round {round_index}. Replace it after the prompt-design phase is fixed.
+
+Return parseable JSON with this shape:
+{{
+  "needs_refinement": true,
+  "reason": "brief reason",
+  "feedback": "specific, actionable feedback for improving the current answer"
+}}
+
+Set "needs_refinement" to false only when no further refinement is needed.
 
 Input interview text:
 {input_text}

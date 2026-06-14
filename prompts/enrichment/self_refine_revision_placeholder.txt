@@ -5,8 +5,11 @@ This is a placeholder revision prompt for self-refine round {round_index}. Repla
 Input interview text:
 {input_text}
 
+Previous refinement history:
+{refinement_history}
+
 Current answer:
 {current_answer}
 
-Critique:
-{critique}
+Latest feedback:
+{feedback}
