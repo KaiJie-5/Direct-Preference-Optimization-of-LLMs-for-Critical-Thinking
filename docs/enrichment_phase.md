@@ -52,7 +52,7 @@ Preprocessing writes:
 - `data/segments_jsonl/INT01_segments.jsonl`
 - `data/preprocessing_manifest.json`
 
-Each JSONL line is one participant-turn segment with previous/next context and all candidate example codes.
+Each JSONL line is one participant-turn segment with previous/next context, participant characteristics extracted from the interview metadata table, and all candidate example codes.
 
 ## Enrich Segments
 

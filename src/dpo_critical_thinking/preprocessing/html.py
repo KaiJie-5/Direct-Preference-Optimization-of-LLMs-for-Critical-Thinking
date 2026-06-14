@@ -47,8 +47,10 @@ def preprocess_html_dataset(
 
     manifest_items: list[dict[str, Any]] = []
     for interview_id, source_path, html_path in interviews:
+        html = html_path.read_text(encoding="utf-8")
+        participant_characteristics = _extract_participant_characteristics(html)
         turns = _extract_turns(
-            html_path.read_text(encoding="utf-8"),
+            html,
             interviewer_selector=interviewer_selector,
             participant_selector=participant_selector,
         )
@@ -57,6 +59,7 @@ def preprocess_html_dataset(
             interview_id=interview_id,
             source_html_path=html_path,
             codebook=codebook,
+            participant_characteristics=participant_characteristics,
         )
         segments_path = segments_dir / f"{interview_id}_segments.jsonl"
         if segments_path.exists() and not overwrite:
@@ -69,6 +72,7 @@ def preprocess_html_dataset(
                 "raw_html_path": str(html_path),
                 "segments_path": str(segments_path),
                 "segment_count": len(segments),
+                "participant_characteristics": participant_characteristics,
             }
         )
 
@@ -188,12 +192,41 @@ def _extract_turns(
     return turns
 
 
+def _extract_participant_characteristics(html: str) -> dict[str, str]:
+    soup = _beautiful_soup(html)
+    table = soup.find("table")
+    if table is None:
+        return {}
+
+    characteristics: dict[str, str] = {}
+    for row in table.find_all("tr"):
+        cells = [
+            cell.get_text(" ", strip=True)
+            for cell in row.find_all(["th", "td"])
+            if cell.get_text(" ", strip=True)
+        ]
+        if len(cells) < 2:
+            continue
+
+        if len(cells) == 2:
+            pairs = [(cells[0], cells[1])]
+        else:
+            pairs = list(zip(cells[0::2], cells[1::2]))
+
+        for label, value in pairs:
+            key = _normalise_metadata_key(label)
+            if key and value:
+                characteristics[key] = value
+    return characteristics
+
+
 def _segments_from_turns(
     *,
     turns: list[Turn],
     interview_id: str,
     source_html_path: Path,
     codebook: dict[str, Any],
+    participant_characteristics: dict[str, str],
 ) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     candidate_codes = codebook["codes"]
@@ -218,6 +251,7 @@ def _segments_from_turns(
                 "line_end": None,
                 "previous_context": _format_context(previous_turn),
                 "next_context": _format_context(next_turn),
+                "participant_characteristics": participant_characteristics,
                 "codebook_id": codebook["codebook_id"],
                 "codebook_version": codebook["codebook_version"],
                 "candidate_example_codes": candidate_codes,
@@ -246,6 +280,19 @@ def _strip_role_prefix(text: str, role: str) -> str:
     if text.startswith(label):
         return text[len(label) :].strip()
     return text
+
+
+def _normalise_metadata_key(label: str) -> str:
+    key_chars = []
+    previous_was_separator = False
+    for char in label.strip().lower():
+        if char.isalnum():
+            key_chars.append(char)
+            previous_was_separator = False
+        elif not previous_was_separator:
+            key_chars.append("_")
+            previous_was_separator = True
+    return "".join(key_chars).strip("_")
 
 
 def _matches_selector(element: Any, selector: str) -> bool:

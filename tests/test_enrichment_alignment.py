@@ -76,6 +76,11 @@ def test_preprocess_html_writes_raw_interviews_and_participant_turn_segments(
     )
 
     assert [item["interview_id"] for item in manifest["interviews"]] == ["INT01", "INT02"]
+    assert manifest["interviews"][0]["participant_characteristics"] == {
+        "gender": "Woman",
+        "age": "38",
+        "notes": "Uses solar panels.",
+    }
     assert (tmp_path / "data" / "raw_html" / "INT01.html").exists()
     segments = _read_jsonl(tmp_path / "data" / "segments_jsonl" / "INT01_segments.jsonl")
     assert [segment["record_id"] for segment in segments] == ["INT01_SEG001", "INT01_SEG002"]
@@ -84,6 +89,11 @@ def test_preprocess_html_writes_raw_interviews_and_participant_turn_segments(
     assert segments[0]["next_context"].startswith("Interviewer:")
     assert segments[0]["line_start"] is None
     assert segments[0]["paragraph_index_start"] == 2
+    assert segments[0]["participant_characteristics"] == {
+        "gender": "Woman",
+        "age": "38",
+        "notes": "Uses solar panels.",
+    }
     assert segments[0]["candidate_example_codes"][0]["code_id"] == "human_oversight"
 
 
@@ -202,11 +212,18 @@ def _multi_interview_html() -> str:
     <!DOCTYPE html>
     <html><body>
       <h2>P1</h2>
+      <table>
+        <tr><td>Gender</td><td>Woman</td><td>Age</td><td>38</td></tr>
+        <tr><td>Notes</td><td>Uses solar panels.</td></tr>
+      </table>
       <p class="interviewer"><strong>Interviewer</strong> Question one?</p>
       <p class="participant"><strong>Participant</strong> Answer one.</p>
       <p class="interviewer"><strong>Interviewer</strong> Question two?</p>
       <p class="participant"><strong>Participant</strong> Answer two.</p>
       <h2>P2</h2>
+      <table>
+        <tr><td>Gender</td><td>Man</td><td>Age</td><td>44</td></tr>
+      </table>
       <p class="interviewer"><strong>Interviewer</strong> Another question?</p>
       <p class="participant"><strong>Participant</strong> Another answer.</p>
     </body></html>
