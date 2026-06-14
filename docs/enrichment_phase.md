@@ -81,11 +81,13 @@ dpo-enrich \
   --teacher-backend transformers \
   --model-path /path/to/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B \
   --temperature 0.6 \
-  --max-new-tokens 2048 \
+  --max-new-tokens 32768 \
   --self-consistency-samples 5 \
   --json-retry-attempts 2 \
   --force-think-prefix
 ```
+
+The default `--max-new-tokens` is `32768`, matching the DeepSeek-R1 README's high generation-length setting. The Transformers backend still checks the model context window separately and clamps the effective generation budget when the prompt plus requested output would exceed that context.
 
 Outputs are grouped by interview:
 
@@ -98,7 +100,7 @@ outputs/enrichment/
     failures.jsonl
 ```
 
-Self-consistency currently validates and logs 5 samples per segment. Aggregation is intentionally marked as `not_implemented_yet`.
+Self-consistency currently validates and logs 5 samples per segment. Aggregation is intentionally marked as `not_implemented_yet`. Each teacher sample preserves the raw output and separately logs `reasoning_text`, `reasoning_block`, `json_text`, and `reasoning_parse_status` when the model returns a `<think>...</think>` block before the JSON.
 
 ## Prompt Variables
 

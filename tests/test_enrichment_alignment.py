@@ -5,14 +5,21 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from dpo_critical_thinking.enrichment.cli import main as enrich_main
+import pytest
+
+from dpo_critical_thinking.enrichment.cli import build_parser, main as enrich_main
 from dpo_critical_thinking.enrichment.data import load_segment_records
 from dpo_critical_thinking.enrichment.logging import RunLogger
 from dpo_critical_thinking.enrichment.prompts import PromptTemplate
+from dpo_critical_thinking.enrichment.schema import (
+    parse_json_object,
+    split_response_sections,
+)
 from dpo_critical_thinking.enrichment.strategies import run_self_consistency
 from dpo_critical_thinking.enrichment.teachers import (
     GenerationOptions,
     GenerationResult,
+    resolve_effective_max_new_tokens,
 )
 from dpo_critical_thinking.preprocessing.codebook import convert_xlsx_codebook
 from dpo_critical_thinking.preprocessing.html import preprocess_html_dataset
@@ -111,10 +118,47 @@ def test_load_segment_records_accepts_file_or_directory(tmp_path: Path) -> None:
     assert all_files[0].to_prompt_vars()["candidate_example_codes_json"].startswith("[")
 
 
+def test_parse_json_object_prefers_content_after_think_block() -> None:
+    payload = {"schema_version": "segment_enrichment_sample_v1", "ok": True}
+    text = (
+        "<think>\n"
+        "Reasoning may mention a non-final object like {not valid json}.\n"
+        "</think>\n"
+        + json.dumps(payload)
+    )
+
+    sections = split_response_sections(text)
+    parsed, parse_error = parse_json_object(text)
+
+    assert sections["reasoning_text"] == "Reasoning may mention a non-final object like {not valid json}."
+    assert sections["reasoning_parse_status"] == "found_closed_think_block"
+    assert sections["json_text"] == json.dumps(payload)
+    assert parsed == payload
+    assert parse_error is None
+
+
+def test_parse_json_object_still_accepts_output_without_think_block() -> None:
+    payload = {"schema_version": "segment_enrichment_sample_v1", "ok": True}
+
+    sections = split_response_sections(json.dumps(payload))
+    parsed, parse_error = parse_json_object(json.dumps(payload))
+
+    assert sections["reasoning_parse_status"] == "no_think_block"
+    assert sections["reasoning_text"] == ""
+    assert parsed == payload
+    assert parse_error is None
+
+
 def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> None:
     prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {segment_json}")
     record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
-    teacher = QueueTeacher(["not json", json.dumps(_valid_sample(record))])
+    valid_json = json.dumps(_valid_sample(record))
+    teacher = QueueTeacher(
+        [
+            "<think>\nInvalid reasoning with {braces}.\n</think>\nnot json",
+            f"<think>\nGrounded reasoning.\n</think>\n{valid_json}",
+        ]
+    )
 
     enriched = run_self_consistency(
         record=record,
@@ -131,8 +175,52 @@ def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> 
     sample = enriched["samples"][0]
     assert sample["attempt_count"] == 2
     assert sample["final_parse_status"] == "valid"
+    assert sample["reasoning_text"] == "Grounded reasoning."
+    assert sample["reasoning_block"] == "<think>\nGrounded reasoning.\n</think>"
+    assert sample["json_text"] == valid_json
+    assert sample["reasoning_parse_status"] == "found_closed_think_block"
+    assert sample["attempts"][0]["reasoning_text"] == "Invalid reasoning with {braces}."
+    assert sample["attempts"][0]["reasoning_parse_status"] == "found_closed_think_block"
+    assert sample["attempts"][1]["reasoning_text"] == "Grounded reasoning."
     assert sample["parsed_output"]["schema_version"] == "segment_enrichment_sample_v1"
     assert enriched["aggregation_status"] == "not_implemented_yet"
+
+
+def test_enrichment_cli_default_max_new_tokens_is_deepseek_budget() -> None:
+    args = build_parser().parse_args(
+        [
+            "--segments-path",
+            "segments",
+            "--output-dir",
+            "outputs",
+            "--strategy",
+            "self_consistency",
+            "--prompt-path",
+            "prompt.txt",
+        ]
+    )
+
+    assert args.max_new_tokens == 32768
+
+
+def test_transformers_token_budget_clamps_to_context_window() -> None:
+    budget = resolve_effective_max_new_tokens(
+        prompt_token_count=90,
+        requested_max_new_tokens=32,
+        context_window=100,
+    )
+
+    assert budget["requested_max_new_tokens"] == 32
+    assert budget["effective_max_new_tokens"] == 10
+    assert budget["context_window"] == 100
+    assert budget["token_budget_clamped"] is True
+
+    with pytest.raises(ValueError, match="exceeds the model context window"):
+        resolve_effective_max_new_tokens(
+            prompt_token_count=100,
+            requested_max_new_tokens=1,
+            context_window=100,
+        )
 
 
 def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) -> None:

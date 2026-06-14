@@ -9,6 +9,7 @@ from .prompts import PromptTemplate
 from .schema import (
     build_json_repair_prompt,
     parse_json_object,
+    split_response_sections,
     validate_segment_enrichment_sample,
 )
 from .teachers import GenerationOptions, Teacher
@@ -221,10 +222,12 @@ def _generate_validated_sample(
     final_output = ""
     final_parsed: dict[str, Any] | None = None
     final_errors: list[str] = []
+    final_sections = split_response_sections("")
 
     for attempt_index in range(1, json_retry_attempts + 2):
         attempt_options = _options_with_attempt_seed(generation_options, attempt_index)
         result = teacher.generate(current_prompt, attempt_options)
+        response_sections = split_response_sections(result.text)
         parsed, parse_error = parse_json_object(result.text)
         validation_errors = validate_segment_enrichment_sample(parsed, record)
         if parse_error and parsed is None:
@@ -235,6 +238,7 @@ def _generate_validated_sample(
             "generation_options": asdict(attempt_options),
             "rendered_prompt": result.rendered_prompt,
             "raw_output_text": result.text,
+            **response_sections,
             "parsed_output": parsed,
             "parse_status": parse_status,
             "validation_errors": validation_errors,
@@ -256,6 +260,7 @@ def _generate_validated_sample(
         final_output = result.text
         final_parsed = parsed
         final_errors = validation_errors
+        final_sections = response_sections
         if not validation_errors:
             break
         current_prompt = build_json_repair_prompt(
@@ -271,6 +276,7 @@ def _generate_validated_sample(
         "final_parse_status": "valid" if not final_errors else "invalid",
         "validation_errors": final_errors,
         "output_text": final_output,
+        **final_sections,
         "parsed_output": final_parsed,
         "attempts": attempts,
     }

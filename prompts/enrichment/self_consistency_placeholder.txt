@@ -1,14 +1,150 @@
-You are helping enrich one segment from an interview dataset for a critical-thinking DPO project.
+You are helping enrich one segment from a qualitative interview dataset for a Direct Preference Optimization project on critical-thinking support in qualitative data analysis.
 
-This is a placeholder prompt. Replace this file with the final self-consistency prompt after the prompt-design phase is fixed.
+Your role:
+Generate ONE structured enrichment JSON object for ONE participant interview segment.
 
-Return only one JSON object matching schema_version "segment_enrichment_sample_v1".
-Do not add markdown fences.
+You are not the final qualitative analyst.
+You must not produce final themes, final findings, or a whole-interview interpretation.
+Your output will be used as one independently sampled teacher-model enrichment candidate.
 
-Segment record id:
-{record_id}
+DeepSeek-R1 response requirement:
+Your response must begin with:
+<think>
 
-Segment JSON:
+Inside the thinking block, carefully check:
+- what the participant is saying in the target segment
+- whether the previous or next context is needed to understand the segment
+- which candidate example code(s), if any, may apply
+- whether no candidate example code fits well
+- whether a provisional new code may be needed
+- what reflective questions would help a human researcher inspect assumptions, alternative interpretations, missing context, or participant voice
+
+After the thinking block, close it with:
+</think>
+
+Then return exactly one valid JSON object.
+Do not use markdown fences.
+Do not write anything after the JSON object.
+
+Core qualitative rule:
+Reflective questions must be grounded in this specific segment.
+Use previous_context and next_context only to clarify meaning.
+Do not treat the whole interview as one meaning unit.
+Do not invent details that are not present in the segment or local context.
+
+Code guidance rule:
+The candidate example codes are guidance only.
+They are not already-applied human codes.
+Do not force a code if the segment does not fit it.
+You may suggest a provisional new code if the candidate example codes do not fully capture the meaning of the segment.
+
+Reflective question rule:
+Generate 3 to 5 reflective question candidates.
+Each reflective question must:
+- be specific to the target segment
+- include a short exact trigger quote when possible
+- link to one or more candidate code matches, or to a provisional new code
+- help a human researcher inspect their own interpretation
+- avoid generic wording such as "What does this mean?"
+- avoid replacing the human researcher's judgement
+
+Valid values:
+- match_strength: "strong", "partial", "weak"
+- hallucination_risk: "low", "medium", "high"
+- over_generalisation_risk: "low", "medium", "high"
+- participant_voice_loss_risk: "low", "medium", "high"
+- question_type: "automated_socrates", "devils_advocate", "participant_voice_check", "context_check", "methodological_check", "technology_check"
+- reflexive_dimension: "personal", "interpersonal", "methodological", "contextual", "technological"
+- confidence: integer from 1 to 10
+
+Required JSON schema:
+{{
+  "schema_version": "segment_enrichment_sample_v1",
+  "record_id": "{record_id}",
+  "codebook_version": "{codebook_version}",
+  "analysis_unit": {{
+    "interview_id": "{interview_id}",
+    "segment_id": "{segment_id}",
+    "speaker": "{speaker}",
+    "target_text": "{input_text}",
+    "previous_context_used": true,
+    "next_context_used": true,
+    "context_warning": ""
+  }},
+  "candidate_code_matches": [
+    {{
+      "code_id": "",
+      "code_label": "",
+      "match_strength": "strong",
+      "evidence_quote": "",
+      "rationale": "",
+      "confidence": 1
+    }}
+  ],
+  "possible_new_codes": [
+    {{
+      "provisional_code_id": "",
+      "provisional_code_label": "",
+      "definition": "",
+      "evidence_quote": "",
+      "why_candidate_codes_do_not_fully_cover_it": "",
+      "confidence": 1
+    }}
+  ],
+  "reflective_question_candidates": [
+    {{
+      "question_id": "Q1",
+      "question": "",
+      "linked_code_ids": [],
+      "linked_provisional_code_ids": [],
+      "question_type": "automated_socrates",
+      "reflexive_dimension": "methodological",
+      "trigger_quote": "",
+      "why_this_question_is_useful": "",
+      "what_human_researcher_should_inspect": "",
+      "risk_if_ignored": "",
+      "confidence": 1
+    }}
+  ],
+  "quality_control": {{
+    "hallucination_risk": "low",
+    "over_generalisation_risk": "low",
+    "participant_voice_loss_risk": "low",
+    "needs_human_review": true,
+    "review_reason": "",
+    "overall_confidence": 1
+  }}
+}}
+
+Rules for candidate_code_matches:
+Only include candidate example codes that are relevant to the segment.
+If no candidate example code fits, return:
+"candidate_code_matches": []
+
+Rules for possible_new_codes:
+Only suggest a provisional new code when the candidate example codes do not fully capture the segment.
+If no provisional new code is needed, return:
+"possible_new_codes": []
+
+Rules for reflective_question_candidates:
+Return 3 to 5 reflective questions.
+Each question must be connected to either:
+- at least one code_id in candidate_code_matches, or
+- at least one provisional_code_id in possible_new_codes.
+
+Rules for evidence quotes:
+Use short exact quotes from the target segment whenever possible.
+Do not quote from previous_context or next_context as the main evidence unless the target segment is unclear.
+If the segment is too short or ambiguous, explain this in "context_warning" and "review_reason".
+
+Rules for JSON:
+The final answer after </think> must be valid JSON.
+Use double quotes for all JSON keys and string values.
+Do not use trailing commas.
+Do not include comments inside the JSON.
+Do not wrap the JSON in markdown fences.
+
+Input segment JSON:
 {segment_json}
 
 Candidate example codes:

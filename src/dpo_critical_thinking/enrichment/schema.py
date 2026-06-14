@@ -21,14 +21,43 @@ SAMPLE_REQUIRED_FIELDS = {
 }
 
 
-def parse_json_object(text: str) -> tuple[dict[str, Any] | None, str | None]:
-    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
-    candidates = [fenced_match.group(1)] if fenced_match else []
+def split_response_sections(text: str) -> dict[str, str]:
+    think_open = "<think>"
+    think_close = "</think>"
+    start = text.find(think_open)
+    if start == -1:
+        return {
+            "reasoning_text": "",
+            "reasoning_block": "",
+            "json_text": text.strip(),
+            "reasoning_parse_status": "no_think_block",
+        }
 
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidates.append(text[start : end + 1])
+    reasoning_start = start + len(think_open)
+    end = text.find(think_close, reasoning_start)
+    if end == -1:
+        return {
+            "reasoning_text": text[reasoning_start:].strip(),
+            "reasoning_block": text[start:],
+            "json_text": "",
+            "reasoning_parse_status": "missing_close_think_tag",
+        }
+
+    close_end = end + len(think_close)
+    return {
+        "reasoning_text": text[reasoning_start:end].strip(),
+        "reasoning_block": text[start:close_end],
+        "json_text": text[close_end:].strip(),
+        "reasoning_parse_status": "found_closed_think_block",
+    }
+
+
+def parse_json_object(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    sections = split_response_sections(text)
+    candidates = []
+    if sections["json_text"]:
+        candidates.extend(_json_candidates(sections["json_text"]))
+    candidates.extend(_json_candidates(text))
 
     for candidate in candidates:
         try:
@@ -41,6 +70,17 @@ def parse_json_object(text: str) -> tuple[dict[str, Any] | None, str | None]:
         last_error = "Parsed JSON is not an object."
 
     return None, locals().get("last_error", "No JSON object found.")
+
+
+def _json_candidates(text: str) -> list[str]:
+    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
+    candidates = [fenced_match.group(1)] if fenced_match else []
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1 and end > start:
+        candidates.append(text[start : end + 1])
+    return candidates
 
 
 def validate_segment_enrichment_sample(

@@ -10,9 +10,12 @@ from dataclasses import asdict, dataclass
 from typing import Any, Protocol
 
 
+DEFAULT_MAX_NEW_TOKENS = 32768
+
+
 @dataclass(slots=True)
 class GenerationOptions:
-    max_new_tokens: int = 2048
+    max_new_tokens: int = DEFAULT_MAX_NEW_TOKENS
     temperature: float = 0.6
     top_p: float = 0.95
     top_k: int | None = None
@@ -117,8 +120,14 @@ class TransformersTeacher:
         rendered_prompt = self._render_prompt(prompt)
         inputs = self.tokenizer(rendered_prompt, return_tensors="pt")
         inputs = {key: value.to(self.model.device) for key, value in inputs.items()}
+        prompt_token_count = int(inputs["input_ids"].shape[-1])
+        token_budget = resolve_effective_max_new_tokens(
+            prompt_token_count=prompt_token_count,
+            requested_max_new_tokens=options.max_new_tokens,
+            context_window=_model_context_window(self.model),
+        )
         generation_kwargs: dict[str, Any] = {
-            "max_new_tokens": options.max_new_tokens,
+            "max_new_tokens": token_budget["effective_max_new_tokens"],
             "temperature": options.temperature,
             "top_p": options.top_p,
             "do_sample": options.temperature > 0,
@@ -132,7 +141,6 @@ class TransformersTeacher:
         with self._torch.inference_mode():
             output_ids = self.model.generate(**inputs, **generation_kwargs)
 
-        prompt_token_count = inputs["input_ids"].shape[-1]
         new_tokens = output_ids[0][prompt_token_count:]
         generated = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
         if self.force_think_prefix and not generated.startswith(self.think_prefix):
@@ -144,8 +152,9 @@ class TransformersTeacher:
                 "backend": "transformers",
                 "model_path": self.model_path,
                 "generation_kwargs": generation_kwargs,
-                "prompt_token_count": int(prompt_token_count),
+                "prompt_token_count": prompt_token_count,
                 "new_token_count": int(new_tokens.shape[-1]),
+                **token_budget,
             },
             rendered_prompt=rendered_prompt,
             elapsed_seconds=time.perf_counter() - started,
@@ -289,3 +298,38 @@ def _resolve_torch_dtype(torch: Any, torch_dtype: str) -> Any:
     if not hasattr(torch, torch_dtype):
         raise ValueError(f"Unknown torch dtype: {torch_dtype}")
     return getattr(torch, torch_dtype)
+
+
+def _model_context_window(model: Any) -> int | None:
+    context_window = getattr(getattr(model, "config", None), "max_position_embeddings", None)
+    return context_window if isinstance(context_window, int) else None
+
+
+def resolve_effective_max_new_tokens(
+    *,
+    prompt_token_count: int,
+    requested_max_new_tokens: int,
+    context_window: int | None,
+) -> dict[str, Any]:
+    if context_window is None:
+        return {
+            "requested_max_new_tokens": requested_max_new_tokens,
+            "effective_max_new_tokens": requested_max_new_tokens,
+            "context_window": None,
+            "token_budget_clamped": False,
+        }
+
+    remaining_context = context_window - prompt_token_count
+    if remaining_context <= 0:
+        raise ValueError(
+            "Prompt token count exceeds the model context window: "
+            f"prompt_token_count={prompt_token_count}, context_window={context_window}."
+        )
+
+    effective_max_new_tokens = min(requested_max_new_tokens, remaining_context)
+    return {
+        "requested_max_new_tokens": requested_max_new_tokens,
+        "effective_max_new_tokens": effective_max_new_tokens,
+        "context_window": context_window,
+        "token_budget_clamped": effective_max_new_tokens != requested_max_new_tokens,
+    }

@@ -13,7 +13,7 @@ from .data import DatasetRecord, group_records_by_interview, load_segment_record
 from .logging import RunLogger
 from .prompts import PromptTemplate, parse_prompt_vars
 from .strategies import run_self_consistency, run_self_refine
-from .teachers import GenerationOptions, Teacher, build_teacher
+from .teachers import DEFAULT_MAX_NEW_TOKENS, GenerationOptions, Teacher, build_teacher
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -92,7 +92,9 @@ def build_parser() -> argparse.ArgumentParser:
     teacher_group.add_argument("--timeout-seconds", type=float, default=600.0)
 
     generation_group = parser.add_argument_group("generation")
-    generation_group.add_argument("--max-new-tokens", type=int, default=2048)
+    generation_group.add_argument(
+        "--max-new-tokens", type=int, default=DEFAULT_MAX_NEW_TOKENS
+    )
     generation_group.add_argument("--temperature", type=float, default=0.6)
     generation_group.add_argument("--top-p", type=float, default=0.95)
     generation_group.add_argument("--top-k", type=int)
