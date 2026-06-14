@@ -1,13 +1,16 @@
 from __future__ import annotations
 
-import json
-import re
 from dataclasses import asdict
 from typing import Any
 
 from .data import DatasetRecord
 from .logging import RunLogger
 from .prompts import PromptTemplate
+from .schema import (
+    build_json_repair_prompt,
+    parse_json_object,
+    validate_segment_enrichment_sample,
+)
 from .teachers import GenerationOptions, Teacher
 
 
@@ -20,12 +23,13 @@ def run_self_consistency(
     generation_options: GenerationOptions,
     num_samples: int,
     aggregation: str,
+    json_retry_attempts: int,
     logger: RunLogger,
 ) -> dict[str, Any]:
     if aggregation != "scaffold":
         raise ValueError(
-            "Self-consistency aggregation is scaffold-only until an open-text "
-            "consistency metric is defined."
+            "Self-consistency aggregation is not implemented yet. "
+            "Use --self-consistency-aggregation scaffold."
         )
 
     variables = {**record.to_prompt_vars(), **prompt_vars}
@@ -34,26 +38,17 @@ def run_self_consistency(
 
     for sample_index in range(1, num_samples + 1):
         sample_options = _options_with_sample_seed(generation_options, sample_index)
-        result = teacher.generate(rendered_prompt, sample_options)
-        sample_payload = {
-            "sample_index": sample_index,
-            "generation_options": asdict(sample_options),
-            "rendered_prompt": result.rendered_prompt,
-            "output_text": result.text,
-            "raw_response": result.raw,
-            "elapsed_seconds": result.elapsed_seconds,
-            "reasoning_path_status": "candidate_logged_without_aggregation",
-        }
-        samples.append(sample_payload)
-        logger.event(
-            {
-                "event": "teacher_generation",
-                "record_id": record.record_id,
-                "strategy": "self_consistency",
-                "aggregation": aggregation,
-                **sample_payload,
-            }
+        sample_payload = _generate_validated_sample(
+            record=record,
+            teacher=teacher,
+            prompt=rendered_prompt,
+            generation_options=sample_options,
+            json_retry_attempts=json_retry_attempts,
+            logger=logger,
+            strategy="self_consistency",
+            sample_index=sample_index,
         )
+        samples.append(sample_payload)
 
     return {
         "record_id": record.record_id,
@@ -64,7 +59,7 @@ def run_self_consistency(
         "prompt_path": str(prompt.path),
         "num_samples": num_samples,
         "aggregation": aggregation,
-        "aggregation_status": "deferred_open_text_consistency_metric_required",
+        "aggregation_status": "not_implemented_yet",
         "selected_sample_index": None,
         "selected_output": None,
         "samples": samples,
@@ -83,61 +78,62 @@ def run_self_refine(
     refine_rounds: int,
     stop_parser: str,
     history_format: str,
+    json_retry_attempts: int,
     logger: RunLogger,
 ) -> dict[str, Any]:
     variables = {**record.to_prompt_vars(), **prompt_vars}
     initial_rendered = initial_prompt.render(variables)
-    initial_result = teacher.generate(initial_rendered, generation_options)
-    current_answer = initial_result.text
+    initial_sample = _generate_validated_sample(
+        record=record,
+        teacher=teacher,
+        prompt=initial_rendered,
+        generation_options=generation_options,
+        json_retry_attempts=json_retry_attempts,
+        logger=logger,
+        strategy="self_refine",
+        sample_index=0,
+        step="initial",
+    )
+    current_answer = initial_sample["output_text"]
+    current_parsed = initial_sample["parsed_output"]
     trace: list[dict[str, Any]] = [
         {
             "step": "initial",
             "round": 0,
             "prompt_path": str(initial_prompt.path),
-            "rendered_prompt": initial_result.rendered_prompt,
-            "output_text": initial_result.text,
-            "raw_response": initial_result.raw,
-            "elapsed_seconds": initial_result.elapsed_seconds,
+            **initial_sample,
         }
     ]
-    logger.event(
-        {
-            "event": "teacher_generation",
-            "record_id": record.record_id,
-            "strategy": "self_refine",
-            **trace[-1],
-        }
-    )
 
     for round_index in range(1, refine_rounds + 1):
         refinement_history = _format_refinement_history(trace, history_format)
-        round_vars = {
+        feedback_vars = {
             **variables,
             "round_index": round_index,
             "current_answer": current_answer,
+            "current_answer_json": current_parsed,
             "refinement_history": refinement_history,
         }
-        critique_rendered = critique_prompt.render(round_vars)
+        critique_rendered = critique_prompt.render(feedback_vars)
         critique_result = teacher.generate(critique_rendered, generation_options)
         stop_decision = _parse_stop_decision(critique_result.text, stop_parser)
-        trace.append(
-            {
-                "step": "feedback",
-                "round": round_index,
-                "prompt_path": str(critique_prompt.path),
-                "rendered_prompt": critique_result.rendered_prompt,
-                "output_text": critique_result.text,
-                "raw_response": critique_result.raw,
-                "elapsed_seconds": critique_result.elapsed_seconds,
-                "parsed_stop_decision": stop_decision,
-            }
-        )
+        feedback_payload = {
+            "step": "feedback",
+            "round": round_index,
+            "prompt_path": str(critique_prompt.path),
+            "rendered_prompt": critique_result.rendered_prompt,
+            "output_text": critique_result.text,
+            "raw_response": critique_result.raw,
+            "elapsed_seconds": critique_result.elapsed_seconds,
+            "parsed_stop_decision": stop_decision,
+        }
+        trace.append(feedback_payload)
         logger.event(
             {
                 "event": "teacher_generation",
                 "record_id": record.record_id,
                 "strategy": "self_refine",
-                **trace[-1],
+                **feedback_payload,
             }
         )
         logger.event(
@@ -154,31 +150,31 @@ def run_self_refine(
             break
 
         revision_vars = {
-            **round_vars,
+            **feedback_vars,
             "critique": critique_result.text,
             "feedback": critique_result.text,
             "refinement_history": _format_refinement_history(trace, history_format),
         }
         revision_rendered = revision_prompt.render(revision_vars)
-        revision_result = teacher.generate(revision_rendered, generation_options)
-        current_answer = revision_result.text
+        revision_sample = _generate_validated_sample(
+            record=record,
+            teacher=teacher,
+            prompt=revision_rendered,
+            generation_options=generation_options,
+            json_retry_attempts=json_retry_attempts,
+            logger=logger,
+            strategy="self_refine",
+            sample_index=round_index,
+            step="revision",
+        )
+        current_answer = revision_sample["output_text"]
+        current_parsed = revision_sample["parsed_output"]
         trace.append(
             {
                 "step": "revision",
                 "round": round_index,
                 "prompt_path": str(revision_prompt.path),
-                "rendered_prompt": revision_result.rendered_prompt,
-                "output_text": revision_result.text,
-                "raw_response": revision_result.raw,
-                "elapsed_seconds": revision_result.elapsed_seconds,
-            }
-        )
-        logger.event(
-            {
-                "event": "teacher_generation",
-                "record_id": record.record_id,
-                "strategy": "self_refine",
-                **trace[-1],
+                **revision_sample,
             }
         )
 
@@ -195,14 +191,88 @@ def run_self_refine(
         },
         "refine_rounds": refine_rounds,
         "selected_output": current_answer,
+        "selected_json": current_parsed,
         "stop_parser": stop_parser,
         "history_format": history_format,
+        "json_retry_attempts": json_retry_attempts,
         "max_refine_rounds": refine_rounds,
         "completed_refinement_rounds": sum(
             1 for item in trace if item["step"] == "revision"
         ),
         "final_stop_decision": _latest_stop_decision(trace),
         "trace": trace,
+    }
+
+
+def _generate_validated_sample(
+    *,
+    record: DatasetRecord,
+    teacher: Teacher,
+    prompt: str,
+    generation_options: GenerationOptions,
+    json_retry_attempts: int,
+    logger: RunLogger,
+    strategy: str,
+    sample_index: int,
+    step: str = "sample",
+) -> dict[str, Any]:
+    attempts: list[dict[str, Any]] = []
+    current_prompt = prompt
+    final_output = ""
+    final_parsed: dict[str, Any] | None = None
+    final_errors: list[str] = []
+
+    for attempt_index in range(1, json_retry_attempts + 2):
+        attempt_options = _options_with_attempt_seed(generation_options, attempt_index)
+        result = teacher.generate(current_prompt, attempt_options)
+        parsed, parse_error = parse_json_object(result.text)
+        validation_errors = validate_segment_enrichment_sample(parsed, record)
+        if parse_error and parsed is None:
+            validation_errors = [parse_error, *validation_errors]
+        parse_status = "valid" if not validation_errors else "invalid"
+        attempt_payload = {
+            "attempt_index": attempt_index,
+            "generation_options": asdict(attempt_options),
+            "rendered_prompt": result.rendered_prompt,
+            "raw_output_text": result.text,
+            "parsed_output": parsed,
+            "parse_status": parse_status,
+            "validation_errors": validation_errors,
+            "raw_response": result.raw,
+            "elapsed_seconds": result.elapsed_seconds,
+        }
+        attempts.append(attempt_payload)
+        logger.event(
+            {
+                "event": "teacher_generation",
+                "record_id": record.record_id,
+                "strategy": strategy,
+                "step": step,
+                "sample_index": sample_index,
+                **attempt_payload,
+            }
+        )
+
+        final_output = result.text
+        final_parsed = parsed
+        final_errors = validation_errors
+        if not validation_errors:
+            break
+        current_prompt = build_json_repair_prompt(
+            original_prompt=prompt,
+            invalid_output=result.text,
+            errors=validation_errors,
+        )
+
+    return {
+        "sample_index": sample_index,
+        "step": step,
+        "attempt_count": len(attempts),
+        "final_parse_status": "valid" if not final_errors else "invalid",
+        "validation_errors": final_errors,
+        "output_text": final_output,
+        "parsed_output": final_parsed,
+        "attempts": attempts,
     }
 
 
@@ -215,17 +285,26 @@ def _options_with_sample_seed(
     return GenerationOptions(**payload)
 
 
+def _options_with_attempt_seed(
+    options: GenerationOptions, attempt_index: int
+) -> GenerationOptions:
+    payload = asdict(options)
+    if options.seed is not None:
+        payload["seed"] = options.seed + ((attempt_index - 1) * 1000)
+    return GenerationOptions(**payload)
+
+
 def _parse_stop_decision(text: str, parser: str) -> dict[str, Any]:
     if parser == "json":
-        payload = _extract_json_object(text)
-        if payload is None:
+        parsed, parse_error = parse_json_object(text)
+        if parsed is None:
             return {
                 "should_stop": False,
                 "parser": parser,
                 "parse_status": "json_not_found",
-                "reason": "No JSON object could be parsed from feedback.",
+                "reason": parse_error or "No JSON object could be parsed from feedback.",
             }
-        return _stop_decision_from_mapping(payload, parser)
+        return _stop_decision_from_mapping(parsed, parser)
     if parser == "text":
         normalized = text.lower()
         stop_patterns = [
@@ -243,25 +322,6 @@ def _parse_stop_decision(text: str, parser: str) -> dict[str, Any]:
             "reason": "Matched stop phrase." if should_stop else "No stop phrase matched.",
         }
     raise ValueError(f"Unsupported self-refine stop parser: {parser}")
-
-
-def _extract_json_object(text: str) -> dict[str, Any] | None:
-    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
-    candidates = [fenced_match.group(1)] if fenced_match else []
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start != -1 and end != -1 and end > start:
-        candidates.append(text[start : end + 1])
-
-    for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict):
-            return parsed
-    return None
 
 
 def _stop_decision_from_mapping(payload: dict[str, Any], parser: str) -> dict[str, Any]:
@@ -301,17 +361,21 @@ def _format_refinement_history(trace: list[dict[str, Any]], history_format: str)
         compact = [
             {
                 "step": item["step"],
-                "round": item["round"],
-                "output_text": item["output_text"],
+                "round": item.get("round"),
+                "output_text": item.get("output_text"),
+                "parsed_output": item.get("parsed_output"),
+                "validation_errors": item.get("validation_errors", []),
             }
             for item in trace
         ]
+        import json
+
         return json.dumps(compact, ensure_ascii=False, indent=2)
     if history_format == "text":
         blocks = []
         for item in trace:
-            label = f"Round {item['round']} {item['step']}"
-            blocks.append(f"{label}:\n{item['output_text']}")
+            label = f"Round {item.get('round')} {item['step']}"
+            blocks.append(f"{label}:\n{item.get('output_text', '')}")
         return "\n\n".join(blocks)
     raise ValueError(f"Unsupported self-refine history format: {history_format}")
 

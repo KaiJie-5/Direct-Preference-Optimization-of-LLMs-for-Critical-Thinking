@@ -7,7 +7,7 @@ name = "dpo-critical-thinking"
 version = "0.1.0"
 description = "Enrichment utilities for DPO critical-thinking data preparation."
 requires-python = ">=3.10"
-dependencies = ["beautifulsoup4>=4.12"]
+dependencies = ["beautifulsoup4>=4.12", "openpyxl>=3.1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
@@ -15,6 +15,7 @@ transformers = ["torch", "transformers>=4.40", "accelerate"]
 
 [project.scripts]
 dpo-enrich = "dpo_critical_thinking.enrichment.cli:main"
+dpo-preprocess = "dpo_critical_thinking.preprocessing.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

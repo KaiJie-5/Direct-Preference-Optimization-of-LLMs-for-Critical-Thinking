@@ -1,45 +1,82 @@
-# Enrichment Phase
+# Segment-Level Enrichment Workflow
 
-This code covers only the first phase: teacher-model dataset enrichment with configurable prompting strategies.
+This phase is split into two steps:
 
-It does not implement multi-agent debate, downstream evaluation, DPO training, or model comparison dashboards.
+1. Preprocess raw data into auditable HTML and segment-level JSONL.
+2. Enrich each segment independently with a teacher model.
 
-## Main Command
+The teacher model should normally consume JSONL segment records, not full HTML interviews.
 
-Install the package from the repository root:
-
-```bash
-python -m pip install -e .
-```
-
-Install optional dependencies only when needed:
+## Install
 
 ```bash
+python -m pip install -e ".[dev]"
 python -m pip install -e ".[transformers]"
 ```
 
-Smoke-test the pipeline without loading a model:
+## Convert The Codebook
 
 ```bash
-python -m dpo_critical_thinking.enrichment.cli \
+dpo-preprocess codebook \
+  --input-xlsx "/path/to/ExampleCodes.xlsx" \
+  --output-path data/codebooks/example_codes_v1.json \
+  --codebook-id example_codes \
+  --codebook-version v1 \
+  --overwrite
+```
+
+The converter supports the current workbook layouts:
+
+- `Contestable Camera Cars`: `Code`, `Quotes`, `Example Questions`.
+- `Braun and Clarke`: `Quote`, `Codes`.
+
+## Preprocess HTML
+
+For one large HTML file containing multiple interviews:
+
+```bash
+dpo-preprocess html \
   --input-path /path/to/transcripts-energy.html \
-  --input-format html \
-  --output-dir outputs/enrichment/dry_run \
+  --raw-html-dir data/raw_html \
+  --segments-dir data/segments_jsonl \
+  --manifest-path data/preprocessing_manifest.json \
+  --codebook-path data/codebooks/example_codes_v1.json \
+  --research-focus "How can LLMs support reflexive questioning in qualitative data analysis without replacing human interpretation?" \
+  --overwrite
+```
+
+For a directory where each HTML file is already one interview, pass the directory to `--input-path`.
+
+Preprocessing writes:
+
+- `data/raw_html/INT01.html`
+- `data/segments_jsonl/INT01_segments.jsonl`
+- `data/preprocessing_manifest.json`
+
+Each JSONL line is one participant-turn segment with previous/next context and all candidate example codes.
+
+## Enrich Segments
+
+Smoke test without loading a model:
+
+```bash
+dpo-enrich \
+  --segments-path data/segments_jsonl \
+  --output-dir outputs/enrichment \
   --strategy self_consistency \
   --prompt-path prompts/enrichment/self_consistency_placeholder.txt \
   --teacher-backend dry-run \
-  --self-consistency-samples 2 \
-  --self-consistency-aggregation scaffold \
+  --self-consistency-samples 5 \
+  --json-retry-attempts 2 \
   --limit 1
 ```
 
-Run self-consistency with a local Hugging Face teacher model:
+Run with a local Hugging Face teacher model:
 
 ```bash
-python -m dpo_critical_thinking.enrichment.cli \
-  --input-path /path/to/transcripts-energy.html \
-  --input-format html \
-  --output-dir outputs/enrichment/self_consistency_deepseek \
+dpo-enrich \
+  --segments-path data/segments_jsonl \
+  --output-dir outputs/enrichment \
   --strategy self_consistency \
   --prompt-path prompts/enrichment/self_consistency_placeholder.txt \
   --teacher-backend transformers \
@@ -47,59 +84,22 @@ python -m dpo_critical_thinking.enrichment.cli \
   --temperature 0.6 \
   --max-new-tokens 2048 \
   --self-consistency-samples 5 \
-  --self-consistency-aggregation scaffold \
+  --json-retry-attempts 2 \
   --force-think-prefix
 ```
 
-Run self-refine:
+Outputs are grouped by interview:
 
-```bash
-python -m dpo_critical_thinking.enrichment.cli \
-  --input-path /path/to/transcripts-energy.html \
-  --input-format html \
-  --output-dir outputs/enrichment/self_refine_deepseek \
-  --strategy self_refine \
-  --prompt-path prompts/enrichment/self_refine_initial_placeholder.txt \
-  --refine-critique-prompt-path prompts/enrichment/self_refine_critique_placeholder.txt \
-  --refine-revision-prompt-path prompts/enrichment/self_refine_revision_placeholder.txt \
-  --teacher-backend transformers \
-  --model-path /path/to/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B \
-  --temperature 0.6 \
-  --max-new-tokens 2048 \
-  --refine-rounds 2 \
-  --refine-stop-parser json \
-  --refine-history-format text \
-  --force-think-prefix
+```text
+outputs/enrichment/
+  INT01_self_consistency/
+    run_manifest.json
+    events.jsonl
+    enriched_records.jsonl
+    failures.jsonl
 ```
 
-Use `--teacher-backend dry-run` for a smoke test that does not load any model.
-
-## HTML Inputs
-
-By default, an HTML file is split into one record per participant section using `h2` headings such as `P1`, `P2`, and so on. Demographic tables and role-labelled dialogue turns are preserved in record metadata.
-
-To treat an entire HTML file as one record:
-
-```bash
---html-split-mode whole
-```
-
-If another HTML file needs CSS selectors:
-
-```bash
---html-split-mode css --html-record-selector ".interview" --html-text-selector ".transcript" --html-id-attr id
-```
-
-`beautifulsoup4` is a core dependency because participant splitting is part of this phase.
-
-## Outputs
-
-Each output directory contains:
-
-- `run_manifest.json`: exact command arguments, environment, generation options, and teacher backend metadata.
-- `events.jsonl`: every model call with rendered prompt, raw response, generation options, timing, and strategy step.
-- `enriched_records.jsonl`: one record per input item with full self-consistency samples or self-refine trace. Self-consistency scaffold runs intentionally leave `selected_output` as `null`.
-- `failures.jsonl`: per-record failures if `--continue-on-error` is enabled.
+Self-consistency currently validates and logs 5 samples per segment. Aggregation is intentionally marked as `not_implemented_yet`.
 
 ## Prompt Variables
 
@@ -107,9 +107,10 @@ Templates can use:
 
 - `{record_id}`
 - `{input_text}`
-- `{record_json}`
-- `{metadata_FIELDNAME}` for structured metadata fields
-- `{current_answer}`, `{feedback}`, and `{refinement_history}` inside Self-Refine feedback/revision prompts
+- `{segment_json}`
+- `{candidate_example_codes_json}`
+- `{research_focus}`
+- `{current_answer}`, `{feedback}`, and `{refinement_history}` inside Self-Refine prompts
 
 Extra variables can be injected from the command line:
 

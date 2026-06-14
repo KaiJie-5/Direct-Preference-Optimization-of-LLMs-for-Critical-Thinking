@@ -9,52 +9,83 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from .data import load_records
+from .data import DatasetRecord, group_records_by_interview, load_segment_records
 from .logging import RunLogger
 from .prompts import PromptTemplate, parse_prompt_vars
 from .strategies import run_self_consistency, run_self_refine
-from .teachers import GenerationOptions, build_teacher
+from .teachers import GenerationOptions, Teacher, build_teacher
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Enrich an input dataset with teacher-model reasoning outputs."
+        description="Enrich preprocessed segment-level JSONL records."
     )
 
     io_group = parser.add_argument_group("input/output")
-    io_group.add_argument("--input-path", required=True, type=Path)
-    io_group.add_argument("--input-format", default="auto", choices=["auto", "html", "jsonl", "json", "csv", "txt"])
+    io_group.add_argument("--segments-path", required=True, type=Path)
     io_group.add_argument("--output-dir", required=True, type=Path)
     io_group.add_argument("--limit", type=int)
-    io_group.add_argument("--text-field", default="text")
-    io_group.add_argument("--record-id-field")
-    io_group.add_argument("--html-split-mode", choices=["participant", "whole", "css"], default="participant")
-    io_group.add_argument("--html-record-selector")
-    io_group.add_argument("--html-text-selector")
-    io_group.add_argument("--html-id-attr")
-    io_group.add_argument("--continue-on-error", action=argparse.BooleanOptionalAction, default=True)
+    io_group.add_argument(
+        "--continue-on-error",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
 
     strategy_group = parser.add_argument_group("prompting strategy")
-    strategy_group.add_argument("--strategy", required=True, choices=["self_consistency", "self_refine"])
+    strategy_group.add_argument(
+        "--strategy",
+        required=True,
+        choices=["self_consistency", "self_refine"],
+    )
     strategy_group.add_argument("--prompt-path", required=True, type=Path)
-    strategy_group.add_argument("--prompt-var", action="append", default=[], help="Extra template variable in KEY=VALUE form. May be repeated.")
+    strategy_group.add_argument(
+        "--prompt-var",
+        action="append",
+        default=[],
+        help="Extra template variable in KEY=VALUE form. May be repeated.",
+    )
+    strategy_group.add_argument("--json-retry-attempts", type=int, default=2)
     strategy_group.add_argument("--self-consistency-samples", type=int, default=5)
-    strategy_group.add_argument("--self-consistency-aggregation", choices=["scaffold"], default="scaffold")
+    strategy_group.add_argument(
+        "--self-consistency-aggregation",
+        choices=["scaffold"],
+        default="scaffold",
+    )
     strategy_group.add_argument("--refine-rounds", type=int, default=2)
     strategy_group.add_argument("--refine-critique-prompt-path", type=Path)
     strategy_group.add_argument("--refine-revision-prompt-path", type=Path)
-    strategy_group.add_argument("--refine-stop-parser", choices=["json", "text"], default="json")
-    strategy_group.add_argument("--refine-history-format", choices=["text", "json"], default="text")
+    strategy_group.add_argument(
+        "--refine-stop-parser",
+        choices=["json", "text"],
+        default="json",
+    )
+    strategy_group.add_argument(
+        "--refine-history-format",
+        choices=["text", "json"],
+        default="text",
+    )
 
     teacher_group = parser.add_argument_group("teacher backend")
-    teacher_group.add_argument("--teacher-backend", choices=["dry-run", "transformers", "openai-compatible"], default="dry-run")
+    teacher_group.add_argument(
+        "--teacher-backend",
+        choices=["dry-run", "transformers", "openai-compatible"],
+        default="dry-run",
+    )
     teacher_group.add_argument("--model-path")
     teacher_group.add_argument("--model-name")
     teacher_group.add_argument("--torch-dtype", default="auto")
     teacher_group.add_argument("--device-map", default="auto")
     teacher_group.add_argument("--trust-remote-code", action="store_true")
-    teacher_group.add_argument("--use-chat-template", action=argparse.BooleanOptionalAction, default=True)
-    teacher_group.add_argument("--force-think-prefix", action=argparse.BooleanOptionalAction, default=True)
+    teacher_group.add_argument(
+        "--use-chat-template",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    teacher_group.add_argument(
+        "--force-think-prefix",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
     teacher_group.add_argument("--think-prefix", default="<think>\n")
     teacher_group.add_argument("--api-base")
     teacher_group.add_argument("--api-key-env")
@@ -75,8 +106,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-
-    logger = RunLogger(args.output_dir)
+    teacher = build_teacher(args)
+    records = load_segment_records(args.segments_path, limit=args.limit)
     prompt_vars = parse_prompt_vars(args.prompt_var)
     generation_options = GenerationOptions(
         max_new_tokens=args.max_new_tokens,
@@ -87,23 +118,6 @@ def main(argv: list[str] | None = None) -> int:
         seed=args.seed,
         stop=args.stop,
     )
-
-    teacher = build_teacher(args)
-    records = load_records(
-        args.input_path,
-        input_format=args.input_format,
-        text_field=args.text_field,
-        record_id_field=args.record_id_field,
-        html_split_mode=args.html_split_mode,
-        html_record_selector=args.html_record_selector,
-        html_text_selector=args.html_text_selector,
-        html_id_attr=args.html_id_attr,
-        limit=args.limit,
-    )
-
-    manifest = _manifest(args, teacher.metadata(), generation_options, len(records))
-    logger.write_manifest(manifest)
-    logger.event({"event": "run_started", "manifest": manifest})
 
     prompt = PromptTemplate(args.prompt_path)
     critique_prompt = None
@@ -117,6 +131,68 @@ def main(argv: list[str] | None = None) -> int:
         critique_prompt = PromptTemplate(args.refine_critique_prompt_path)
         revision_prompt = PromptTemplate(args.refine_revision_prompt_path)
 
+    grouped_records = group_records_by_interview(records)
+    batch_summary = {
+        "event": "batch_completed",
+        "segments_path": str(args.segments_path),
+        "output_dir": str(args.output_dir),
+        "strategy": args.strategy,
+        "interview_count": len(grouped_records),
+        "record_count": len(records),
+        "interviews": [],
+    }
+
+    for interview_id, interview_records in grouped_records.items():
+        interview_output_dir = args.output_dir / f"{interview_id}_{args.strategy}"
+        summary = _run_interview(
+            args=args,
+            teacher=teacher,
+            prompt=prompt,
+            critique_prompt=critique_prompt,
+            revision_prompt=revision_prompt,
+            prompt_vars=prompt_vars,
+            generation_options=generation_options,
+            interview_id=interview_id,
+            records=interview_records,
+            output_dir=interview_output_dir,
+        )
+        batch_summary["interviews"].append(summary)
+
+    batch_summary["success_count"] = sum(
+        item["success_count"] for item in batch_summary["interviews"]
+    )
+    batch_summary["failure_count"] = sum(
+        item["failure_count"] for item in batch_summary["interviews"]
+    )
+    print(json.dumps(batch_summary, indent=2))
+    return 0 if batch_summary["failure_count"] == 0 else 1
+
+
+def _run_interview(
+    *,
+    args: argparse.Namespace,
+    teacher: Teacher,
+    prompt: PromptTemplate,
+    critique_prompt: PromptTemplate | None,
+    revision_prompt: PromptTemplate | None,
+    prompt_vars: dict[str, Any],
+    generation_options: GenerationOptions,
+    interview_id: str,
+    records: list[DatasetRecord],
+    output_dir: Path,
+) -> dict[str, Any]:
+    logger = RunLogger(output_dir)
+    manifest = _manifest(
+        args=args,
+        interview_id=interview_id,
+        record_count=len(records),
+        teacher_metadata=teacher.metadata(),
+        generation_options=generation_options,
+        output_dir=output_dir,
+    )
+    logger.write_manifest(manifest)
+    logger.event({"event": "run_started", "manifest": manifest})
+
     success_count = 0
     failure_count = 0
     started = time.perf_counter()
@@ -128,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
                     "record_index": index,
                     "record_count": len(records),
                     "record_id": record.record_id,
+                    "interview_id": interview_id,
+                    "segment_id": record.metadata["segment_id"],
                     "input_char_count": len(record.text),
                 }
             )
@@ -151,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
                 {
                     "event": "record_failed",
                     "record_id": record.record_id,
+                    "interview_id": interview_id,
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                 }
@@ -160,21 +239,21 @@ def main(argv: list[str] | None = None) -> int:
 
     summary = {
         "event": "run_completed",
+        "interview_id": interview_id,
         "success_count": success_count,
         "failure_count": failure_count,
         "elapsed_seconds": time.perf_counter() - started,
-        "output_dir": str(args.output_dir),
+        "output_dir": str(output_dir),
     }
     logger.event(summary)
-    print(json.dumps(summary, indent=2))
-    return 0 if failure_count == 0 else 1
+    return summary
 
 
 def _run_strategy(
     *,
     args: argparse.Namespace,
-    record: Any,
-    teacher: Any,
+    record: DatasetRecord,
+    teacher: Teacher,
     prompt: PromptTemplate,
     critique_prompt: PromptTemplate | None,
     revision_prompt: PromptTemplate | None,
@@ -191,6 +270,7 @@ def _run_strategy(
             generation_options=generation_options,
             num_samples=args.self_consistency_samples,
             aggregation=args.self_consistency_aggregation,
+            json_retry_attempts=args.json_retry_attempts,
             logger=logger,
         )
 
@@ -208,6 +288,7 @@ def _run_strategy(
             refine_rounds=args.refine_rounds,
             stop_parser=args.refine_stop_parser,
             history_format=args.refine_history_format,
+            json_retry_attempts=args.json_retry_attempts,
             logger=logger,
         )
 
@@ -215,10 +296,13 @@ def _run_strategy(
 
 
 def _manifest(
+    *,
     args: argparse.Namespace,
+    interview_id: str,
+    record_count: int,
     teacher_metadata: dict[str, Any],
     generation_options: GenerationOptions,
-    record_count: int,
+    output_dir: Path,
 ) -> dict[str, Any]:
     args_dict = {
         key: str(value) if isinstance(value, Path) else value
@@ -228,7 +312,9 @@ def _manifest(
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "python": sys.version,
         "platform": platform.platform(),
+        "interview_id": interview_id,
         "record_count": record_count,
+        "output_dir": str(output_dir),
         "args": args_dict,
         "teacher": teacher_metadata,
         "generation_options": asdict(generation_options),

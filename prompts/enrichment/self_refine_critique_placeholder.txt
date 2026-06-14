@@ -1,4 +1,4 @@
-You are helping enrich an interview dataset for a critical-thinking DPO project.
+You are helping critique one segment-enrichment JSON sample.
 
 This is a placeholder feedback prompt for self-refine round {round_index}. Replace it after the prompt-design phase is fixed.
 

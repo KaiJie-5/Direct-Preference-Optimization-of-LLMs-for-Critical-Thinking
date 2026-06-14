@@ -1,9 +1,21 @@
-You are helping enrich an interview dataset for a critical-thinking DPO project.
+You are helping enrich one segment from an interview dataset for a critical-thinking DPO project.
 
 This is a placeholder prompt. Replace this file with the final self-consistency prompt after the prompt-design phase is fixed.
 
-Input record id:
+Return only one JSON object matching schema_version "segment_enrichment_sample_v1".
+Do not add markdown fences.
+
+Segment record id:
 {record_id}
 
-Input interview text:
+Research focus:
+{research_focus}
+
+Segment JSON:
+{segment_json}
+
+Candidate example codes:
+{candidate_example_codes_json}
+
+Target segment text:
 {input_text}

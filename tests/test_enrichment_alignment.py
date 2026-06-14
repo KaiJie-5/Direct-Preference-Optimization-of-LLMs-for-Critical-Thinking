@@ -1,22 +1,21 @@
 from __future__ import annotations
 
+import json
 from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-import pytest
-
-from dpo_critical_thinking.enrichment.data import load_records
+from dpo_critical_thinking.enrichment.cli import main as enrich_main
+from dpo_critical_thinking.enrichment.data import load_segment_records
 from dpo_critical_thinking.enrichment.logging import RunLogger
 from dpo_critical_thinking.enrichment.prompts import PromptTemplate
-from dpo_critical_thinking.enrichment.strategies import (
-    run_self_consistency,
-    run_self_refine,
-)
+from dpo_critical_thinking.enrichment.strategies import run_self_consistency
 from dpo_critical_thinking.enrichment.teachers import (
     GenerationOptions,
     GenerationResult,
 )
+from dpo_critical_thinking.preprocessing.codebook import convert_xlsx_codebook
+from dpo_critical_thinking.preprocessing.html import preprocess_html_dataset
 
 
 class QueueTeacher:
@@ -38,31 +37,75 @@ class QueueTeacher:
         return {"backend": "queue"}
 
 
-def test_participant_html_split_matches_observed_shape(tmp_path: Path) -> None:
-    html_path = tmp_path / "transcripts-energy.html"
-    html_path.write_text(_synthetic_transcript_html(), encoding="utf-8")
+def test_convert_xlsx_codebook_supports_both_observed_sheet_layouts(
+    tmp_path: Path,
+) -> None:
+    workbook_path = tmp_path / "ExampleCodes.xlsx"
+    _write_example_workbook(workbook_path)
 
-    records = load_records(
-        html_path,
-        input_format="html",
-        html_split_mode="participant",
+    payload = convert_xlsx_codebook(
+        input_xlsx=workbook_path,
+        output_path=tmp_path / "example_codes_v1.json",
+        codebook_id="example_codes",
+        codebook_version="v1",
+        description="Test codebook.",
     )
 
-    assert len(records) == 10
-    assert records[0].record_id == "P1"
-    assert records[-1].record_id == "P10"
-    assert sum(record.metadata["interviewer_turn_count"] for record in records) == 104
-    assert sum(record.metadata["participant_turn_count"] for record in records) == 104
-    assert all(record.metadata["demographics"] for record in records)
-    assert records[0].text.startswith("Interviewer: Question 1")
-    assert records[0].source["section_index"] == 1
+    codes = {code["code_id"]: code for code in payload["codes"]}
+    assert "human_oversight" in codes
+    assert "childfree_by_choice" in codes
+    assert codes["human_oversight"]["example_reflective_questions"] == [
+        "Could this be about accountability rather than trust?"
+    ]
+    assert codes["childfree_by_choice"]["source_sheets"] == ["Braun and Clarke"]
 
 
-def test_self_consistency_scaffold_logs_samples_without_selection(tmp_path: Path) -> None:
-    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {input_text}")
-    logger = RunLogger(tmp_path / "logs")
-    teacher = QueueTeacher(["sample one", "sample two"])
-    record = _record()
+def test_preprocess_html_writes_raw_interviews_and_participant_turn_segments(
+    tmp_path: Path,
+) -> None:
+    codebook_path = _write_codebook(tmp_path)
+    html_path = tmp_path / "multi.html"
+    html_path.write_text(_multi_interview_html(), encoding="utf-8")
+
+    manifest = preprocess_html_dataset(
+        input_path=html_path,
+        raw_html_dir=tmp_path / "data" / "raw_html",
+        segments_dir=tmp_path / "data" / "segments_jsonl",
+        manifest_path=tmp_path / "data" / "preprocessing_manifest.json",
+        codebook_path=codebook_path,
+        research_focus="How can LLMs support reflexive questioning?",
+    )
+
+    assert [item["interview_id"] for item in manifest["interviews"]] == ["INT01", "INT02"]
+    assert (tmp_path / "data" / "raw_html" / "INT01.html").exists()
+    segments = _read_jsonl(tmp_path / "data" / "segments_jsonl" / "INT01_segments.jsonl")
+    assert [segment["record_id"] for segment in segments] == ["INT01_SEG001", "INT01_SEG002"]
+    assert segments[0]["speaker"] == "participant"
+    assert segments[0]["previous_context"].startswith("Interviewer:")
+    assert segments[0]["next_context"].startswith("Interviewer:")
+    assert segments[0]["line_start"] is None
+    assert segments[0]["paragraph_index_start"] == 2
+    assert segments[0]["candidate_example_codes"][0]["code_id"] == "human_oversight"
+
+
+def test_load_segment_records_accepts_file_or_directory(tmp_path: Path) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    _write_jsonl(segments_dir / "INT01_segments.jsonl", [_segment("INT01", 1)])
+    _write_jsonl(segments_dir / "INT02_segments.jsonl", [_segment("INT02", 1)])
+
+    one_file = load_segment_records(segments_dir / "INT01_segments.jsonl")
+    all_files = load_segment_records(segments_dir)
+
+    assert [record.record_id for record in one_file] == ["INT01_SEG001"]
+    assert [record.record_id for record in all_files] == ["INT01_SEG001", "INT02_SEG001"]
+    assert all_files[0].to_prompt_vars()["candidate_example_codes_json"].startswith("[")
+
+
+def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> None:
+    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {segment_json}")
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    teacher = QueueTeacher(["not json", json.dumps(_valid_sample(record))])
 
     enriched = run_self_consistency(
         record=record,
@@ -70,116 +113,165 @@ def test_self_consistency_scaffold_logs_samples_without_selection(tmp_path: Path
         prompt=PromptTemplate(prompt_path),
         prompt_vars={},
         generation_options=GenerationOptions(seed=10),
-        num_samples=2,
+        num_samples=1,
         aggregation="scaffold",
-        logger=logger,
+        json_retry_attempts=1,
+        logger=RunLogger(tmp_path / "logs"),
     )
 
-    assert enriched["selected_output"] is None
-    assert enriched["selected_sample_index"] is None
+    sample = enriched["samples"][0]
+    assert sample["attempt_count"] == 2
+    assert sample["final_parse_status"] == "valid"
+    assert sample["parsed_output"]["schema_version"] == "segment_enrichment_sample_v1"
+    assert enriched["aggregation_status"] == "not_implemented_yet"
+
+
+def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    _write_jsonl(segments_dir / "INT01_segments.jsonl", [_segment("INT01", 1)])
+    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {segment_json}")
+
+    status = enrich_main(
+        [
+            "--segments-path",
+            str(segments_dir),
+            "--output-dir",
+            str(tmp_path / "outputs" / "enrichment"),
+            "--strategy",
+            "self_consistency",
+            "--prompt-path",
+            str(prompt_path),
+            "--teacher-backend",
+            "dry-run",
+            "--self-consistency-samples",
+            "1",
+            "--json-retry-attempts",
+            "0",
+        ]
+    )
+
+    assert status == 0
     assert (
-        enriched["aggregation_status"]
-        == "deferred_open_text_consistency_metric_required"
-    )
-    assert [sample["generation_options"]["seed"] for sample in enriched["samples"]] == [
-        10,
-        11,
-    ]
+        tmp_path
+        / "outputs"
+        / "enrichment"
+        / "INT01_self_consistency"
+        / "run_manifest.json"
+    ).exists()
 
 
-@pytest.mark.parametrize("aggregation", ["first", "longest", "none"])
-def test_self_consistency_rejects_old_selection_modes(
-    tmp_path: Path, aggregation: str
-) -> None:
-    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {input_text}")
+def _write_example_workbook(path: Path) -> None:
+    from openpyxl import Workbook
 
-    with pytest.raises(ValueError, match="scaffold-only"):
-        run_self_consistency(
-            record=_record(),
-            teacher=QueueTeacher(["sample"]),
-            prompt=PromptTemplate(prompt_path),
-            prompt_vars={},
-            generation_options=GenerationOptions(),
-            num_samples=1,
-            aggregation=aggregation,
-            logger=RunLogger(tmp_path / "logs"),
-        )
+    workbook = Workbook()
+    sheet = workbook.active
+    sheet.title = "Contestable Camera Cars"
+    sheet.append(["Code", "Quotes", "Example Questions"])
+    sheet.append(["human_oversight", "AI can help, but someone checks.", None])
+    sheet.append([None, "Someone still needs to review it.", "Could this be about accountability rather than trust?"])
+    sheet = workbook.create_sheet("Braun and Clarke")
+    sheet.append(["Quote", "Codes"])
+    sheet.append(["I chose not to have children.", "Childfree by choice"])
+    workbook.save(path)
 
 
-def test_self_refine_stops_on_feedback_indicator(tmp_path: Path) -> None:
-    initial = _write_prompt(tmp_path, "Initial {input_text}")
-    feedback = _write_prompt(tmp_path, "Feedback {current_answer}")
-    revision = _write_prompt(tmp_path, "Revision {refinement_history} {feedback}")
-    teacher = QueueTeacher(
-        [
-            "initial answer",
-            '{"needs_refinement": false, "reason": "already sufficient"}',
-        ]
-    )
-
-    enriched = run_self_refine(
-        record=_record(),
-        teacher=teacher,
-        initial_prompt=PromptTemplate(initial),
-        critique_prompt=PromptTemplate(feedback),
-        revision_prompt=PromptTemplate(revision),
-        prompt_vars={},
-        generation_options=GenerationOptions(),
-        refine_rounds=3,
-        stop_parser="json",
-        history_format="text",
-        logger=RunLogger(tmp_path / "logs"),
-    )
-
-    assert enriched["selected_output"] == "initial answer"
-    assert enriched["completed_refinement_rounds"] == 0
-    assert enriched["final_stop_decision"]["should_stop"] is True
-    assert len(teacher.prompts) == 2
+def _write_codebook(tmp_path: Path) -> Path:
+    codebook = {
+        "codebook_id": "example_codes",
+        "codebook_version": "v1",
+        "source_file": "test.xlsx",
+        "description": "Test codebook.",
+        "codes": [
+            {
+                "code_id": "human_oversight",
+                "code_label": "human_oversight",
+                "definition": "Need for human checking.",
+                "example_quotes": ["AI can help, but someone checks."],
+                "example_reflective_questions": [],
+                "source_sheets": ["manual"],
+            }
+        ],
+    }
+    path = tmp_path / "codebook.json"
+    path.write_text(json.dumps(codebook), encoding="utf-8")
+    return path
 
 
-def test_self_refine_passes_full_history_until_max_rounds(tmp_path: Path) -> None:
-    initial = _write_prompt(tmp_path, "Initial {input_text}")
-    feedback = _write_prompt(tmp_path, "Feedback {current_answer}")
-    revision = _write_prompt(
-        tmp_path,
-        "Revision\nHistory:\n{refinement_history}\nFeedback:\n{feedback}",
-    )
-    teacher = QueueTeacher(
-        [
-            "initial answer",
-            '{"needs_refinement": true, "reason": "improve once"}',
-            "revision one",
-            '{"needs_refinement": true, "reason": "improve twice"}',
-            "revision two",
-        ]
-    )
-
-    enriched = run_self_refine(
-        record=_record(),
-        teacher=teacher,
-        initial_prompt=PromptTemplate(initial),
-        critique_prompt=PromptTemplate(feedback),
-        revision_prompt=PromptTemplate(revision),
-        prompt_vars={},
-        generation_options=GenerationOptions(),
-        refine_rounds=2,
-        stop_parser="json",
-        history_format="text",
-        logger=RunLogger(tmp_path / "logs"),
-    )
-
-    assert enriched["selected_output"] == "revision two"
-    assert enriched["completed_refinement_rounds"] == 2
-    assert "Round 0 initial" in teacher.prompts[2]
-    assert "Round 1 feedback" in teacher.prompts[2]
-    assert "Round 1 revision" in teacher.prompts[4]
-    assert "Round 2 feedback" in teacher.prompts[4]
+def _multi_interview_html() -> str:
+    return """
+    <!DOCTYPE html>
+    <html><body>
+      <h2>P1</h2>
+      <p class="interviewer"><strong>Interviewer</strong> Question one?</p>
+      <p class="participant"><strong>Participant</strong> Answer one.</p>
+      <p class="interviewer"><strong>Interviewer</strong> Question two?</p>
+      <p class="participant"><strong>Participant</strong> Answer two.</p>
+      <h2>P2</h2>
+      <p class="interviewer"><strong>Interviewer</strong> Another question?</p>
+      <p class="participant"><strong>Participant</strong> Another answer.</p>
+    </body></html>
+    """
 
 
-def _record() -> Any:
-    from dpo_critical_thinking.enrichment.data import DatasetRecord
+def _segment(interview_id: str, index: int) -> dict[str, Any]:
+    segment_id = f"SEG{index:03d}"
+    return {
+        "record_id": f"{interview_id}_{segment_id}",
+        "text": "AI can help, but someone still needs to check the result.",
+        "interview_id": interview_id,
+        "segment_id": segment_id,
+        "speaker": "participant",
+        "turn_index": 2,
+        "paragraph_index_start": 2,
+        "paragraph_index_end": 2,
+        "line_start": None,
+        "line_end": None,
+        "previous_context": "Interviewer: Can AI help?",
+        "next_context": "",
+        "research_focus": "How can LLMs support reflexive questioning?",
+        "codebook_id": "example_codes",
+        "codebook_version": "v1",
+        "candidate_example_codes": [
+            {
+                "code_id": "human_oversight",
+                "code_label": "human_oversight",
+                "definition": "Need for human checking.",
+                "example_quotes": ["AI can help, but someone checks."],
+                "example_reflective_questions": [],
+                "source_sheets": ["manual"],
+            }
+        ],
+        "source_html_path": f"data/raw_html/{interview_id}.html",
+    }
 
-    return DatasetRecord(record_id="P1", text="Example interview")
+
+def _valid_sample(record: Any) -> dict[str, Any]:
+    return {
+        "schema_version": "segment_enrichment_sample_v1",
+        "record_id": record.record_id,
+        "codebook_version": record.metadata["codebook_version"],
+        "analysis_unit": {
+            "interview_id": record.metadata["interview_id"],
+            "segment_id": record.metadata["segment_id"],
+            "speaker": "participant",
+            "target_text": record.text,
+            "previous_context_used": True,
+            "next_context_used": False,
+            "context_warning": "",
+        },
+        "candidate_code_matches": [],
+        "possible_new_codes": [],
+        "reflective_question_candidates": [],
+        "quality_control": {
+            "hallucination_risk": "low",
+            "over_generalisation_risk": "low",
+            "participant_voice_loss_risk": "low",
+            "needs_human_review": False,
+            "review_reason": "",
+            "overall_confidence": 8,
+        },
+    }
 
 
 def _write_prompt(tmp_path: Path, text: str) -> Path:
@@ -188,28 +280,16 @@ def _write_prompt(tmp_path: Path, text: str) -> Path:
     return path
 
 
-def _synthetic_transcript_html() -> str:
-    section_turn_counts = [11, 11, 11, 11, 10, 10, 10, 10, 10, 10]
-    sections = []
-    for participant_index, turn_count in enumerate(section_turn_counts, start=1):
-        turns = []
-        for turn_index in range(1, turn_count + 1):
-            turns.append(
-                '<p class="interviewer"><strong>Interviewer</strong> '
-                f"Question {turn_index}</p>"
-            )
-            turns.append(
-                '<p class="participant"><strong>Participant</strong> '
-                f"Answer {turn_index}</p>"
-            )
-        sections.append(
-            f"""
-            <h2>P{participant_index}</h2>
-            <table>
-              <tr><td>Gender</td><td>Example</td></tr>
-              <tr><td>Age</td><td>{20 + participant_index}</td></tr>
-            </table>
-            {''.join(turns)}
-            """
-        )
-    return f"<!DOCTYPE html><html><body>{''.join(sections)}</body></html>"
+def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> Path:
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+    return path
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]

@@ -1,8 +1,17 @@
-You are helping enrich an interview dataset for a critical-thinking DPO project.
+You are helping revise one segment-enrichment JSON sample.
 
 This is a placeholder revision prompt for self-refine round {round_index}. Replace it after the prompt-design phase is fixed.
 
-Input interview text:
+Return only one JSON object matching schema_version "segment_enrichment_sample_v1".
+Do not add markdown fences.
+
+Segment JSON:
+{segment_json}
+
+Candidate example codes:
+{candidate_example_codes_json}
+
+Target segment text:
 {input_text}
 
 Previous refinement history:
