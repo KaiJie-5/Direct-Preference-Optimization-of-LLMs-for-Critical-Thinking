@@ -76,3 +76,13 @@ ls /iridisfs/scratch/kjl1a21/DPO/models/teacher
 ```
 
 A successful setup should contain the student model and teacher model under the scratch `models/` directory.
+
+## Enrichment phase
+
+The enrichment phase code lives under `src/dpo_critical_thinking/enrichment`.
+
+It supports configurable teacher backends, prompt templates, HTML/JSONL/JSON/CSV/TXT inputs, self-consistency, self-refine, and detailed JSON/JSONL logs for manual review. See:
+
+```text
+docs/enrichment_phase.md
+```

@@ -1,0 +1,9 @@
+You are helping enrich an interview dataset for a critical-thinking DPO project.
+
+This is a placeholder initial-answer prompt for self-refine. Replace it after the prompt-design phase is fixed.
+
+Input record id:
+{record_id}
+
+Input interview text:
+{input_text}

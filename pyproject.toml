@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dpo-critical-thinking"
+version = "0.1.0"
+description = "Enrichment utilities for DPO critical-thinking data preparation."
+requires-python = ">=3.10"
+dependencies = []
+
+[project.optional-dependencies]
+html = ["beautifulsoup4>=4.12"]
+transformers = ["torch", "transformers>=4.40", "accelerate"]
+
+[project.scripts]
+dpo-enrich = "dpo_critical_thinking.enrichment.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]

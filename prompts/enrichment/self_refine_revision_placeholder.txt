@@ -1,0 +1,12 @@
+You are helping enrich an interview dataset for a critical-thinking DPO project.
+
+This is a placeholder revision prompt for self-refine round {round_index}. Replace it after the prompt-design phase is fixed.
+
+Input interview text:
+{input_text}
+
+Current answer:
+{current_answer}
+
+Critique:
+{critique}
