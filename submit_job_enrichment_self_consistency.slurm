@@ -22,7 +22,7 @@ SCRATCH_DPO="/iridisfs/scratch/kjl1a21/DPO"
 
 MODEL_PATH="${SCRATCH_DPO}/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B"
 SEGMENTS_PATH="${SCRATCH_DPO}/data/transcripts-energy-preprocessed/segments_jsonl"
-OUTPUT_ROOT="${SCRATCH_DPO}/outputs/enrichment"
+OUTPUT_ROOT="${SCRATCH_DPO}/data/transcripts-energy-enriched"
 PROMPT_PATH="${PROJECT_DIR}/prompts/enrichment/self_consistency_placeholder.txt"
 
 STRATEGY="self_consistency"
