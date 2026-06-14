@@ -15,7 +15,6 @@ SEGMENT_REQUIRED_FIELDS = {
     "turn_index",
     "previous_context",
     "next_context",
-    "research_focus",
     "codebook_id",
     "codebook_version",
     "candidate_example_codes",

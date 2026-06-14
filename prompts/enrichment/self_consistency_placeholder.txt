@@ -8,9 +8,6 @@ Do not add markdown fences.
 Segment record id:
 {record_id}
 
-Research focus:
-{research_focus}
-
 Segment JSON:
 {segment_json}
 

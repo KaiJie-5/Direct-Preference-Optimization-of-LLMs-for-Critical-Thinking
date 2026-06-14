@@ -41,7 +41,6 @@ dpo-preprocess html \
   --segments-dir data/segments_jsonl \
   --manifest-path data/preprocessing_manifest.json \
   --codebook-path data/codebooks/example_codes_v1.json \
-  --research-focus "How can LLMs support reflexive questioning in qualitative data analysis without replacing human interpretation?" \
   --overwrite
 ```
 
@@ -109,7 +108,6 @@ Templates can use:
 - `{input_text}`
 - `{segment_json}`
 - `{candidate_example_codes_json}`
-- `{research_focus}`
 - `{current_answer}`, `{feedback}`, and `{refinement_history}` inside Self-Refine prompts
 
 Extra variables can be injected from the command line:

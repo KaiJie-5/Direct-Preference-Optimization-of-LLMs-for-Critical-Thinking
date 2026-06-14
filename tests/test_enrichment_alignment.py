@@ -73,7 +73,6 @@ def test_preprocess_html_writes_raw_interviews_and_participant_turn_segments(
         segments_dir=tmp_path / "data" / "segments_jsonl",
         manifest_path=tmp_path / "data" / "preprocessing_manifest.json",
         codebook_path=codebook_path,
-        research_focus="How can LLMs support reflexive questioning?",
     )
 
     assert [item["interview_id"] for item in manifest["interviews"]] == ["INT01", "INT02"]
@@ -229,7 +228,6 @@ def _segment(interview_id: str, index: int) -> dict[str, Any]:
         "line_end": None,
         "previous_context": "Interviewer: Can AI help?",
         "next_context": "",
-        "research_focus": "How can LLMs support reflexive questioning?",
         "codebook_id": "example_codes",
         "codebook_version": "v1",
         "candidate_example_codes": [

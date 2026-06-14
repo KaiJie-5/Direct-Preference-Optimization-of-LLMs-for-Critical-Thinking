@@ -25,7 +25,6 @@ def preprocess_html_dataset(
     segments_dir: Path,
     manifest_path: Path,
     codebook_path: Path,
-    research_focus: str,
     interview_id_prefix: str = "INT",
     heading_selector: str = "h2",
     interviewer_selector: str = "p.interviewer",
@@ -57,7 +56,6 @@ def preprocess_html_dataset(
             turns=turns,
             interview_id=interview_id,
             source_html_path=html_path,
-            research_focus=research_focus,
             codebook=codebook,
         )
         segments_path = segments_dir / f"{interview_id}_segments.jsonl"
@@ -82,7 +80,6 @@ def preprocess_html_dataset(
         "codebook_path": str(codebook_path),
         "codebook_id": codebook["codebook_id"],
         "codebook_version": codebook["codebook_version"],
-        "research_focus": research_focus,
         "interviews": manifest_items,
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -196,7 +193,6 @@ def _segments_from_turns(
     turns: list[Turn],
     interview_id: str,
     source_html_path: Path,
-    research_focus: str,
     codebook: dict[str, Any],
 ) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
@@ -222,7 +218,6 @@ def _segments_from_turns(
                 "line_end": None,
                 "previous_context": _format_context(previous_turn),
                 "next_context": _format_context(next_turn),
-                "research_focus": research_focus,
                 "codebook_id": codebook["codebook_id"],
                 "codebook_version": codebook["codebook_version"],
                 "candidate_example_codes": candidate_codes,
