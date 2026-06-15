@@ -86,6 +86,8 @@ def _json_candidates(text: str) -> list[str]:
 def validate_segment_enrichment_sample(
     payload: dict[str, Any] | None,
     record: DatasetRecord,
+    *,
+    expected_codebook_version: str | None = None,
 ) -> list[str]:
     if payload is None:
         return ["No JSON object could be parsed."]
@@ -106,10 +108,11 @@ def validate_segment_enrichment_sample(
             f"record_id must be {record.record_id!r}, got {payload.get('record_id')!r}"
         )
 
-    if payload.get("codebook_version") != record.metadata.get("codebook_version"):
+    codebook_version = expected_codebook_version or record.metadata.get("codebook_version")
+    if payload.get("codebook_version") != codebook_version:
         errors.append(
-            "codebook_version must match the segment record, got "
-            f"{payload.get('codebook_version')!r}"
+            "codebook_version must match the selected codebook, expected "
+            f"{codebook_version!r}, got {payload.get('codebook_version')!r}"
         )
 
     analysis_unit = payload.get("analysis_unit")

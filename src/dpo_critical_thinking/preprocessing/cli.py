@@ -30,7 +30,6 @@ def build_parser() -> argparse.ArgumentParser:
     html.add_argument("--raw-html-dir", required=True, type=Path)
     html.add_argument("--segments-dir", required=True, type=Path)
     html.add_argument("--manifest-path", required=True, type=Path)
-    html.add_argument("--codebook-path", required=True, type=Path)
     html.add_argument("--interview-id-prefix", default="INT")
     html.add_argument("--heading-selector", default="h2")
     html.add_argument("--interviewer-selector", default="p.interviewer")
@@ -60,7 +59,6 @@ def main(argv: list[str] | None = None) -> int:
             raw_html_dir=args.raw_html_dir,
             segments_dir=args.segments_dir,
             manifest_path=args.manifest_path,
-            codebook_path=args.codebook_path,
             interview_id_prefix=args.interview_id_prefix,
             heading_selector=args.heading_selector,
             interviewer_selector=args.interviewer_selector,

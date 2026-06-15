@@ -7,9 +7,6 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .codebook import load_codebook
-
-
 @dataclass(slots=True)
 class Turn:
     role: str
@@ -24,14 +21,12 @@ def preprocess_html_dataset(
     raw_html_dir: Path,
     segments_dir: Path,
     manifest_path: Path,
-    codebook_path: Path,
     interview_id_prefix: str = "INT",
     heading_selector: str = "h2",
     interviewer_selector: str = "p.interviewer",
     participant_selector: str = "p.participant",
     overwrite: bool = False,
 ) -> dict[str, Any]:
-    codebook = load_codebook(codebook_path)
     raw_html_dir.mkdir(parents=True, exist_ok=True)
     segments_dir.mkdir(parents=True, exist_ok=True)
     if manifest_path.exists() and not overwrite:
@@ -58,7 +53,6 @@ def preprocess_html_dataset(
             turns=turns,
             interview_id=interview_id,
             source_html_path=html_path,
-            codebook=codebook,
             participant_characteristics=participant_characteristics,
         )
         segments_path = segments_dir / f"{interview_id}_segments.jsonl"
@@ -81,9 +75,6 @@ def preprocess_html_dataset(
         "input_path": str(input_path),
         "raw_html_dir": str(raw_html_dir),
         "segments_dir": str(segments_dir),
-        "codebook_path": str(codebook_path),
-        "codebook_id": codebook["codebook_id"],
-        "codebook_version": codebook["codebook_version"],
         "interviews": manifest_items,
     }
     manifest_path.parent.mkdir(parents=True, exist_ok=True)
@@ -225,11 +216,9 @@ def _segments_from_turns(
     turns: list[Turn],
     interview_id: str,
     source_html_path: Path,
-    codebook: dict[str, Any],
     participant_characteristics: dict[str, str],
 ) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
-    candidate_codes = codebook["codes"]
     participant_turns = [turn for turn in turns if turn.role == "participant"]
     width = max(3, len(str(len(participant_turns))))
 
@@ -252,9 +241,6 @@ def _segments_from_turns(
                 "previous_context": _format_context(previous_turn),
                 "next_context": _format_context(next_turn),
                 "participant_characteristics": participant_characteristics,
-                "codebook_id": codebook["codebook_id"],
-                "codebook_version": codebook["codebook_version"],
-                "candidate_example_codes": candidate_codes,
                 "source_html_path": str(source_html_path),
             }
         )

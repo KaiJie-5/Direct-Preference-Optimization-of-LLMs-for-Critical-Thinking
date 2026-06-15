@@ -70,7 +70,6 @@ def test_convert_xlsx_codebook_supports_both_observed_sheet_layouts(
 def test_preprocess_html_writes_raw_interviews_and_participant_turn_segments(
     tmp_path: Path,
 ) -> None:
-    codebook_path = _write_codebook(tmp_path)
     html_path = tmp_path / "multi.html"
     html_path.write_text(_multi_interview_html(), encoding="utf-8")
 
@@ -79,7 +78,6 @@ def test_preprocess_html_writes_raw_interviews_and_participant_turn_segments(
         raw_html_dir=tmp_path / "data" / "raw_html",
         segments_dir=tmp_path / "data" / "segments_jsonl",
         manifest_path=tmp_path / "data" / "preprocessing_manifest.json",
-        codebook_path=codebook_path,
     )
 
     assert [item["interview_id"] for item in manifest["interviews"]] == ["INT01", "INT02"]
@@ -101,7 +99,9 @@ def test_preprocess_html_writes_raw_interviews_and_participant_turn_segments(
         "age": "38",
         "notes": "Uses solar panels.",
     }
-    assert segments[0]["candidate_example_codes"][0]["code_id"] == "human_oversight"
+    assert "candidate_example_codes" not in segments[0]
+    assert "codebook_id" not in segments[0]
+    assert "codebook_version" not in segments[0]
 
 
 def test_load_segment_records_accepts_file_or_directory(tmp_path: Path) -> None:
@@ -115,7 +115,7 @@ def test_load_segment_records_accepts_file_or_directory(tmp_path: Path) -> None:
 
     assert [record.record_id for record in one_file] == ["INT01_SEG001"]
     assert [record.record_id for record in all_files] == ["INT01_SEG001", "INT02_SEG001"]
-    assert all_files[0].to_prompt_vars()["candidate_example_codes_json"].startswith("[")
+    assert all_files[0].to_prompt_vars()["candidate_example_codes_json"] == "[]"
 
 
 def test_parse_json_object_prefers_content_after_think_block() -> None:
@@ -150,9 +150,10 @@ def test_parse_json_object_still_accepts_output_without_think_block() -> None:
 
 
 def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> None:
-    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {segment_json}")
+    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {candidate_example_codes_json}")
     record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
-    valid_json = json.dumps(_valid_sample(record))
+    codebook = _codebook_payload()
+    valid_json = json.dumps(_valid_sample(record, codebook_version="v1"))
     teacher = QueueTeacher(
         [
             "<think>\nInvalid reasoning with {braces}.\n</think>\nnot json",
@@ -165,6 +166,7 @@ def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> 
         teacher=teacher,
         prompt=PromptTemplate(prompt_path),
         prompt_vars={},
+        codebook=codebook,
         generation_options=GenerationOptions(seed=10),
         num_samples=1,
         aggregation="scaffold",
@@ -228,6 +230,7 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
     segments_dir.mkdir()
     _write_jsonl(segments_dir / "INT01_segments.jsonl", [_segment("INT01", 1)])
     prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {segment_json}")
+    codebook_path = _write_codebook(tmp_path)
 
     status = enrich_main(
         [
@@ -235,6 +238,8 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
             str(segments_dir),
             "--output-dir",
             str(tmp_path / "outputs" / "enrichment"),
+            "--codebook-path",
+            str(codebook_path),
             "--strategy",
             "self_consistency",
             "--prompt-path",
@@ -258,6 +263,83 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
     ).exists()
 
 
+def test_enrichment_prompt_vars_use_runtime_codebook(tmp_path: Path) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    variables = record.to_prompt_vars(_codebook_payload())
+
+    assert variables["codebook_id"] == "example_codes"
+    assert variables["codebook_version"] == "v1"
+    assert "human_oversight" in variables["candidate_example_codes_json"]
+    assert "candidate_example_codes" not in variables["segment_json"]
+
+
+def test_self_consistency_prompt_has_single_codebook_and_target_copy(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    prompt = PromptTemplate(Path("prompts/enrichment/self_consistency_placeholder.txt"))
+    rendered = prompt.render(record.to_prompt_vars(_codebook_payload()))
+
+    assert rendered.count('"code_id": "human_oversight"') == 1
+    assert rendered.count(record.text) == 1
+    assert "Copy the Target segment text exactly." in rendered
+
+
+def test_runtime_codebook_overrides_legacy_embedded_codes(tmp_path: Path) -> None:
+    legacy_record = _segment("INT01", 1, include_codebook=True)
+    legacy_record["candidate_example_codes"] = [
+        {
+            "code_id": "legacy_code",
+            "code_label": "legacy_code",
+            "definition": None,
+            "example_quotes": [],
+            "example_reflective_questions": [],
+            "source_sheets": ["legacy"],
+        }
+    ]
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [legacy_record]))[0]
+    variables = record.to_prompt_vars(_codebook_payload())
+
+    assert "human_oversight" in variables["candidate_example_codes_json"]
+    assert "legacy_code" not in variables["candidate_example_codes_json"]
+    assert "legacy_code" not in variables["segment_json"]
+
+
+def test_enrichment_cli_accepts_legacy_embedded_codebook_without_runtime_path(
+    tmp_path: Path,
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    _write_jsonl(
+        segments_dir / "INT01_segments.jsonl",
+        [_segment("INT01", 1, include_codebook=True)],
+    )
+    prompt_path = _write_prompt(
+        tmp_path, "Prompt {codebook_version}: {candidate_example_codes_json}"
+    )
+
+    status = enrich_main(
+        [
+            "--segments-path",
+            str(segments_dir),
+            "--output-dir",
+            str(tmp_path / "outputs" / "enrichment"),
+            "--strategy",
+            "self_consistency",
+            "--prompt-path",
+            str(prompt_path),
+            "--teacher-backend",
+            "dry-run",
+            "--self-consistency-samples",
+            "1",
+            "--json-retry-attempts",
+            "0",
+        ]
+    )
+
+    assert status == 0
+
+
 def _write_example_workbook(path: Path) -> None:
     from openpyxl import Workbook
 
@@ -274,7 +356,13 @@ def _write_example_workbook(path: Path) -> None:
 
 
 def _write_codebook(tmp_path: Path) -> Path:
-    codebook = {
+    path = tmp_path / "codebook.json"
+    path.write_text(json.dumps(_codebook_payload()), encoding="utf-8")
+    return path
+
+
+def _codebook_payload() -> dict[str, Any]:
+    return {
         "codebook_id": "example_codes",
         "codebook_version": "v1",
         "source_file": "test.xlsx",
@@ -290,9 +378,6 @@ def _write_codebook(tmp_path: Path) -> Path:
             }
         ],
     }
-    path = tmp_path / "codebook.json"
-    path.write_text(json.dumps(codebook), encoding="utf-8")
-    return path
 
 
 def _multi_interview_html() -> str:
@@ -318,9 +403,11 @@ def _multi_interview_html() -> str:
     """
 
 
-def _segment(interview_id: str, index: int) -> dict[str, Any]:
+def _segment(
+    interview_id: str, index: int, *, include_codebook: bool = False
+) -> dict[str, Any]:
     segment_id = f"SEG{index:03d}"
-    return {
+    payload = {
         "record_id": f"{interview_id}_{segment_id}",
         "text": "AI can help, but someone still needs to check the result.",
         "interview_id": interview_id,
@@ -333,27 +420,20 @@ def _segment(interview_id: str, index: int) -> dict[str, Any]:
         "line_end": None,
         "previous_context": "Interviewer: Can AI help?",
         "next_context": "",
-        "codebook_id": "example_codes",
-        "codebook_version": "v1",
-        "candidate_example_codes": [
-            {
-                "code_id": "human_oversight",
-                "code_label": "human_oversight",
-                "definition": "Need for human checking.",
-                "example_quotes": ["AI can help, but someone checks."],
-                "example_reflective_questions": [],
-                "source_sheets": ["manual"],
-            }
-        ],
         "source_html_path": f"data/raw_html/{interview_id}.html",
     }
+    if include_codebook:
+        payload["codebook_id"] = "example_codes"
+        payload["codebook_version"] = "v1"
+        payload["candidate_example_codes"] = _codebook_payload()["codes"]
+    return payload
 
 
-def _valid_sample(record: Any) -> dict[str, Any]:
+def _valid_sample(record: Any, *, codebook_version: str) -> dict[str, Any]:
     return {
         "schema_version": "segment_enrichment_sample_v1",
         "record_id": record.record_id,
-        "codebook_version": record.metadata["codebook_version"],
+        "codebook_version": codebook_version,
         "analysis_unit": {
             "interview_id": record.metadata["interview_id"],
             "segment_id": record.metadata["segment_id"],

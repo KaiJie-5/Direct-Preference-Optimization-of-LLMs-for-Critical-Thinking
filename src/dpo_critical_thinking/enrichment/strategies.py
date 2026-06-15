@@ -26,6 +26,7 @@ def run_self_consistency(
     aggregation: str,
     json_retry_attempts: int,
     logger: RunLogger,
+    codebook: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     if aggregation != "scaffold":
         raise ValueError(
@@ -33,8 +34,9 @@ def run_self_consistency(
             "Use --self-consistency-aggregation scaffold."
         )
 
-    variables = {**record.to_prompt_vars(), **prompt_vars}
+    variables = {**record.to_prompt_vars(codebook), **prompt_vars}
     rendered_prompt = prompt.render(variables)
+    expected_codebook_version = _expected_codebook_version(record, codebook)
     samples: list[dict[str, Any]] = []
 
     for sample_index in range(1, num_samples + 1):
@@ -44,6 +46,7 @@ def run_self_consistency(
             teacher=teacher,
             prompt=rendered_prompt,
             generation_options=sample_options,
+            expected_codebook_version=expected_codebook_version,
             json_retry_attempts=json_retry_attempts,
             logger=logger,
             strategy="self_consistency",
@@ -81,14 +84,17 @@ def run_self_refine(
     history_format: str,
     json_retry_attempts: int,
     logger: RunLogger,
+    codebook: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    variables = {**record.to_prompt_vars(), **prompt_vars}
+    variables = {**record.to_prompt_vars(codebook), **prompt_vars}
+    expected_codebook_version = _expected_codebook_version(record, codebook)
     initial_rendered = initial_prompt.render(variables)
     initial_sample = _generate_validated_sample(
         record=record,
         teacher=teacher,
         prompt=initial_rendered,
         generation_options=generation_options,
+        expected_codebook_version=expected_codebook_version,
         json_retry_attempts=json_retry_attempts,
         logger=logger,
         strategy="self_refine",
@@ -162,6 +168,7 @@ def run_self_refine(
             teacher=teacher,
             prompt=revision_rendered,
             generation_options=generation_options,
+            expected_codebook_version=expected_codebook_version,
             json_retry_attempts=json_retry_attempts,
             logger=logger,
             strategy="self_refine",
@@ -211,6 +218,7 @@ def _generate_validated_sample(
     teacher: Teacher,
     prompt: str,
     generation_options: GenerationOptions,
+    expected_codebook_version: str | None,
     json_retry_attempts: int,
     logger: RunLogger,
     strategy: str,
@@ -229,7 +237,11 @@ def _generate_validated_sample(
         result = teacher.generate(current_prompt, attempt_options)
         response_sections = split_response_sections(result.text)
         parsed, parse_error = parse_json_object(result.text)
-        validation_errors = validate_segment_enrichment_sample(parsed, record)
+        validation_errors = validate_segment_enrichment_sample(
+            parsed,
+            record,
+            expected_codebook_version=expected_codebook_version,
+        )
         if parse_error and parsed is None:
             validation_errors = [parse_error, *validation_errors]
         parse_status = "valid" if not validation_errors else "invalid"
@@ -280,6 +292,16 @@ def _generate_validated_sample(
         "parsed_output": final_parsed,
         "attempts": attempts,
     }
+
+
+def _expected_codebook_version(
+    record: DatasetRecord, codebook: dict[str, Any] | None
+) -> str | None:
+    if codebook is not None:
+        version = codebook.get("codebook_version")
+    else:
+        version = record.metadata.get("codebook_version")
+    return str(version) if version is not None else None
 
 
 def _options_with_sample_seed(

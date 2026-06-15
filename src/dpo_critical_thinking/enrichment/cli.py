@@ -9,6 +9,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
+from dpo_critical_thinking.preprocessing.codebook import load_codebook
+
 from .data import DatasetRecord, group_records_by_interview, load_segment_records
 from .logging import RunLogger
 from .prompts import PromptTemplate, parse_prompt_vars
@@ -24,6 +26,14 @@ def build_parser() -> argparse.ArgumentParser:
     io_group = parser.add_argument_group("input/output")
     io_group.add_argument("--segments-path", required=True, type=Path)
     io_group.add_argument("--output-dir", required=True, type=Path)
+    io_group.add_argument(
+        "--codebook-path",
+        type=Path,
+        help=(
+            "Codebook JSON to use for candidate example codes. "
+            "Overrides any codebook embedded in legacy segment files."
+        ),
+    )
     io_group.add_argument("--limit", type=int)
     io_group.add_argument(
         "--continue-on-error",
@@ -110,6 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     teacher = build_teacher(args)
     records = load_segment_records(args.segments_path, limit=args.limit)
+    codebook = _load_runtime_codebook(args.codebook_path, records)
     prompt_vars = parse_prompt_vars(args.prompt_var)
     generation_options = GenerationOptions(
         max_new_tokens=args.max_new_tokens,
@@ -139,6 +150,7 @@ def main(argv: list[str] | None = None) -> int:
         "segments_path": str(args.segments_path),
         "output_dir": str(args.output_dir),
         "strategy": args.strategy,
+        "codebook": _codebook_summary(codebook),
         "interview_count": len(grouped_records),
         "record_count": len(records),
         "interviews": [],
@@ -149,6 +161,7 @@ def main(argv: list[str] | None = None) -> int:
         summary = _run_interview(
             args=args,
             teacher=teacher,
+            codebook=codebook,
             prompt=prompt,
             critique_prompt=critique_prompt,
             revision_prompt=revision_prompt,
@@ -174,6 +187,7 @@ def _run_interview(
     *,
     args: argparse.Namespace,
     teacher: Teacher,
+    codebook: dict[str, Any] | None,
     prompt: PromptTemplate,
     critique_prompt: PromptTemplate | None,
     revision_prompt: PromptTemplate | None,
@@ -189,6 +203,7 @@ def _run_interview(
         interview_id=interview_id,
         record_count=len(records),
         teacher_metadata=teacher.metadata(),
+        codebook=codebook,
         generation_options=generation_options,
         output_dir=output_dir,
     )
@@ -215,6 +230,7 @@ def _run_interview(
                 args=args,
                 record=record,
                 teacher=teacher,
+                codebook=codebook,
                 prompt=prompt,
                 critique_prompt=critique_prompt,
                 revision_prompt=revision_prompt,
@@ -256,6 +272,7 @@ def _run_strategy(
     args: argparse.Namespace,
     record: DatasetRecord,
     teacher: Teacher,
+    codebook: dict[str, Any] | None,
     prompt: PromptTemplate,
     critique_prompt: PromptTemplate | None,
     revision_prompt: PromptTemplate | None,
@@ -269,6 +286,7 @@ def _run_strategy(
             teacher=teacher,
             prompt=prompt,
             prompt_vars=prompt_vars,
+            codebook=codebook,
             generation_options=generation_options,
             num_samples=args.self_consistency_samples,
             aggregation=args.self_consistency_aggregation,
@@ -286,6 +304,7 @@ def _run_strategy(
             critique_prompt=critique_prompt,
             revision_prompt=revision_prompt,
             prompt_vars=prompt_vars,
+            codebook=codebook,
             generation_options=generation_options,
             refine_rounds=args.refine_rounds,
             stop_parser=args.refine_stop_parser,
@@ -303,6 +322,7 @@ def _manifest(
     interview_id: str,
     record_count: int,
     teacher_metadata: dict[str, Any],
+    codebook: dict[str, Any] | None,
     generation_options: GenerationOptions,
     output_dir: Path,
 ) -> dict[str, Any]:
@@ -319,7 +339,32 @@ def _manifest(
         "output_dir": str(output_dir),
         "args": args_dict,
         "teacher": teacher_metadata,
+        "codebook": _codebook_summary(codebook),
         "generation_options": asdict(generation_options),
+    }
+
+
+def _load_runtime_codebook(
+    codebook_path: Path | None, records: list[DatasetRecord]
+) -> dict[str, Any] | None:
+    if codebook_path is not None:
+        return load_codebook(codebook_path)
+    if all("candidate_example_codes" in record.metadata for record in records):
+        return None
+    raise ValueError(
+        "--codebook-path is required for segment files that do not contain "
+        "legacy embedded candidate_example_codes."
+    )
+
+
+def _codebook_summary(codebook: dict[str, Any] | None) -> dict[str, Any]:
+    if codebook is None:
+        return {"source": "legacy_segment_metadata"}
+    return {
+        "source": "runtime_codebook",
+        "codebook_id": codebook.get("codebook_id"),
+        "codebook_version": codebook.get("codebook_version"),
+        "code_count": len(codebook.get("codes", [])),
     }
 
 

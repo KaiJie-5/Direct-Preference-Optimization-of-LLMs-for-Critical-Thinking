@@ -15,10 +15,13 @@ SEGMENT_REQUIRED_FIELDS = {
     "turn_index",
     "previous_context",
     "next_context",
+    "source_html_path",
+}
+
+SEGMENT_PROMPT_EXCLUDED_FIELDS = {
+    "candidate_example_codes",
     "codebook_id",
     "codebook_version",
-    "candidate_example_codes",
-    "source_html_path",
 }
 
 
@@ -35,25 +38,40 @@ class DatasetRecord:
     def interview_id(self) -> str:
         return str(self.metadata["interview_id"])
 
-    def to_prompt_vars(self) -> dict[str, Any]:
+    def to_prompt_vars(self, codebook: dict[str, Any] | None = None) -> dict[str, Any]:
         payload = {
             "record_id": self.record_id,
             "text": self.text,
-            **self.metadata,
+            **{
+                key: value
+                for key, value in self.metadata.items()
+                if key not in SEGMENT_PROMPT_EXCLUDED_FIELDS
+            },
             "source": self.source,
         }
+        candidate_codes = (
+            codebook.get("codes", [])
+            if codebook is not None
+            else self.metadata.get("candidate_example_codes", [])
+        )
         variables = {
             "record_id": self.record_id,
             "input_text": self.text,
             "segment_json": json.dumps(payload, ensure_ascii=False, indent=2),
             "candidate_example_codes_json": json.dumps(
-                self.metadata.get("candidate_example_codes", []),
-                ensure_ascii=False,
-                indent=2,
+                candidate_codes, ensure_ascii=False, indent=2
             ),
             "record_json": json.dumps(payload, ensure_ascii=False, indent=2),
         }
+        if codebook is not None:
+            variables["codebook_id"] = codebook.get("codebook_id", "")
+            variables["codebook_version"] = codebook.get("codebook_version", "")
+        else:
+            variables["codebook_id"] = self.metadata.get("codebook_id", "")
+            variables["codebook_version"] = self.metadata.get("codebook_version", "")
         for key, value in self.metadata.items():
+            if key in SEGMENT_PROMPT_EXCLUDED_FIELDS:
+                continue
             variables[key] = (
                 json.dumps(value, ensure_ascii=False, indent=2)
                 if isinstance(value, (dict, list))

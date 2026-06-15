@@ -66,7 +66,7 @@ Required JSON schema:
     "interview_id": "{interview_id}",
     "segment_id": "{segment_id}",
     "speaker": "{speaker}",
-    "target_text": "{input_text}",
+    "target_text": "Copy the Target segment text exactly.",
     "previous_context_used": true,
     "next_context_used": true,
     "context_warning": ""
@@ -144,11 +144,22 @@ Do not use trailing commas.
 Do not include comments inside the JSON.
 Do not wrap the JSON in markdown fences.
 
-Input segment JSON:
-{segment_json}
+Segment identifiers:
+- record_id: {record_id}
+- interview_id: {interview_id}
+- segment_id: {segment_id}
+- speaker: {speaker}
+- codebook_id: {codebook_id}
+- codebook_version: {codebook_version}
 
-Candidate example codes:
-{candidate_example_codes_json}
+Previous context:
+{previous_context}
 
 Target segment text:
 {input_text}
+
+Next context:
+{next_context}
+
+Candidate example codes:
+{candidate_example_codes_json}

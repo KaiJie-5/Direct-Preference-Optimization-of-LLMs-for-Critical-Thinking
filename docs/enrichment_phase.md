@@ -40,7 +40,6 @@ dpo-preprocess html \
   --raw-html-dir data/raw_html \
   --segments-dir data/segments_jsonl \
   --manifest-path data/preprocessing_manifest.json \
-  --codebook-path data/codebooks/example_codes_v1.json \
   --overwrite
 ```
 
@@ -52,7 +51,7 @@ Preprocessing writes:
 - `data/segments_jsonl/INT01_segments.jsonl`
 - `data/preprocessing_manifest.json`
 
-Each JSONL line is one participant-turn segment with previous/next context, participant characteristics extracted from the interview metadata table, and all candidate example codes.
+Each JSONL line is one participant-turn segment with previous/next context and participant characteristics extracted from the interview metadata table. Codebooks are selected later during enrichment so the same segments can be reused with different codebook versions.
 
 ## Enrich Segments
 
@@ -62,6 +61,7 @@ Smoke test without loading a model:
 dpo-enrich \
   --segments-path data/segments_jsonl \
   --output-dir outputs/enrichment \
+  --codebook-path data/codebooks/example_codes_v1.json \
   --strategy self_consistency \
   --prompt-path prompts/enrichment/self_consistency_placeholder.txt \
   --teacher-backend dry-run \
@@ -76,6 +76,7 @@ Run with a local Hugging Face teacher model:
 dpo-enrich \
   --segments-path data/segments_jsonl \
   --output-dir outputs/enrichment \
+  --codebook-path data/codebooks/example_codes_v1.json \
   --strategy self_consistency \
   --prompt-path prompts/enrichment/self_consistency_placeholder.txt \
   --teacher-backend transformers \
@@ -109,6 +110,9 @@ Templates can use:
 - `{record_id}`
 - `{input_text}`
 - `{segment_json}`
+- `{interview_id}`, `{segment_id}`, `{speaker}`
+- `{previous_context}`, `{next_context}`
+- `{codebook_id}`, `{codebook_version}`
 - `{candidate_example_codes_json}`
 - `{current_answer}`, `{feedback}`, and `{refinement_history}` inside Self-Refine prompts
 

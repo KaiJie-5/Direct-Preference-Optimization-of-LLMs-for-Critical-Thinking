@@ -5,14 +5,25 @@ This is a placeholder revision prompt for self-refine round {round_index}. Repla
 Return only one JSON object matching schema_version "segment_enrichment_sample_v1".
 Do not add markdown fences.
 
-Segment JSON:
-{segment_json}
+Segment identifiers:
+- record_id: {record_id}
+- interview_id: {interview_id}
+- segment_id: {segment_id}
+- speaker: {speaker}
+- codebook_id: {codebook_id}
+- codebook_version: {codebook_version}
 
-Candidate example codes:
-{candidate_example_codes_json}
+Previous context:
+{previous_context}
 
 Target segment text:
 {input_text}
+
+Next context:
+{next_context}
+
+Candidate example codes:
+{candidate_example_codes_json}
 
 Previous refinement history:
 {refinement_history}

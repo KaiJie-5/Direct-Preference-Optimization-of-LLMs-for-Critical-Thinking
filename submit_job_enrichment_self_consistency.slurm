@@ -22,6 +22,7 @@ SCRATCH_DPO="/iridisfs/scratch/kjl1a21/DPO"
 
 MODEL_PATH="${SCRATCH_DPO}/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B"
 SEGMENTS_PATH="${SCRATCH_DPO}/data/transcripts-energy-preprocessed/segments_jsonl"
+CODEBOOK_PATH="${SCRATCH_DPO}/data/codebooks/example_codes_v1.json"
 OUTPUT_ROOT="${SCRATCH_DPO}/data/transcripts-energy-enriched"
 PROMPT_PATH="${PROJECT_DIR}/prompts/enrichment/self_consistency_placeholder.txt"
 
@@ -61,6 +62,7 @@ PROJECT_DIR=${PROJECT_DIR}
 SCRATCH_DPO=${SCRATCH_DPO}
 MODEL_PATH=${MODEL_PATH}
 SEGMENTS_PATH=${SEGMENTS_PATH}
+CODEBOOK_PATH=${CODEBOOK_PATH}
 OUTPUT_ROOT=${OUTPUT_ROOT}
 PROMPT_PATH=${PROMPT_PATH}
 STRATEGY=${STRATEGY}
@@ -103,6 +105,7 @@ fi
 ENRICH_ARGS=(
     --segments-path "${SEGMENTS_PATH}"
     --output-dir "${RUN_DIR}"
+    --codebook-path "${CODEBOOK_PATH}"
     --strategy "${STRATEGY}"
     --prompt-path "${PROMPT_PATH}"
     --teacher-backend "${TEACHER_BACKEND}"
