@@ -19,6 +19,7 @@ from dpo_critical_thinking.enrichment.strategies import run_self_consistency
 from dpo_critical_thinking.enrichment.teachers import (
     GenerationOptions,
     GenerationResult,
+    normalize_decoded_text,
     resolve_effective_max_new_tokens,
 )
 from dpo_critical_thinking.preprocessing.codebook import convert_xlsx_codebook
@@ -147,6 +148,38 @@ def test_parse_json_object_still_accepts_output_without_think_block() -> None:
     assert sections["reasoning_text"] == ""
     assert parsed == payload
     assert parse_error is None
+
+
+def test_normalize_decoded_text_repairs_byte_level_json_markers(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    payload = _valid_sample(record, codebook_version="v1")
+    encoded = (
+        "<think>ĊReasoningĊ</think>ĊĊ"
+        + json.dumps(payload, ensure_ascii=False, indent=2)
+        .replace("\n", "Ċ")
+        .replace(" ", "Ġ")
+    )
+
+    normalization = normalize_decoded_text(encoded)
+    parsed, parse_error = parse_json_object(normalization.text)
+
+    assert normalization.normalized is True
+    assert normalization.raw_text == encoded
+    assert parse_error is None
+    assert parsed is not None
+    assert parsed["analysis_unit"]["target_text"] == record.text
+
+
+def test_normalize_decoded_text_leaves_clean_text_unchanged() -> None:
+    text = "<think>\nReasoning\n</think>\n\n{\"ok\": true}"
+
+    normalization = normalize_decoded_text(text)
+
+    assert normalization.text == text
+    assert normalization.normalized is False
+    assert normalization.raw_text is None
 
 
 def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> None:

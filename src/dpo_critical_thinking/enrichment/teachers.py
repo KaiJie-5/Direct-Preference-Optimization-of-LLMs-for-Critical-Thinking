@@ -32,6 +32,13 @@ class GenerationResult:
     elapsed_seconds: float
 
 
+@dataclass(slots=True)
+class DecodeNormalization:
+    text: str
+    normalized: bool
+    raw_text: str | None = None
+
+
 class Teacher(Protocol):
     def generate(self, prompt: str, options: GenerationOptions) -> GenerationResult:
         ...
@@ -142,20 +149,27 @@ class TransformersTeacher:
             output_ids = self.model.generate(**inputs, **generation_kwargs)
 
         new_tokens = output_ids[0][prompt_token_count:]
-        generated = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+        decoded = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+        decoded_normalization = normalize_decoded_text(decoded)
+        generated = decoded_normalization.text
         if self.force_think_prefix and not generated.startswith(self.think_prefix):
             generated = self.think_prefix + generated
 
+        raw_response: dict[str, Any] = {
+            "backend": "transformers",
+            "model_path": self.model_path,
+            "generation_kwargs": generation_kwargs,
+            "prompt_token_count": prompt_token_count,
+            "new_token_count": int(new_tokens.shape[-1]),
+            "decode_artifact_normalized": decoded_normalization.normalized,
+            **token_budget,
+        }
+        if decoded_normalization.raw_text is not None:
+            raw_response["raw_decoded_text"] = decoded_normalization.raw_text
+
         return GenerationResult(
             text=generated,
-            raw={
-                "backend": "transformers",
-                "model_path": self.model_path,
-                "generation_kwargs": generation_kwargs,
-                "prompt_token_count": prompt_token_count,
-                "new_token_count": int(new_tokens.shape[-1]),
-                **token_budget,
-            },
+            raw=raw_response,
             rendered_prompt=rendered_prompt,
             elapsed_seconds=time.perf_counter() - started,
         )
@@ -290,6 +304,13 @@ def build_teacher(args: Any) -> Teacher:
             think_prefix=args.think_prefix,
         )
     raise ValueError(f"Unsupported teacher backend: {args.teacher_backend}")
+
+
+def normalize_decoded_text(text: str) -> DecodeNormalization:
+    normalized = text.replace("Ċ", "\n").replace("Ġ", " ").replace("ĉ", "\t")
+    if normalized == text:
+        return DecodeNormalization(text=text, normalized=False)
+    return DecodeNormalization(text=normalized, normalized=True, raw_text=text)
 
 
 def _resolve_torch_dtype(torch: Any, torch_dtype: str) -> Any:
