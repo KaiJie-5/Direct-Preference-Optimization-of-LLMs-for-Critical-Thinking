@@ -362,13 +362,11 @@ def test_self_consistency_prompt_includes_research_questions(tmp_path: Path) -> 
         {
             **record.to_prompt_vars(_codebook_payload()),
             "research_questions": "1. How do participants discuss energy efficiency?",
-            "research_questions_json": json.dumps(
-                ["How do participants discuss energy efficiency?"]
-            ),
         }
     )
 
     assert "Research questions:" in rendered
+    assert "Research questions JSON:" not in rendered
     assert "How do participants discuss energy efficiency?" in rendered
 
 

@@ -415,10 +415,7 @@ def _research_question_prompt_vars(questions: list[str]) -> dict[str, str]:
         )
     else:
         text = "No explicit research questions were supplied for this run."
-    return {
-        "research_questions": text,
-        "research_questions_json": json.dumps(cleaned, ensure_ascii=False, indent=2),
-    }
+    return {"research_questions": text}
 
 
 def _focused_self_consistency_payload(enriched: dict[str, Any]) -> dict[str, Any]:

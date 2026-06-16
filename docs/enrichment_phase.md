@@ -120,7 +120,7 @@ Templates can use:
 - `{previous_context}`, `{next_context}`
 - `{codebook_id}`, `{codebook_version}`
 - `{candidate_example_codes_json}`
-- `{research_questions}`, `{research_questions_json}`
+- `{research_questions}`
 - `{current_answer}`, `{feedback}`, and `{refinement_history}` inside Self-Refine prompts
 
 Extra variables can be injected from the command line:

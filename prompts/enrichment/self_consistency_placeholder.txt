@@ -197,9 +197,6 @@ Segment identifiers:
 Research questions:
 {research_questions}
 
-Research questions JSON:
-{research_questions_json}
-
 Previous context:
 {previous_context}
 
