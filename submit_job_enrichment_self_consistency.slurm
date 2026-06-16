@@ -38,7 +38,11 @@ DEVICE_MAP="auto"
 
 # Add one or more research questions for this run, for example:
 # RESEARCH_QUESTIONS=("How do participants describe smart technology use in relation to energy efficiency?")
-RESEARCH_QUESTIONS=()
+RESEARCH_QUESTIONS=(
+    "What are some ways that people experience interactions with energy services or energy management systems?"
+    "What interactions do people have with energy services or energy management systems?"
+    "What barriers or challenges do people face when interacting with energy services or energy management systems?"
+)
 
 # Set LIMIT=1 for a quick smoke run. Leave empty for the full enrichment run.
 LIMIT=""
@@ -59,6 +63,15 @@ echo "SLURM job id: ${SLURM_JOB_ID}"
 echo "Node list: ${SLURM_JOB_NODELIST}"
 echo "CUDA devices: ${CUDA_VISIBLE_DEVICES:-unset}"
 date
+
+echo "Research questions:"
+if [[ ${#RESEARCH_QUESTIONS[@]} -eq 0 ]]; then
+    echo "  none supplied"
+else
+    for index in "${!RESEARCH_QUESTIONS[@]}"; do
+        printf '  %d. %s\n' "$((index + 1))" "${RESEARCH_QUESTIONS[$index]}"
+    done
+fi
 
 cat > "${RUN_DIR}/sbatch_config.txt" <<EOF
 CONDA_ENV=${CONDA_ENV}
