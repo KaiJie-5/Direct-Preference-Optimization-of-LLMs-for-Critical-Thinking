@@ -241,6 +241,7 @@ def _generate_validated_sample(
             parsed,
             record,
             expected_codebook_version=expected_codebook_version,
+            strict_prompt_schema=strategy == "self_consistency",
         )
         if parse_error and parsed is None:
             validation_errors = [parse_error, *validation_errors]

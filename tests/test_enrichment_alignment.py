@@ -392,6 +392,110 @@ def test_segment_enrichment_schema_requires_code_quality_examples(
     assert any("useful_analytical_code" in error for error in errors)
 
 
+def test_segment_enrichment_schema_requires_prompt_top_level_sections(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    payload = _valid_sample(record, codebook_version="v1")
+    del payload["research_question_relevance"]
+    del payload["contrastive_judgement"]
+
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+    )
+
+    assert any("research_question_relevance" in error for error in errors)
+    assert any("contrastive_judgement" in error for error in errors)
+
+
+def test_segment_enrichment_schema_rejects_extra_code_quality_category(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    payload = _valid_sample(record, codebook_version="v1")
+    payload["code_quality_examples"]["extra_category"] = {
+        "code_label": "Unexpected category"
+    }
+
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+    )
+
+    assert any("unexpected examples" in error for error in errors)
+
+
+def test_segment_enrichment_schema_requires_nested_code_quality_fields(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    payload = _valid_sample(record, codebook_version="v1")
+    del payload["code_quality_examples"]["wrong_code"]["actual_segment_quote"]
+
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+    )
+
+    assert any("actual_segment_quote" in error for error in errors)
+
+
+def test_segment_enrichment_schema_requires_three_reflective_questions(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    payload = _valid_sample(record, codebook_version="v1")
+    payload["reflective_question_candidates"] = payload[
+        "reflective_question_candidates"
+    ][:2]
+
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+    )
+
+    assert any("exactly 3" in error for error in errors)
+
+
+def test_segment_enrichment_schema_requires_ordered_reflective_question_ids(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    payload = _valid_sample(record, codebook_version="v1")
+    payload["reflective_question_candidates"][1]["question_id"] = "QX"
+
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+    )
+
+    assert any("question_id must be 'Q2'" in error for error in errors)
+
+
+def test_segment_enrichment_schema_requires_useful_linked_quality_example(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    payload = _valid_sample(record, codebook_version="v1")
+    payload["reflective_question_candidates"][0][
+        "linked_code_quality_example"
+    ] = "too_broad_code"
+
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+    )
+
+    assert any("linked_code_quality_example" in error for error in errors)
+
+
 def test_runtime_codebook_overrides_legacy_embedded_codes(tmp_path: Path) -> None:
     legacy_record = _segment("INT01", 1, include_codebook=True)
     legacy_record["candidate_example_codes"] = [
@@ -550,35 +654,103 @@ def _valid_sample(record: Any, *, codebook_version: str) -> dict[str, Any]:
             "next_context_used": False,
             "context_warning": "",
         },
+        "research_question_relevance": {
+            "relevant_research_questions": [
+                "How do participants describe AI support?"
+            ],
+            "segment_relevance_summary": "The segment is useful for analyzing reliance on AI with human checking.",
+            "is_segment_analytically_useful": True,
+            "why_or_why_not": "It explains that AI may help but still needs human oversight.",
+        },
         "candidate_code_matches": [],
         "possible_new_codes": [],
-        "reflective_question_candidates": [],
         "code_quality_examples": {
             "wrong_code": {
                 "code_label": "No human checking",
-                "why_it_is_wrong": "It contradicts the segment.",
-                "relation_to_segment": "The segment says someone checks the result.",
-                "relation_to_research_questions": "It would mislead the analysis.",
+                "actual_segment_quote": "someone still needs to check",
+                "why_plausible_for_wider_dataset": "Some datasets about AI may include automation without review.",
+                "why_unsupported_by_this_segment": "The segment explicitly says checking remains necessary.",
+                "relation_to_research_questions": "It would misrepresent the role of oversight.",
+                "category_boundary": "It sounds plausible but contradicts this segment's evidence.",
             },
             "descriptive_not_answering_research_question": {
                 "code_label": "Mentions AI",
-                "why_it_is_descriptive_but_not_analytical": "It only labels the topic.",
-                "relation_to_segment": "The segment mentions AI.",
+                "evidence_quote": "AI can help",
+                "surface_description": "The participant mentions AI as potentially useful.",
+                "why_true_of_segment": "The words directly refer to AI helping.",
+                "why_not_useful_for_research_questions": "It names the topic without explaining the oversight relationship.",
                 "relation_to_research_questions": "It does not explain oversight or use.",
+                "category_boundary": "It is true but too surface-level to answer the research question.",
             },
             "too_broad_code": {
                 "code_label": "Technology",
+                "evidence_quote": "AI can help",
+                "broad_relevance_to_research_questions": "AI is a technology relevant to the study.",
+                "specific_meaning_lost": "The need for human checking is lost.",
                 "why_it_is_too_broad": "It is too general for this meaning.",
-                "relation_to_segment": "AI is a technology.",
                 "relation_to_research_questions": "It loses the human-checking issue.",
+                "category_boundary": "It is relevant but hides the specific oversight mechanism.",
             },
             "useful_analytical_code": {
-                "code_label": "human_oversight",
+                "code_label": "AI help remains conditional on human checking",
+                "evidence_quote": "someone still needs to check the result",
+                "specific_analytical_insight": "The participant frames AI as useful only when human review remains in place.",
                 "why_it_is_useful": "It captures the need for checking AI output.",
-                "relation_to_segment": "The participant says someone checks the result.",
                 "relation_to_research_questions": "It helps analyze technology reliance.",
+                "why_better_than_other_three": "It is supported, specific, and analytically relevant.",
+                "category_boundary": "It captures the segment's specific oversight condition.",
             },
         },
+        "contrastive_judgement": {
+            "wrong_vs_descriptive": "The wrong code contradicts the segment, while the descriptive code is merely shallow.",
+            "descriptive_vs_too_broad": "The descriptive code is off-aim, while the broad code is relevant but vague.",
+            "too_broad_vs_useful": "The broad code loses the checking condition that the useful code preserves.",
+            "final_preference_reason": "The useful analytical code best explains how AI help depends on human checking.",
+        },
+        "reflective_question_candidates": [
+            {
+                "question_id": "Q1",
+                "question": "Does the phrase 'still needs to check' justify framing this as conditional AI use?",
+                "linked_code_ids": [],
+                "linked_provisional_code_ids": [],
+                "linked_code_quality_example": "useful_analytical_code",
+                "question_type": "devils_advocate",
+                "reflexive_dimension": "methodological",
+                "trigger_quote": "still needs to check",
+                "why_this_question_is_useful": "It checks whether the interpretation over-reads the quote.",
+                "what_human_researcher_should_inspect": "Whether checking is central or incidental.",
+                "risk_if_ignored": "The code may overstate the participant's emphasis.",
+                "confidence": 8,
+            },
+            {
+                "question_id": "Q2",
+                "question": "Does the code preserve the participant's balanced view that AI can help?",
+                "linked_code_ids": [],
+                "linked_provisional_code_ids": [],
+                "linked_code_quality_example": "useful_analytical_code",
+                "question_type": "participant_voice_check",
+                "reflexive_dimension": "methodological",
+                "trigger_quote": "AI can help",
+                "why_this_question_is_useful": "It guards against turning caution into rejection.",
+                "what_human_researcher_should_inspect": "Whether the participant is positive, cautious, or both.",
+                "risk_if_ignored": "The analysis may lose participant nuance.",
+                "confidence": 8,
+            },
+            {
+                "question_id": "Q3",
+                "question": "What context is needed to know who should check the result?",
+                "linked_code_ids": [],
+                "linked_provisional_code_ids": [],
+                "linked_code_quality_example": "useful_analytical_code",
+                "question_type": "context_check",
+                "reflexive_dimension": "contextual",
+                "trigger_quote": "someone still needs to check",
+                "why_this_question_is_useful": "It identifies an unresolved contextual detail.",
+                "what_human_researcher_should_inspect": "Nearby turns about who performs checking.",
+                "risk_if_ignored": "The analyst may infer an actor not present in the segment.",
+                "confidence": 8,
+            },
+        ],
         "quality_control": {
             "hallucination_risk": "low",
             "over_generalisation_risk": "low",

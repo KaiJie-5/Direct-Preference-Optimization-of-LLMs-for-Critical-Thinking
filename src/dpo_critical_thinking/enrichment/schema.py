@@ -9,16 +9,21 @@ from .data import DatasetRecord
 
 SAMPLE_SCHEMA_VERSION = "segment_enrichment_sample_v1"
 
-SAMPLE_REQUIRED_FIELDS = {
+BASE_SAMPLE_REQUIRED_FIELDS = {
     "schema_version",
     "record_id",
     "codebook_version",
     "analysis_unit",
     "candidate_code_matches",
     "possible_new_codes",
-    "reflective_question_candidates",
     "code_quality_examples",
+    "reflective_question_candidates",
     "quality_control",
+}
+
+SAMPLE_REQUIRED_FIELDS = BASE_SAMPLE_REQUIRED_FIELDS | {
+    "research_question_relevance",
+    "contrastive_judgement",
 }
 
 CODE_QUALITY_EXAMPLE_FIELDS = {
@@ -26,6 +31,61 @@ CODE_QUALITY_EXAMPLE_FIELDS = {
     "descriptive_not_answering_research_question",
     "too_broad_code",
     "useful_analytical_code",
+}
+
+CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS = {
+    "wrong_code": {
+        "code_label",
+        "actual_segment_quote",
+        "why_plausible_for_wider_dataset",
+        "why_unsupported_by_this_segment",
+        "relation_to_research_questions",
+        "category_boundary",
+    },
+    "descriptive_not_answering_research_question": {
+        "code_label",
+        "evidence_quote",
+        "surface_description",
+        "why_true_of_segment",
+        "why_not_useful_for_research_questions",
+        "relation_to_research_questions",
+        "category_boundary",
+    },
+    "too_broad_code": {
+        "code_label",
+        "evidence_quote",
+        "broad_relevance_to_research_questions",
+        "specific_meaning_lost",
+        "why_it_is_too_broad",
+        "relation_to_research_questions",
+        "category_boundary",
+    },
+    "useful_analytical_code": {
+        "code_label",
+        "evidence_quote",
+        "specific_analytical_insight",
+        "why_it_is_useful",
+        "relation_to_research_questions",
+        "why_better_than_other_three",
+        "category_boundary",
+    },
+}
+
+CONTRASTIVE_JUDGEMENT_REQUIRED_STRING_FIELDS = {
+    "wrong_vs_descriptive",
+    "descriptive_vs_too_broad",
+    "too_broad_vs_useful",
+    "final_preference_reason",
+}
+
+REFLECTIVE_QUESTION_REQUIRED_STRING_FIELDS = {
+    "question",
+    "question_type",
+    "reflexive_dimension",
+    "trigger_quote",
+    "why_this_question_is_useful",
+    "what_human_researcher_should_inspect",
+    "risk_if_ignored",
 }
 
 
@@ -96,12 +156,16 @@ def validate_segment_enrichment_sample(
     record: DatasetRecord,
     *,
     expected_codebook_version: str | None = None,
+    strict_prompt_schema: bool = True,
 ) -> list[str]:
     if payload is None:
         return ["No JSON object could be parsed."]
 
     errors: list[str] = []
-    missing = sorted(SAMPLE_REQUIRED_FIELDS - set(payload))
+    required_fields = (
+        SAMPLE_REQUIRED_FIELDS if strict_prompt_schema else BASE_SAMPLE_REQUIRED_FIELDS
+    )
+    missing = sorted(required_fields - set(payload))
     if missing:
         errors.append(f"Missing required fields: {missing}")
 
@@ -144,33 +208,150 @@ def validate_segment_enrichment_sample(
     for field in [
         "candidate_code_matches",
         "possible_new_codes",
-        "reflective_question_candidates",
     ]:
         if not isinstance(payload.get(field), list):
             errors.append(f"{field} must be a list.")
 
-    code_quality_examples = payload.get("code_quality_examples")
-    if not isinstance(code_quality_examples, dict):
-        errors.append("code_quality_examples must be an object.")
-    else:
-        missing_examples = sorted(
-            CODE_QUALITY_EXAMPLE_FIELDS - set(code_quality_examples)
-        )
-        if missing_examples:
-            errors.append(
-                "code_quality_examples is missing required examples: "
-                f"{missing_examples}"
-            )
-        for field in sorted(CODE_QUALITY_EXAMPLE_FIELDS):
-            if field in code_quality_examples and not isinstance(
-                code_quality_examples[field], dict
-            ):
-                errors.append(f"code_quality_examples.{field} must be an object.")
+    if strict_prompt_schema:
+        _validate_research_question_relevance(payload, errors)
+    _validate_code_quality_examples(payload, errors, strict=strict_prompt_schema)
+    if strict_prompt_schema:
+        _validate_contrastive_judgement(payload, errors)
+        _validate_reflective_questions(payload, errors)
 
     if not isinstance(payload.get("quality_control"), dict):
         errors.append("quality_control must be an object.")
 
     return errors
+
+
+def _validate_research_question_relevance(
+    payload: dict[str, Any], errors: list[str]
+) -> None:
+    relevance = payload.get("research_question_relevance")
+    if not isinstance(relevance, dict):
+        errors.append("research_question_relevance must be an object.")
+        return
+
+    if not isinstance(relevance.get("relevant_research_questions"), list):
+        errors.append(
+            "research_question_relevance.relevant_research_questions must be a list."
+        )
+    if not isinstance(relevance.get("is_segment_analytically_useful"), bool):
+        errors.append(
+            "research_question_relevance.is_segment_analytically_useful must be a boolean."
+        )
+    _validate_string_fields(
+        relevance,
+        "research_question_relevance",
+        {"segment_relevance_summary", "why_or_why_not"},
+        errors,
+    )
+
+
+def _validate_code_quality_examples(
+    payload: dict[str, Any], errors: list[str], *, strict: bool
+) -> None:
+    code_quality_examples = payload.get("code_quality_examples")
+    if not isinstance(code_quality_examples, dict):
+        errors.append("code_quality_examples must be an object.")
+        return
+
+    actual_fields = set(code_quality_examples)
+    missing_examples = sorted(CODE_QUALITY_EXAMPLE_FIELDS - actual_fields)
+    extra_examples = sorted(actual_fields - CODE_QUALITY_EXAMPLE_FIELDS)
+    if missing_examples:
+        errors.append(
+            "code_quality_examples is missing required examples: "
+            f"{missing_examples}"
+        )
+    if strict and extra_examples:
+        errors.append(
+            "code_quality_examples has unexpected examples: "
+            f"{extra_examples}"
+        )
+
+    for field in sorted(CODE_QUALITY_EXAMPLE_FIELDS):
+        example = code_quality_examples.get(field)
+        if not isinstance(example, dict):
+            errors.append(f"code_quality_examples.{field} must be an object.")
+            continue
+        if strict:
+            _validate_string_fields(
+                example,
+                f"code_quality_examples.{field}",
+                CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS[field],
+                errors,
+            )
+
+
+def _validate_contrastive_judgement(
+    payload: dict[str, Any], errors: list[str]
+) -> None:
+    judgement = payload.get("contrastive_judgement")
+    if not isinstance(judgement, dict):
+        errors.append("contrastive_judgement must be an object.")
+        return
+    _validate_string_fields(
+        judgement,
+        "contrastive_judgement",
+        CONTRASTIVE_JUDGEMENT_REQUIRED_STRING_FIELDS,
+        errors,
+    )
+
+
+def _validate_reflective_questions(
+    payload: dict[str, Any], errors: list[str]
+) -> None:
+    questions = payload.get("reflective_question_candidates")
+    if not isinstance(questions, list):
+        errors.append("reflective_question_candidates must be a list.")
+        return
+    if len(questions) != 3:
+        errors.append("reflective_question_candidates must contain exactly 3 questions.")
+
+    for index, question in enumerate(questions, start=1):
+        path = f"reflective_question_candidates[{index - 1}]"
+        expected_id = f"Q{index}"
+        if not isinstance(question, dict):
+            errors.append(f"{path} must be an object.")
+            continue
+        if question.get("question_id") != expected_id:
+            errors.append(
+                f"{path}.question_id must be {expected_id!r}, "
+                f"got {question.get('question_id')!r}"
+            )
+        if question.get("linked_code_quality_example") != "useful_analytical_code":
+            errors.append(
+                f"{path}.linked_code_quality_example must be "
+                "'useful_analytical_code'."
+            )
+        for field in ["linked_code_ids", "linked_provisional_code_ids"]:
+            if not isinstance(question.get(field), list):
+                errors.append(f"{path}.{field} must be a list.")
+        if not isinstance(question.get("confidence"), int) or isinstance(
+            question.get("confidence"), bool
+        ):
+            errors.append(f"{path}.confidence must be an integer.")
+        _validate_string_fields(
+            question,
+            path,
+            REFLECTIVE_QUESTION_REQUIRED_STRING_FIELDS,
+            errors,
+        )
+
+
+def _validate_string_fields(
+    payload: dict[str, Any],
+    path: str,
+    fields: set[str],
+    errors: list[str],
+) -> None:
+    for field in sorted(fields):
+        if field not in payload:
+            errors.append(f"{path}.{field} is required.")
+        elif not isinstance(payload[field], str):
+            errors.append(f"{path}.{field} must be a string.")
 
 
 def build_json_repair_prompt(
