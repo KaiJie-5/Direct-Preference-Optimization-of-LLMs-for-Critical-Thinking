@@ -36,6 +36,10 @@ MAX_NEW_TOKENS=32768
 TORCH_DTYPE="auto"
 DEVICE_MAP="auto"
 
+# Add one or more research questions for this run, for example:
+# RESEARCH_QUESTIONS=("How do participants describe smart technology use in relation to energy efficiency?")
+RESEARCH_QUESTIONS=()
+
 # Set LIMIT=1 for a quick smoke run. Leave empty for the full enrichment run.
 LIMIT=""
 
@@ -75,6 +79,7 @@ MAX_NEW_TOKENS=${MAX_NEW_TOKENS}
 TORCH_DTYPE=${TORCH_DTYPE}
 DEVICE_MAP=${DEVICE_MAP}
 LIMIT=${LIMIT}
+RESEARCH_QUESTIONS=${RESEARCH_QUESTIONS[*]}
 EOF
 
 source ~/.bashrc
@@ -123,6 +128,10 @@ ENRICH_ARGS=(
 if [[ -n "${LIMIT}" ]]; then
     ENRICH_ARGS+=(--limit "${LIMIT}")
 fi
+
+for RESEARCH_QUESTION in "${RESEARCH_QUESTIONS[@]}"; do
+    ENRICH_ARGS+=(--research-question "${RESEARCH_QUESTION}")
+done
 
 printf '%q ' python -m dpo_critical_thinking.enrichment.cli "${ENRICH_ARGS[@]}" > "${RUN_DIR}/command.txt"
 printf '\n' >> "${RUN_DIR}/command.txt"

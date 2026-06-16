@@ -17,7 +17,15 @@ SAMPLE_REQUIRED_FIELDS = {
     "candidate_code_matches",
     "possible_new_codes",
     "reflective_question_candidates",
+    "code_quality_examples",
     "quality_control",
+}
+
+CODE_QUALITY_EXAMPLE_FIELDS = {
+    "wrong_code",
+    "descriptive_not_answering_research_question",
+    "too_broad_code",
+    "useful_analytical_code",
 }
 
 
@@ -140,6 +148,24 @@ def validate_segment_enrichment_sample(
     ]:
         if not isinstance(payload.get(field), list):
             errors.append(f"{field} must be a list.")
+
+    code_quality_examples = payload.get("code_quality_examples")
+    if not isinstance(code_quality_examples, dict):
+        errors.append("code_quality_examples must be an object.")
+    else:
+        missing_examples = sorted(
+            CODE_QUALITY_EXAMPLE_FIELDS - set(code_quality_examples)
+        )
+        if missing_examples:
+            errors.append(
+                "code_quality_examples is missing required examples: "
+                f"{missing_examples}"
+            )
+        for field in sorted(CODE_QUALITY_EXAMPLE_FIELDS):
+            if field in code_quality_examples and not isinstance(
+                code_quality_examples[field], dict
+            ):
+                errors.append(f"code_quality_examples.{field} must be an object.")
 
     if not isinstance(payload.get("quality_control"), dict):
         errors.append("quality_control must be an object.")

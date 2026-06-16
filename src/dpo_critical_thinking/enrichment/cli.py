@@ -54,6 +54,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         help="Extra template variable in KEY=VALUE form. May be repeated.",
     )
+    strategy_group.add_argument(
+        "--research-question",
+        action="append",
+        default=[],
+        help=(
+            "Research question text to inject into self-consistency prompts. "
+            "May be repeated; the same questions apply to all records in this run."
+        ),
+    )
     strategy_group.add_argument("--json-retry-attempts", type=int, default=2)
     strategy_group.add_argument("--self-consistency-samples", type=int, default=5)
     strategy_group.add_argument(
@@ -121,7 +130,10 @@ def main(argv: list[str] | None = None) -> int:
     teacher = build_teacher(args)
     records = load_segment_records(args.segments_path, limit=args.limit)
     codebook = _load_runtime_codebook(args.codebook_path, records)
-    prompt_vars = parse_prompt_vars(args.prompt_var)
+    prompt_vars = {
+        **_research_question_prompt_vars(args.research_question),
+        **parse_prompt_vars(args.prompt_var),
+    }
     generation_options = GenerationOptions(
         max_new_tokens=args.max_new_tokens,
         temperature=args.temperature,
@@ -214,6 +226,15 @@ def _run_interview(
     failure_count = 0
     started = time.perf_counter()
     for index, record in enumerate(records, start=1):
+        print(
+            "Enriching "
+            f"dataset={args.segments_path} "
+            f"interview={interview_id} "
+            f"segment={record.metadata['segment_id']} "
+            f"record={record.record_id} "
+            f"index={index}/{len(records)}",
+            flush=True,
+        )
         try:
             logger.event(
                 {
@@ -238,8 +259,21 @@ def _run_interview(
                 generation_options=generation_options,
                 logger=logger,
             )
-            logger.enriched_record(enriched)
+            if args.strategy == "self_consistency":
+                segment_path = logger.enriched_segment(
+                    record.record_id,
+                    _focused_self_consistency_payload(enriched),
+                )
+            else:
+                logger.enriched_record(enriched)
+                segment_path = None
             logger.event({"event": "record_completed", "record_id": record.record_id})
+            completed_message = (
+                f"Completed record={record.record_id} status=success"
+            )
+            if segment_path is not None:
+                completed_message += f" output={segment_path}"
+            print(completed_message, flush=True)
             success_count += 1
         except Exception as exc:
             failure_count += 1
@@ -251,6 +285,11 @@ def _run_interview(
                     "error_type": type(exc).__name__,
                     "error": str(exc),
                 }
+            )
+            print(
+                f"Completed record={record.record_id} status=failed "
+                f"error_type={type(exc).__name__}",
+                flush=True,
             )
             if not args.continue_on_error:
                 raise
@@ -365,6 +404,49 @@ def _codebook_summary(codebook: dict[str, Any] | None) -> dict[str, Any]:
         "codebook_id": codebook.get("codebook_id"),
         "codebook_version": codebook.get("codebook_version"),
         "code_count": len(codebook.get("codes", [])),
+    }
+
+
+def _research_question_prompt_vars(questions: list[str]) -> dict[str, str]:
+    cleaned = [question.strip() for question in questions if question.strip()]
+    if cleaned:
+        text = "\n".join(
+            f"{index}. {question}" for index, question in enumerate(cleaned, start=1)
+        )
+    else:
+        text = "No explicit research questions were supplied for this run."
+    return {
+        "research_questions": text,
+        "research_questions_json": json.dumps(cleaned, ensure_ascii=False, indent=2),
+    }
+
+
+def _focused_self_consistency_payload(enriched: dict[str, Any]) -> dict[str, Any]:
+    metadata = enriched["metadata"]
+    return {
+        "record_id": enriched["record_id"],
+        "interview_id": metadata.get("interview_id"),
+        "segment_id": metadata.get("segment_id"),
+        "input_text": enriched["input_text"],
+        "metadata": metadata,
+        "source": enriched["source"],
+        "strategy": enriched["strategy"],
+        "prompt_path": enriched["prompt_path"],
+        "num_samples": enriched["num_samples"],
+        "aggregation": enriched["aggregation"],
+        "aggregation_status": enriched["aggregation_status"],
+        "selected_sample_index": enriched["selected_sample_index"],
+        "selected_output": enriched["selected_output"],
+        "samples": [
+            {
+                "sample_index": sample["sample_index"],
+                "final_parse_status": sample["final_parse_status"],
+                "validation_errors": sample["validation_errors"],
+                "reasoning_text": sample["reasoning_text"],
+                "parsed_output": sample["parsed_output"],
+            }
+            for sample in enriched["samples"]
+        ],
     }
 
 

@@ -64,6 +64,8 @@ dpo-enrich \
   --codebook-path data/codebooks/example_codes_v1.json \
   --strategy self_consistency \
   --prompt-path prompts/enrichment/self_consistency_placeholder.txt \
+  --research-question "How do participants discuss energy efficiency?" \
+  --research-question "How do participants describe smart technology use?" \
   --teacher-backend dry-run \
   --self-consistency-samples 5 \
   --json-retry-attempts 2 \
@@ -79,6 +81,8 @@ dpo-enrich \
   --codebook-path data/codebooks/example_codes_v1.json \
   --strategy self_consistency \
   --prompt-path prompts/enrichment/self_consistency_placeholder.txt \
+  --research-question "How do participants discuss energy efficiency?" \
+  --research-question "How do participants describe smart technology use?" \
   --teacher-backend transformers \
   --model-path /path/to/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B \
   --temperature 0.6 \
@@ -97,11 +101,13 @@ outputs/enrichment/
   INT01_self_consistency/
     run_manifest.json
     events.jsonl
-    enriched_records.jsonl
+    segments/
+      INT01_SEG001.json
+      INT01_SEG002.json
     failures.jsonl
 ```
 
-Self-consistency currently validates and logs 5 samples per segment. Aggregation is intentionally marked as `not_implemented_yet`. Each teacher sample preserves the raw output and separately logs `reasoning_text`, `reasoning_block`, `json_text`, and `reasoning_parse_status` when the model returns a `<think>...</think>` block before the JSON.
+Self-consistency currently validates and logs 5 samples per segment. Aggregation is intentionally marked as `not_implemented_yet`. Full rendered prompts, raw outputs, retries, backend payloads, and complete parsing details are retained in `events.jsonl`. Each per-segment JSON keeps the compact analysis-facing fields, including each sample's parsed JSON and `reasoning_text`.
 
 ## Prompt Variables
 
@@ -114,10 +120,18 @@ Templates can use:
 - `{previous_context}`, `{next_context}`
 - `{codebook_id}`, `{codebook_version}`
 - `{candidate_example_codes_json}`
+- `{research_questions}`, `{research_questions_json}`
 - `{current_answer}`, `{feedback}`, and `{refinement_history}` inside Self-Refine prompts
 
 Extra variables can be injected from the command line:
 
 ```bash
 --prompt-var project_phase=enrichment --prompt-var teacher=deepseek_r1_distill
+```
+
+Research questions can be injected separately and repeated:
+
+```bash
+--research-question "How do participants discuss energy efficiency?" \
+--research-question "How do participants describe smart technology use?"
 ```

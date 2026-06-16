@@ -14,6 +14,7 @@ class RunLogger:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.events_path = self.output_dir / "events.jsonl"
         self.enriched_path = self.output_dir / "enriched_records.jsonl"
+        self.segments_dir = self.output_dir / "segments"
         self.failures_path = self.output_dir / "failures.jsonl"
 
     def write_manifest(self, manifest: dict[str, Any]) -> None:
@@ -27,6 +28,15 @@ class RunLogger:
 
     def enriched_record(self, payload: dict[str, Any]) -> None:
         self._append_jsonl(self.enriched_path, self._with_timestamp(payload))
+
+    def enriched_segment(self, record_id: str, payload: dict[str, Any]) -> Path:
+        self.segments_dir.mkdir(parents=True, exist_ok=True)
+        path = self.segments_dir / f"{record_id}.json"
+        path.write_text(
+            json.dumps(self._with_timestamp(payload), indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        return path
 
     def failure(self, payload: dict[str, Any]) -> None:
         self._append_jsonl(self.failures_path, self._with_timestamp(payload))

@@ -14,9 +14,11 @@ Your response must begin with:
 Inside the thinking block, carefully check:
 - what the participant is saying in the target segment
 - whether the previous or next context is needed to understand the segment
+- how the segment does or does not help answer the research question(s)
 - which candidate example code(s), if any, may apply
 - whether no candidate example code fits well
 - whether a provisional new code may be needed
+- how to distinguish wrong, merely descriptive, too broad, and analytically useful codes for this segment
 - what reflective questions would help a human researcher inspect assumptions, alternative interpretations, missing context, or participant voice
 
 After the thinking block, close it with:
@@ -31,6 +33,11 @@ Reflective questions must be grounded in this specific segment.
 Use previous_context and next_context only to clarify meaning.
 Do not treat the whole interview as one meaning unit.
 Do not invent details that are not present in the segment or local context.
+Use the research question(s) to judge analytical usefulness, not to force a code.
+
+Research question rule:
+The code-quality examples must explicitly consider whether a code helps answer the supplied research question(s).
+A code can be true to the segment but still be low quality if it does not help answer the research question(s).
 
 Code guidance rule:
 The candidate example codes are guidance only.
@@ -106,6 +113,32 @@ Required JSON schema:
       "confidence": 1
     }}
   ],
+  "code_quality_examples": {{
+    "wrong_code": {{
+      "code_label": "",
+      "why_it_is_wrong": "",
+      "relation_to_segment": "",
+      "relation_to_research_questions": ""
+    }},
+    "descriptive_not_answering_research_question": {{
+      "code_label": "",
+      "why_it_is_descriptive_but_not_analytical": "",
+      "relation_to_segment": "",
+      "relation_to_research_questions": ""
+    }},
+    "too_broad_code": {{
+      "code_label": "",
+      "why_it_is_too_broad": "",
+      "relation_to_segment": "",
+      "relation_to_research_questions": ""
+    }},
+    "useful_analytical_code": {{
+      "code_label": "",
+      "why_it_is_useful": "",
+      "relation_to_segment": "",
+      "relation_to_research_questions": ""
+    }}
+  }},
   "quality_control": {{
     "hallucination_risk": "low",
     "over_generalisation_risk": "low",
@@ -132,10 +165,19 @@ Each question must be connected to either:
 - at least one code_id in candidate_code_matches, or
 - at least one provisional_code_id in possible_new_codes.
 
+Rules for code_quality_examples:
+Return exactly these four keys:
+- wrong_code: A code that does not match the target segment data.
+- descriptive_not_answering_research_question: A code that is true of the segment but not useful for the study aim.
+- too_broad_code: A code that relates to the segment but is too general.
+- useful_analytical_code: A code that is grounded in the segment and helps answer the research question(s).
+These examples are teaching contrasts, not final applied codes.
+
 Rules for evidence quotes:
 Use short exact quotes from the target segment whenever possible.
 Do not quote from previous_context or next_context as the main evidence unless the target segment is unclear.
 If the segment is too short or ambiguous, explain this in "context_warning" and "review_reason".
+Copy the Target segment text exactly into analysis_unit.target_text.
 
 Rules for JSON:
 The final answer after </think> must be valid JSON.
@@ -151,6 +193,12 @@ Segment identifiers:
 - speaker: {speaker}
 - codebook_id: {codebook_id}
 - codebook_version: {codebook_version}
+
+Research questions:
+{research_questions}
+
+Research questions JSON:
+{research_questions_json}
 
 Previous context:
 {previous_context}

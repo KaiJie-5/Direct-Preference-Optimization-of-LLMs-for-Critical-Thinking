@@ -14,6 +14,7 @@ from dpo_critical_thinking.enrichment.prompts import PromptTemplate
 from dpo_critical_thinking.enrichment.schema import (
     parse_json_object,
     split_response_sections,
+    validate_segment_enrichment_sample,
 )
 from dpo_critical_thinking.enrichment.strategies import run_self_consistency
 from dpo_critical_thinking.enrichment.teachers import (
@@ -238,6 +239,30 @@ def test_enrichment_cli_default_max_new_tokens_is_deepseek_budget() -> None:
     assert args.max_new_tokens == 32768
 
 
+def test_enrichment_cli_accepts_repeated_research_questions() -> None:
+    args = build_parser().parse_args(
+        [
+            "--segments-path",
+            "segments",
+            "--output-dir",
+            "outputs",
+            "--strategy",
+            "self_consistency",
+            "--prompt-path",
+            "prompt.txt",
+            "--research-question",
+            "How do participants discuss energy efficiency?",
+            "--research-question",
+            "How do participants describe smart technology use?",
+        ]
+    )
+
+    assert args.research_question == [
+        "How do participants discuss energy efficiency?",
+        "How do participants describe smart technology use?",
+    ]
+
+
 def test_transformers_token_budget_clamps_to_context_window() -> None:
     budget = resolve_effective_max_new_tokens(
         prompt_token_count=90,
@@ -287,13 +312,25 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
     )
 
     assert status == 0
-    assert (
+    interview_dir = (
         tmp_path
         / "outputs"
         / "enrichment"
         / "INT01_self_consistency"
-        / "run_manifest.json"
-    ).exists()
+    )
+    segment_json = interview_dir / "segments" / "INT01_SEG001.json"
+    assert (interview_dir / "run_manifest.json").exists()
+    assert (interview_dir / "events.jsonl").exists()
+    assert not (interview_dir / "enriched_records.jsonl").exists()
+    assert segment_json.exists()
+    segment_payload = json.loads(segment_json.read_text(encoding="utf-8"))
+    assert segment_payload["interview_id"] == "INT01"
+    assert segment_payload["segment_id"] == "SEG001"
+    sample = segment_payload["samples"][0]
+    assert "reasoning_text" in sample
+    assert "attempts" not in sample
+    assert "rendered_prompt" not in sample
+    assert "raw_output_text" not in sample
 
 
 def test_enrichment_prompt_vars_use_runtime_codebook(tmp_path: Path) -> None:
@@ -314,8 +351,47 @@ def test_self_consistency_prompt_has_single_codebook_and_target_copy(
     rendered = prompt.render(record.to_prompt_vars(_codebook_payload()))
 
     assert rendered.count('"code_id": "human_oversight"') == 1
-    assert rendered.count(record.text) == 1
+    assert rendered.count(record.text) == 2
     assert "Copy the Target segment text exactly." in rendered
+
+
+def test_self_consistency_prompt_includes_research_questions(tmp_path: Path) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    prompt = PromptTemplate(Path("prompts/enrichment/self_consistency_placeholder.txt"))
+    rendered = prompt.render(
+        {
+            **record.to_prompt_vars(_codebook_payload()),
+            "research_questions": "1. How do participants discuss energy efficiency?",
+            "research_questions_json": json.dumps(
+                ["How do participants discuss energy efficiency?"]
+            ),
+        }
+    )
+
+    assert "Research questions:" in rendered
+    assert "How do participants discuss energy efficiency?" in rendered
+
+
+def test_segment_enrichment_schema_requires_code_quality_examples(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    payload = _valid_sample(record, codebook_version="v1")
+
+    assert validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+    ) == []
+
+    del payload["code_quality_examples"]["useful_analytical_code"]
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+    )
+
+    assert any("useful_analytical_code" in error for error in errors)
 
 
 def test_runtime_codebook_overrides_legacy_embedded_codes(tmp_path: Path) -> None:
@@ -479,6 +555,32 @@ def _valid_sample(record: Any, *, codebook_version: str) -> dict[str, Any]:
         "candidate_code_matches": [],
         "possible_new_codes": [],
         "reflective_question_candidates": [],
+        "code_quality_examples": {
+            "wrong_code": {
+                "code_label": "No human checking",
+                "why_it_is_wrong": "It contradicts the segment.",
+                "relation_to_segment": "The segment says someone checks the result.",
+                "relation_to_research_questions": "It would mislead the analysis.",
+            },
+            "descriptive_not_answering_research_question": {
+                "code_label": "Mentions AI",
+                "why_it_is_descriptive_but_not_analytical": "It only labels the topic.",
+                "relation_to_segment": "The segment mentions AI.",
+                "relation_to_research_questions": "It does not explain oversight or use.",
+            },
+            "too_broad_code": {
+                "code_label": "Technology",
+                "why_it_is_too_broad": "It is too general for this meaning.",
+                "relation_to_segment": "AI is a technology.",
+                "relation_to_research_questions": "It loses the human-checking issue.",
+            },
+            "useful_analytical_code": {
+                "code_label": "human_oversight",
+                "why_it_is_useful": "It captures the need for checking AI output.",
+                "relation_to_segment": "The participant says someone checks the result.",
+                "relation_to_research_questions": "It helps analyze technology reliance.",
+            },
+        },
         "quality_control": {
             "hallucination_risk": "low",
             "over_generalisation_risk": "low",
