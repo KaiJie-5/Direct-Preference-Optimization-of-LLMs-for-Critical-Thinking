@@ -3,6 +3,9 @@ You are helping enrich one segment from a qualitative interview dataset for a Di
 Your role:
 Generate ONE structured enrichment JSON object for ONE participant interview segment.
 
+Your central task is the four-category code-quality judgement.
+Everything else in the output should support that judgement.
+
 You are not the final qualitative analyst.
 You must not produce final themes, final findings, or a whole-interview interpretation.
 Your output will be used as one independently sampled teacher-model enrichment candidate.
@@ -11,15 +14,49 @@ DeepSeek-R1 response requirement:
 Your response must begin with:
 <think>
 
-Inside the thinking block, carefully check:
-- what the participant is saying in the target segment
-- whether the previous or next context is needed to understand the segment
-- how the segment does or does not help answer the research question(s)
-- which candidate example code(s), if any, may apply
-- whether no candidate example code fits well
-- whether a provisional new code may be needed
-- how to distinguish wrong, merely descriptive, too broad, and analytically useful codes for this segment
-- what reflective questions would help a human researcher inspect assumptions, alternative interpretations, missing context, or participant voice
+Inside the thinking block, use the exact CAT-CoT structure below.
+Keep each section concise, evidence-based, and specific to the target segment.
+
+CAT-CoT structure:
+1. Segment meaning:
+- State what the participant is saying in the target segment.
+- Note whether previous_context or next_context is needed to understand the segment.
+
+2. Research-question relevance:
+- Treat the supplied research question(s) as the main test of analytical usefulness.
+- There may be one research question or multiple research questions.
+- Identify which question(s), if any, the segment helps answer.
+- If the segment is only background, descriptive, or unclear, say so.
+
+3. Candidate-code check:
+- Decide whether any candidate example code fits the segment.
+- Do not force a candidate code.
+- If no candidate code captures the meaning well, consider whether a provisional new code is needed.
+
+4. Category A - plausible but unsupported wrong code:
+- Create one code that sounds plausible for this dataset but is not supported by this target segment.
+- Explain exactly why the segment does not support it.
+- Do not create a random or obviously irrelevant nonsense code.
+
+5. Category B - descriptive but not research-question useful code:
+- Create one code that is true of the segment at a surface level.
+- It must describe something present in the segment.
+- It must fail because it does not help answer the supplied research question(s).
+- Keep this separate from Category C: this category is off-aim or analytically unhelpful because of research-question relevance, not because the wording is too broad.
+
+6. Category C - too broad code:
+- Create one code that is related to the segment and at least partly relevant to the research question(s).
+- It must fail because it is too general, vague, or category-like to be analytically useful.
+- Keep this separate from Category B: this category is on-aim but too broad.
+
+7. Category D - useful analytical code:
+- Create one code that is grounded in the segment and helps answer the supplied research question(s).
+- The label must be an insight-like phrase or short sentence, not a single noun or vague topic label.
+- It should preserve the participant's meaning and point toward a useful interpretation.
+
+8. Reflective questions:
+- Create exactly 3 reflective questions.
+- Each question should help a human researcher inspect assumptions, alternative interpretations, missing context, or participant voice.
 
 After the thinking block, close it with:
 </think>
@@ -28,16 +65,24 @@ Then return exactly one valid JSON object.
 Do not use markdown fences.
 Do not write anything after the JSON object.
 
-Core qualitative rule:
-Reflective questions must be grounded in this specific segment.
-Use previous_context and next_context only to clarify meaning.
-Do not treat the whole interview as one meaning unit.
-Do not invent details that are not present in the segment or local context.
+Core qualitative rules:
 Use the research question(s) to judge analytical usefulness, not to force a code.
+Use previous_context and next_context only to clarify the target segment.
+Do not treat the whole interview as one meaning unit.
+Do not invent details that are not present in the target segment or local context.
+Every code-quality example must be grounded by a short exact quote from the target segment whenever possible.
+If a wrong code is unsupported, use the evidence quote to show what the segment actually says instead.
 
-Research question rule:
-The code-quality examples must explicitly consider whether a code helps answer the supplied research question(s).
-A code can be true to the segment but still be low quality if it does not help answer the research question(s).
+Category boundary rules:
+- wrong_code: plausible for the wider dataset, but not supported by this target segment.
+- descriptive_not_answering_research_question: supported by the segment, but off-aim or not useful for answering the supplied research question(s).
+- too_broad_code: supported by the segment and broadly relevant to the research question(s), but too general, vague, or topic-like.
+- useful_analytical_code: supported by the segment, specific, insight-like, and useful for answering the supplied research question(s).
+
+Code label rules:
+Poor labels are usually single nouns, broad topics, or empty categories, such as "energy", "motivation", "fear", "technology", or "challenges".
+Useful analytical labels should normally be short phrases or short sentences, such as "shared living limits individual control over energy choices".
+Do not make the useful analytical code sound like a whole research question.
 
 Code guidance rule:
 The candidate example codes are guidance only.
@@ -46,7 +91,7 @@ Do not force a code if the segment does not fit it.
 You may suggest a provisional new code if the candidate example codes do not fully capture the meaning of the segment.
 
 Reflective question rule:
-Generate 3 to 5 reflective question candidates.
+Generate exactly 3 reflective question candidates.
 Each reflective question must:
 - be specific to the target segment
 - include a short exact trigger quote when possible
@@ -111,32 +156,66 @@ Required JSON schema:
       "what_human_researcher_should_inspect": "",
       "risk_if_ignored": "",
       "confidence": 1
+    }},
+    {{
+      "question_id": "Q2",
+      "question": "",
+      "linked_code_ids": [],
+      "linked_provisional_code_ids": [],
+      "question_type": "participant_voice_check",
+      "reflexive_dimension": "methodological",
+      "trigger_quote": "",
+      "why_this_question_is_useful": "",
+      "what_human_researcher_should_inspect": "",
+      "risk_if_ignored": "",
+      "confidence": 1
+    }},
+    {{
+      "question_id": "Q3",
+      "question": "",
+      "linked_code_ids": [],
+      "linked_provisional_code_ids": [],
+      "question_type": "context_check",
+      "reflexive_dimension": "contextual",
+      "trigger_quote": "",
+      "why_this_question_is_useful": "",
+      "what_human_researcher_should_inspect": "",
+      "risk_if_ignored": "",
+      "confidence": 1
     }}
   ],
   "code_quality_examples": {{
     "wrong_code": {{
       "code_label": "",
+      "evidence_quote": "",
       "why_it_is_wrong": "",
       "relation_to_segment": "",
-      "relation_to_research_questions": ""
+      "relation_to_research_questions": "",
+      "category_boundary": "Plausible for the wider dataset, but not supported by this target segment."
     }},
     "descriptive_not_answering_research_question": {{
       "code_label": "",
+      "evidence_quote": "",
       "why_it_is_descriptive_but_not_analytical": "",
       "relation_to_segment": "",
-      "relation_to_research_questions": ""
+      "relation_to_research_questions": "",
+      "category_boundary": "True of the segment, but does not help answer the supplied research question(s)."
     }},
     "too_broad_code": {{
       "code_label": "",
+      "evidence_quote": "",
       "why_it_is_too_broad": "",
       "relation_to_segment": "",
-      "relation_to_research_questions": ""
+      "relation_to_research_questions": "",
+      "category_boundary": "Related to the segment and research question(s), but too broad or vague to be analytically useful."
     }},
     "useful_analytical_code": {{
       "code_label": "",
+      "evidence_quote": "",
       "why_it_is_useful": "",
       "relation_to_segment": "",
-      "relation_to_research_questions": ""
+      "relation_to_research_questions": "",
+      "category_boundary": "Grounded, specific, insight-like, and useful for answering the supplied research question(s)."
     }}
   }},
   "quality_control": {{
@@ -160,18 +239,26 @@ If no provisional new code is needed, return:
 "possible_new_codes": []
 
 Rules for reflective_question_candidates:
-Return 3 to 5 reflective questions.
+Return exactly 3 reflective questions: Q1, Q2, and Q3.
 Each question must be connected to either:
 - at least one code_id in candidate_code_matches, or
 - at least one provisional_code_id in possible_new_codes.
+If both candidate_code_matches and possible_new_codes are empty, still return exactly 3 questions and explain in each question why the segment may not support a stable code.
 
 Rules for code_quality_examples:
-Return exactly these four keys:
-- wrong_code: A code that does not match the target segment data.
-- descriptive_not_answering_research_question: A code that is true of the segment but not useful for the study aim.
-- too_broad_code: A code that relates to the segment but is too general.
-- useful_analytical_code: A code that is grounded in the segment and helps answer the research question(s).
-These examples are teaching contrasts, not final applied codes.
+Return exactly these four keys and exactly one example under each key:
+- wrong_code
+- descriptive_not_answering_research_question
+- too_broad_code
+- useful_analytical_code
+These examples are synthetic teaching contrasts, not final applied codes.
+They are designed to teach the difference between unsupported, merely descriptive, over-broad, and analytically useful coding.
+Every example must include:
+- a code_label
+- a short exact evidence_quote from the target segment whenever possible
+- a clear explanation of its relation to the target segment
+- a clear explanation of its relation to the supplied research question(s)
+- a category_boundary explanation showing why it belongs in this category rather than another category
 
 Rules for evidence quotes:
 Use short exact quotes from the target segment whenever possible.
