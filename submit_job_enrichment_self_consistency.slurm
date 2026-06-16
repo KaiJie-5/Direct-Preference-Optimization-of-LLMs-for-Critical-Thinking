@@ -1,13 +1,13 @@
 #!/bin/bash
 #SBATCH --job-name=dpo_enrich_sc
-#SBATCH --partition=swarm_a100
+#SBATCH --partition=a100
 #SBATCH --account=ecs
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=100G
-#SBATCH --time=5-00:00:00
+#SBATCH --time=2-12:00:00
 #SBATCH --output=dpo_enrich_sc_%j.out
 #SBATCH --error=dpo_enrich_sc_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
