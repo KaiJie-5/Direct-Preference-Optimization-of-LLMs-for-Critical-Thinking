@@ -31,9 +31,26 @@ def build_parser() -> argparse.ArgumentParser:
     html.add_argument("--segments-dir", required=True, type=Path)
     html.add_argument("--manifest-path", required=True, type=Path)
     html.add_argument("--interview-id-prefix", default="INT")
+    html.add_argument(
+        "--interview-id-source",
+        choices=["generated", "heading"],
+        default="generated",
+        help=(
+            "Use generated IDs from --interview-id-prefix, or derive IDs from "
+            "the interview heading text."
+        ),
+    )
     html.add_argument("--heading-selector", default="h2")
     html.add_argument("--interviewer-selector", default="p.interviewer")
     html.add_argument("--participant-selector", default="p.participant")
+    html.add_argument(
+        "--text-normalization",
+        choices=["none", "mojibake"],
+        default="none",
+        help="Optional text cleanup to apply before writing raw HTML and JSONL.",
+    )
+    html.add_argument("--dataset-id")
+    html.add_argument("--domain")
     html.add_argument("--overwrite", action="store_true")
 
     return parser
@@ -63,6 +80,10 @@ def main(argv: list[str] | None = None) -> int:
             heading_selector=args.heading_selector,
             interviewer_selector=args.interviewer_selector,
             participant_selector=args.participant_selector,
+            interview_id_source=args.interview_id_source,
+            text_normalization=args.text_normalization,
+            dataset_id=args.dataset_id,
+            domain=args.domain,
             overwrite=args.overwrite,
         )
         print(

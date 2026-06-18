@@ -83,6 +83,8 @@ def test_preprocess_html_writes_raw_interviews_and_participant_turn_segments(
     )
 
     assert [item["interview_id"] for item in manifest["interviews"]] == ["INT01", "INT02"]
+    assert "interview_id_source" not in manifest
+    assert "text_normalization" not in manifest
     assert manifest["interviews"][0]["participant_characteristics"] == {
         "gender": "Woman",
         "age": "38",
@@ -104,6 +106,47 @@ def test_preprocess_html_writes_raw_interviews_and_participant_turn_segments(
     assert "candidate_example_codes" not in segments[0]
     assert "codebook_id" not in segments[0]
     assert "codebook_version" not in segments[0]
+
+
+def test_preprocess_html_can_use_heading_ids_and_repair_mojibake(
+    tmp_path: Path,
+) -> None:
+    html_path = tmp_path / "sexual_health.html"
+    html_path.write_text(_sexual_health_html_with_mojibake(), encoding="utf-8")
+
+    manifest = preprocess_html_dataset(
+        input_path=html_path,
+        raw_html_dir=tmp_path / "data" / "raw_html",
+        segments_dir=tmp_path / "data" / "segments_jsonl",
+        manifest_path=tmp_path / "data" / "preprocessing_manifest.json",
+        interview_id_source="heading",
+        text_normalization="mojibake",
+        dataset_id="transcripts-sexual_health",
+        domain="sexual health services",
+    )
+
+    assert [item["interview_id"] for item in manifest["interviews"]] == ["P1", "P2"]
+    assert manifest["interview_id_source"] == "heading"
+    assert manifest["text_normalization"] == "mojibake"
+    assert manifest["dataset_id"] == "transcripts-sexual_health"
+    assert manifest["domain"] == "sexual health services"
+    assert manifest["interviews"][0]["source_interview_label"] == "P1"
+    assert manifest["interviews"][0]["participant_characteristics"] == {
+        "gender": "Woman",
+        "age": "23",
+        "location": "Guildford",
+    }
+    assert (tmp_path / "data" / "raw_html" / "P1.html").exists()
+
+    segments = _read_jsonl(tmp_path / "data" / "segments_jsonl" / "P1_segments.jsonl")
+    assert segments[0]["record_id"] == "P1_SEG001"
+    assert segments[0]["interview_id"] == "P1"
+    assert segments[0]["source_interview_label"] == "P1"
+    assert segments[0]["text_normalization"] == "mojibake"
+    assert segments[0]["dataset_id"] == "transcripts-sexual_health"
+    assert segments[0]["domain"] == "sexual health services"
+    assert segments[0]["text"] == "I\u2019m using \u201conline booking\u201d\u2014privately."
+    assert "\u00e2\u20ac" not in segments[0]["text"]
 
 
 def test_load_segment_records_accepts_file_or_directory(tmp_path: Path) -> None:
@@ -551,6 +594,17 @@ def test_enrichment_cli_accepts_legacy_embedded_codebook_without_runtime_path(
     assert status == 0
 
 
+def test_sexual_health_slurm_uses_separate_dataset_paths() -> None:
+    script = Path("submit_job_enrichment_self_consistency_sexual_health.slurm")
+    text = script.read_text(encoding="utf-8")
+
+    assert "transcripts-sexual_health-preprocessed/segments_jsonl" in text
+    assert "transcripts-sexual_health-enriched" in text
+    assert "transcripts_sexual_health_${STRATEGY}_deepseek_r1_distill_llama_70b" in text
+    assert "transcripts-energy-preprocessed" not in text
+    assert "transcripts-energy-enriched" not in text
+
+
 def _write_example_workbook(path: Path) -> None:
     from openpyxl import Workbook
 
@@ -610,6 +664,30 @@ def _multi_interview_html() -> str:
       </table>
       <p class="interviewer"><strong>Interviewer</strong> Another question?</p>
       <p class="participant"><strong>Participant</strong> Another answer.</p>
+    </body></html>
+    """
+
+
+def _sexual_health_html_with_mojibake() -> str:
+    return """
+    <!DOCTYPE html>
+    <html><body>
+      <h2>P1</h2>
+      <table>
+        <tr><td>Gender:</td><td>Woman</td></tr>
+        <tr><td>Age:</td><td>23</td></tr>
+        <tr><td>Location:</td><td>Guildford</td></tr>
+      </table>
+      <p class="interviewer"><strong>Interviewer</strong> How was booking?</p>
+      <p class="participant"><strong>Participant:</strong> I\u00e2\u20ac\u2122m using \u00e2\u20ac\u0153online booking\u00e2\u20ac\u009d\u00e2\u20ac\u201dprivately.</p>
+      <h2>P2</h2>
+      <table>
+        <tr><td>Gender:</td><td>Man</td></tr>
+        <tr><td>Age:</td><td>19</td></tr>
+        <tr><td>Location:</td><td>Portsmouth</td></tr>
+      </table>
+      <p class="interviewer"><strong>Interviewer</strong> What helped?</p>
+      <p class="participant"><strong>Participant</strong> Reminders helped.</p>
     </body></html>
     """
 
