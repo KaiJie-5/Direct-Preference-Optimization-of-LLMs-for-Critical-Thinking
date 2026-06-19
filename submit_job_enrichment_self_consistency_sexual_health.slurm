@@ -6,7 +6,7 @@
 #SBATCH --ntasks-per-node=1
 #SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=8
-#SBATCH --mem=100G
+#SBATCH --mem=200G
 #SBATCH --time=2-12:00:00
 #SBATCH --output=dpo_enrich_sc_sh_%j.out
 #SBATCH --error=dpo_enrich_sc_sh_%j.err
