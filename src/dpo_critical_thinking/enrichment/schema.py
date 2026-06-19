@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from .data import DatasetRecord
@@ -89,6 +90,12 @@ REFLECTIVE_QUESTION_REQUIRED_STRING_FIELDS = {
 }
 
 
+@dataclass(frozen=True, slots=True)
+class ValidationResult:
+    errors: list[str]
+    warnings: list[str]
+
+
 def split_response_sections(text: str) -> dict[str, str]:
     think_open = "<think>"
     think_close = "</think>"
@@ -122,16 +129,16 @@ def split_response_sections(text: str) -> dict[str, str]:
 
 def parse_json_object(text: str) -> tuple[dict[str, Any] | None, str | None]:
     sections = split_response_sections(text)
-    candidates = []
+    candidates: list[str] = []
     if sections["json_text"]:
         candidates.extend(_json_candidates(sections["json_text"]))
-    candidates.extend(_json_candidates(text))
+    else:
+        candidates.extend(_json_candidates(text))
 
     for candidate in candidates:
-        try:
-            parsed = json.loads(candidate)
-        except json.JSONDecodeError as exc:
-            last_error = str(exc)
+        parsed, parse_error = _parse_json_candidate(candidate)
+        if parse_error:
+            last_error = parse_error
             continue
         if isinstance(parsed, dict):
             return parsed, None
@@ -141,14 +148,53 @@ def parse_json_object(text: str) -> tuple[dict[str, Any] | None, str | None]:
 
 
 def _json_candidates(text: str) -> list[str]:
-    fenced_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.DOTALL)
-    candidates = [fenced_match.group(1)] if fenced_match else []
+    stripped = text.strip()
+    fenced_match = re.fullmatch(
+        r"```(?:json)?\s*(\{.*\})\s*```",
+        stripped,
+        flags=re.DOTALL,
+    )
+    candidates = [stripped]
+    if fenced_match:
+        candidates.append(fenced_match.group(1))
 
-    start = text.find("{")
-    end = text.rfind("}")
+    start = stripped.find("{")
+    end = stripped.rfind("}")
     if start != -1 and end != -1 and end > start:
-        candidates.append(text[start : end + 1])
-    return candidates
+        suffix = stripped[end + 1 :]
+        if not suffix.strip():
+            candidates.append(stripped[start : end + 1])
+    return _dedupe_preserving_order(candidates)
+
+
+def _parse_json_candidate(text: str) -> tuple[Any | None, str | None]:
+    stripped = text.strip()
+    try:
+        return json.loads(stripped), None
+    except json.JSONDecodeError as exc:
+        strict_error = str(exc)
+
+    decoder = json.JSONDecoder()
+    try:
+        parsed, end_index = decoder.raw_decode(stripped)
+    except json.JSONDecodeError:
+        return None, strict_error
+
+    remainder = stripped[end_index:].strip()
+    if remainder and set(remainder) <= {"}"}:
+        return parsed, None
+    return None, strict_error
+
+
+def _dedupe_preserving_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    deduped: list[str] = []
+    for item in items:
+        if item in seen:
+            continue
+        seen.add(item)
+        deduped.append(item)
+    return deduped
 
 
 def validate_segment_enrichment_sample(
@@ -158,10 +204,28 @@ def validate_segment_enrichment_sample(
     expected_codebook_version: str | None = None,
     strict_prompt_schema: bool = True,
 ) -> list[str]:
+    return validate_segment_enrichment_sample_result(
+        payload,
+        record,
+        expected_codebook_version=expected_codebook_version,
+        strict_prompt_schema=strict_prompt_schema,
+        allow_target_text_mismatch=False,
+    ).errors
+
+
+def validate_segment_enrichment_sample_result(
+    payload: dict[str, Any] | None,
+    record: DatasetRecord,
+    *,
+    expected_codebook_version: str | None = None,
+    strict_prompt_schema: bool = True,
+    allow_target_text_mismatch: bool = False,
+) -> ValidationResult:
     if payload is None:
-        return ["No JSON object could be parsed."]
+        return ValidationResult(errors=["No JSON object could be parsed."], warnings=[])
 
     errors: list[str] = []
+    warnings: list[str] = []
     required_fields = (
         SAMPLE_REQUIRED_FIELDS if strict_prompt_schema else BASE_SAMPLE_REQUIRED_FIELDS
     )
@@ -203,7 +267,11 @@ def validate_segment_enrichment_sample(
                     f"got {analysis_unit.get(key)!r}"
                 )
         if analysis_unit.get("target_text") != record.text:
-            errors.append("analysis_unit.target_text must equal the segment text.")
+            message = "analysis_unit.target_text differs from the segment text."
+            if allow_target_text_mismatch:
+                warnings.append(message)
+            else:
+                errors.append("analysis_unit.target_text must equal the segment text.")
 
     for field in [
         "candidate_code_matches",
@@ -222,7 +290,7 @@ def validate_segment_enrichment_sample(
     if not isinstance(payload.get("quality_control"), dict):
         errors.append("quality_control must be an object.")
 
-    return errors
+    return ValidationResult(errors=errors, warnings=warnings)
 
 
 def _validate_research_question_relevance(

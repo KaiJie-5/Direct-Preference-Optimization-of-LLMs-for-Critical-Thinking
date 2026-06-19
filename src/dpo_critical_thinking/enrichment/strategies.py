@@ -10,7 +10,7 @@ from .schema import (
     build_json_repair_prompt,
     parse_json_object,
     split_response_sections,
-    validate_segment_enrichment_sample,
+    validate_segment_enrichment_sample_result,
 )
 from .teachers import GenerationOptions, Teacher
 
@@ -230,6 +230,7 @@ def _generate_validated_sample(
     final_output = ""
     final_parsed: dict[str, Any] | None = None
     final_errors: list[str] = []
+    final_warnings: list[str] = []
     final_sections = split_response_sections("")
 
     for attempt_index in range(1, json_retry_attempts + 2):
@@ -237,12 +238,15 @@ def _generate_validated_sample(
         result = teacher.generate(current_prompt, attempt_options)
         response_sections = split_response_sections(result.text)
         parsed, parse_error = parse_json_object(result.text)
-        validation_errors = validate_segment_enrichment_sample(
+        validation_result = validate_segment_enrichment_sample_result(
             parsed,
             record,
             expected_codebook_version=expected_codebook_version,
             strict_prompt_schema=strategy == "self_consistency",
+            allow_target_text_mismatch=True,
         )
+        validation_errors = validation_result.errors
+        validation_warnings = validation_result.warnings
         if parse_error and parsed is None:
             validation_errors = [parse_error, *validation_errors]
         parse_status = "valid" if not validation_errors else "invalid"
@@ -255,6 +259,7 @@ def _generate_validated_sample(
             "parsed_output": parsed,
             "parse_status": parse_status,
             "validation_errors": validation_errors,
+            "validation_warnings": validation_warnings,
             "raw_response": result.raw,
             "elapsed_seconds": result.elapsed_seconds,
         }
@@ -273,6 +278,7 @@ def _generate_validated_sample(
         final_output = result.text
         final_parsed = parsed
         final_errors = validation_errors
+        final_warnings = validation_warnings
         final_sections = response_sections
         if not validation_errors:
             break
@@ -288,6 +294,7 @@ def _generate_validated_sample(
         "attempt_count": len(attempts),
         "final_parse_status": "valid" if not final_errors else "invalid",
         "validation_errors": final_errors,
+        "validation_warnings": final_warnings,
         "output_text": final_output,
         **final_sections,
         "parsed_output": final_parsed,

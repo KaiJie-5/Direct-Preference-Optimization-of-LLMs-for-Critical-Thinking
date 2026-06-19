@@ -439,6 +439,7 @@ def _focused_self_consistency_payload(enriched: dict[str, Any]) -> dict[str, Any
                 "sample_index": sample["sample_index"],
                 "final_parse_status": sample["final_parse_status"],
                 "validation_errors": sample["validation_errors"],
+                "validation_warnings": sample.get("validation_warnings", []),
                 "reasoning_text": sample["reasoning_text"],
                 "parsed_output": sample["parsed_output"],
             }

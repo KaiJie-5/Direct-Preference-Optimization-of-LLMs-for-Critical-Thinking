@@ -8,6 +8,12 @@ import time
 from pathlib import Path
 from typing import Any
 
+from dpo_critical_thinking.enrichment.data import DatasetRecord
+from dpo_critical_thinking.enrichment.schema import (
+    parse_json_object,
+    validate_segment_enrichment_sample_result,
+)
+
 
 AGGREGATE_SCHEMA_VERSION = "failed_enrichment_outputs_v1"
 VALID_SCOPES = ("invalid-samples", "no-valid-segments", "both")
@@ -84,6 +90,24 @@ def build_parser() -> argparse.ArgumentParser:
         "--overwrite",
         action="store_true",
         help="Allow replacing an existing --output-path.",
+    )
+    parser.add_argument(
+        "--failed-path",
+        type=Path,
+        help="Failed aggregate JSON for --process repair.",
+    )
+    parser.add_argument(
+        "--report-path",
+        type=Path,
+        help=(
+            "Repair report path. Defaults to "
+            "<failed-path stem>_repair_report.json."
+        ),
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="For --process repair, report planned changes without writing segment files.",
     )
     return parser
 
@@ -252,15 +276,201 @@ def write_aggregate(
     )
 
 
+def repair_failed_outputs(
+    *,
+    failed_path: Path,
+    report_path: Path | None = None,
+    dry_run: bool = False,
+) -> dict[str, Any]:
+    failed_path = failed_path.resolve()
+    failed_payload = _read_json(failed_path)
+    if not isinstance(failed_payload, dict):
+        raise ValueError(f"Failed aggregate must be a JSON object: {failed_path}")
+
+    failed_samples = failed_payload.get("failed_samples", [])
+    if not isinstance(failed_samples, list):
+        raise ValueError("Failed aggregate must contain a failed_samples list.")
+
+    report_path = (
+        report_path.resolve()
+        if report_path is not None
+        else failed_path.with_name(f"{failed_path.stem}_repair_report.json").resolve()
+    )
+    enriched_dir = Path(str(failed_payload.get("enriched_dir", "")))
+    segment_cache: dict[Path, dict[str, Any]] = {}
+    touched_paths: set[Path] = set()
+    outcomes: list[dict[str, Any]] = []
+    counts = {
+        "failed_samples": len(failed_samples),
+        "repaired": 0,
+        "skipped": 0,
+        "unrepairable": 0,
+        "files_touched": 0,
+        "files_written": 0,
+    }
+
+    for failed_sample in failed_samples:
+        if not isinstance(failed_sample, dict):
+            outcomes.append(
+                {
+                    "status": "skipped",
+                    "reason": "failed_samples item is not an object",
+                }
+            )
+            counts["skipped"] += 1
+            continue
+
+        target_path = _resolve_repair_target_path(failed_sample, enriched_dir)
+        target = failed_sample.get("repair_target", {})
+        outcome_base = {
+            "record_id": failed_sample.get("record_id"),
+            "sample_index": failed_sample.get("sample_index"),
+            "segment_path": str(target_path) if target_path is not None else None,
+        }
+        if target_path is None or not target_path.exists():
+            outcomes.append(
+                {
+                    **outcome_base,
+                    "status": "skipped",
+                    "reason": "repair target segment file does not exist",
+                }
+            )
+            counts["skipped"] += 1
+            continue
+
+        segment = segment_cache.get(target_path)
+        if segment is None:
+            loaded = _read_json(target_path)
+            if not isinstance(loaded, dict):
+                outcomes.append(
+                    {
+                        **outcome_base,
+                        "status": "skipped",
+                        "reason": "repair target segment JSON is not an object",
+                    }
+                )
+                counts["skipped"] += 1
+                continue
+            segment = loaded
+            segment_cache[target_path] = segment
+
+        samples = segment.get("samples")
+        sample_list_index = _as_int(target.get("sample_list_index"))
+        if not isinstance(samples, list) or sample_list_index is None:
+            outcomes.append(
+                {
+                    **outcome_base,
+                    "status": "skipped",
+                    "reason": "segment samples or sample_list_index is invalid",
+                }
+            )
+            counts["skipped"] += 1
+            continue
+        if sample_list_index < 0 or sample_list_index >= len(samples):
+            outcomes.append(
+                {
+                    **outcome_base,
+                    "status": "skipped",
+                    "reason": "sample_list_index is outside the segment samples list",
+                }
+            )
+            counts["skipped"] += 1
+            continue
+
+        current_sample = samples[sample_list_index]
+        guard_error = _repair_guard_error(
+            segment=segment,
+            current_sample=current_sample,
+            failed_sample=failed_sample,
+        )
+        if guard_error is not None:
+            outcomes.append(
+                {
+                    **outcome_base,
+                    "status": "skipped",
+                    "reason": guard_error,
+                }
+            )
+            counts["skipped"] += 1
+            continue
+
+        repair_result = _build_repaired_sample(
+            failed_sample=failed_sample,
+            current_sample=current_sample,
+            failed_path=failed_path,
+        )
+        if repair_result["status"] != "repaired":
+            outcomes.append({**outcome_base, **repair_result})
+            counts["unrepairable"] += 1
+            continue
+
+        samples[sample_list_index] = repair_result["sample"]
+        touched_paths.add(target_path)
+        outcomes.append(
+            {
+                **outcome_base,
+                "status": "repaired",
+                "method": repair_result["method"],
+                "validation_warnings": repair_result["validation_warnings"],
+            }
+        )
+        counts["repaired"] += 1
+
+    counts["files_touched"] = len(touched_paths)
+    if not dry_run:
+        for path in sorted(touched_paths):
+            path.write_text(
+                json.dumps(segment_cache[path], indent=2, ensure_ascii=False),
+                encoding="utf-8",
+            )
+        counts["files_written"] = len(touched_paths)
+
+    report = {
+        "schema_version": "failed_enrichment_repair_report_v1",
+        "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "failed_path": str(failed_path),
+        "report_path": str(report_path),
+        "dry_run": dry_run,
+        "counts": counts,
+        "outcomes": outcomes,
+    }
+    report_path.parent.mkdir(parents=True, exist_ok=True)
+    report_path.write_text(
+        json.dumps(report, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    return report
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     if args.process == "repair":
+        if args.failed_path is None:
+            print(
+                "post_processing.py: error: --failed-path is required for "
+                "--process repair",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            report = repair_failed_outputs(
+                failed_path=args.failed_path,
+                report_path=args.report_path,
+                dry_run=args.dry_run,
+            )
+        except Exception as exc:
+            print(f"post_processing.py: error: {exc}", file=sys.stderr)
+            return 1
+        counts = report["counts"]
         print(
-            "post_processing.py: repair process is not implemented yet.",
-            file=sys.stderr,
+            "Repair complete: "
+            f"{counts['repaired']} repaired, "
+            f"{counts['skipped']} skipped, "
+            f"{counts['unrepairable']} unrepairable. "
+            f"Report: {report['report_path']}"
         )
-        return 1
+        return 0
 
     if args.enriched_dir is None:
         print(
@@ -416,6 +626,160 @@ def _find_raw_event(
 
     key = (record_id, sample_index, strategy)
     return raw_event_cache[event_path].get(key), event_state
+
+
+def _resolve_repair_target_path(
+    failed_sample: dict[str, Any],
+    enriched_dir: Path,
+) -> Path | None:
+    target = failed_sample.get("repair_target")
+    if not isinstance(target, dict):
+        return None
+
+    absolute = target.get("absolute_segment_path")
+    if isinstance(absolute, str) and absolute.strip():
+        absolute_path = Path(absolute)
+        if absolute_path.exists():
+            return absolute_path.resolve()
+
+    relative = target.get("relative_segment_path")
+    if isinstance(relative, str) and relative.strip():
+        return (enriched_dir / relative).resolve()
+    return None
+
+
+def _repair_guard_error(
+    *,
+    segment: dict[str, Any],
+    current_sample: Any,
+    failed_sample: dict[str, Any],
+) -> str | None:
+    if not isinstance(current_sample, dict):
+        return "target sample is not an object"
+
+    target = failed_sample.get("repair_target")
+    if not isinstance(target, dict):
+        return "failed sample is missing repair_target"
+
+    if segment.get("record_id") != target.get("record_id"):
+        return "record_id does not match repair target"
+    if current_sample.get("sample_index") != target.get("sample_index"):
+        return "sample_index does not match repair target"
+
+    expected_fingerprint = target.get("original_sample_fingerprint")
+    if not isinstance(expected_fingerprint, str) or not expected_fingerprint:
+        return "repair target is missing original_sample_fingerprint"
+    if _sample_fingerprint(current_sample) != expected_fingerprint:
+        return "current sample fingerprint does not match repair target"
+    return None
+
+
+def _build_repaired_sample(
+    *,
+    failed_sample: dict[str, Any],
+    current_sample: dict[str, Any],
+    failed_path: Path,
+) -> dict[str, Any]:
+    parsed = failed_sample.get("parsed_output")
+    method = "relaxed_target_text_validation"
+
+    if not isinstance(parsed, dict):
+        if not _has_extra_data_error(failed_sample):
+            return {
+                "status": "unrepairable",
+                "reason": "failed sample has no parsed_output and is not an Extra data parse case",
+            }
+        raw_text = _raw_repair_text(failed_sample)
+        if not raw_text:
+            return {
+                "status": "unrepairable",
+                "reason": "Extra data parse case has no raw output text",
+            }
+        parsed, parse_error = parse_json_object(raw_text)
+        if parsed is None:
+            return {
+                "status": "unrepairable",
+                "reason": parse_error or "raw output could not be parsed",
+            }
+        method = "trailing_extra_brace_parse_recovery"
+
+    validation = _validate_failed_sample_payload(parsed, failed_sample)
+    if validation.errors:
+        return {
+            "status": "unrepairable",
+            "reason": "validation errors remain after deterministic repair",
+            "validation_errors": validation.errors,
+        }
+
+    repaired = dict(current_sample)
+    repaired["final_parse_status"] = "valid"
+    repaired["validation_errors"] = []
+    repaired["validation_warnings"] = validation.warnings
+    repaired["parsed_output"] = parsed
+    repaired["reasoning_text"] = failed_sample.get(
+        "reasoning_text",
+        repaired.get("reasoning_text", ""),
+    )
+    repaired["repair_metadata"] = {
+        "repaired_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "method": method,
+        "source_failed_path": str(failed_path),
+        "original_sample_fingerprint": failed_sample.get("repair_target", {}).get(
+            "original_sample_fingerprint"
+        ),
+        "original_validation_errors": failed_sample.get("validation_errors", []),
+    }
+    return {
+        "status": "repaired",
+        "method": method,
+        "sample": repaired,
+        "validation_warnings": validation.warnings,
+    }
+
+
+def _validate_failed_sample_payload(
+    parsed: dict[str, Any],
+    failed_sample: dict[str, Any],
+) -> Any:
+    metadata = failed_sample.get("metadata")
+    if not isinstance(metadata, dict):
+        metadata = {
+            "interview_id": failed_sample.get("interview_id"),
+            "segment_id": failed_sample.get("segment_id"),
+            "speaker": "participant",
+        }
+    source = failed_sample.get("source") if isinstance(failed_sample.get("source"), dict) else {}
+    record = DatasetRecord(
+        record_id=str(failed_sample.get("record_id", "")),
+        text=str(failed_sample.get("input_text", "")),
+        metadata=metadata,
+        source=source,
+    )
+    return validate_segment_enrichment_sample_result(
+        parsed,
+        record,
+        expected_codebook_version=parsed.get("codebook_version"),
+        strict_prompt_schema=failed_sample.get("strategy") == "self_consistency",
+        allow_target_text_mismatch=True,
+    )
+
+
+def _has_extra_data_error(failed_sample: dict[str, Any]) -> bool:
+    errors = failed_sample.get("validation_errors", [])
+    return any(isinstance(error, str) and error.startswith("Extra data:") for error in errors)
+
+
+def _raw_repair_text(failed_sample: dict[str, Any]) -> str:
+    raw_attempt = failed_sample.get("raw_final_attempt")
+    if not isinstance(raw_attempt, dict):
+        return ""
+    raw_output = raw_attempt.get("raw_output_text")
+    if isinstance(raw_output, str) and raw_output.strip():
+        return raw_output
+    json_text = raw_attempt.get("json_text")
+    if isinstance(json_text, str):
+        return json_text
+    return ""
 
 
 def _invalid_samples_with_list_indexes(

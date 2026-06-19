@@ -15,6 +15,7 @@ from dpo_critical_thinking.enrichment.schema import (
     parse_json_object,
     split_response_sections,
     validate_segment_enrichment_sample,
+    validate_segment_enrichment_sample_result,
 )
 from dpo_critical_thinking.enrichment.strategies import run_self_consistency
 from dpo_critical_thinking.enrichment.teachers import (
@@ -194,6 +195,29 @@ def test_parse_json_object_still_accepts_output_without_think_block() -> None:
     assert parse_error is None
 
 
+def test_parse_json_object_accepts_only_trailing_extra_closing_braces() -> None:
+    payload = {"schema_version": "segment_enrichment_sample_v1", "ok": True}
+
+    parsed, parse_error = parse_json_object(json.dumps(payload) + "}}")
+
+    assert parse_error is None
+    assert parsed == payload
+
+
+def test_parse_json_object_rejects_trailing_prose_and_concatenated_objects() -> None:
+    payload = {"schema_version": "segment_enrichment_sample_v1", "ok": True}
+
+    prose_parsed, prose_error = parse_json_object(json.dumps(payload) + " extra text")
+    concat_parsed, concat_error = parse_json_object(
+        json.dumps(payload) + json.dumps({"another": True})
+    )
+
+    assert prose_parsed is None
+    assert prose_error is not None
+    assert concat_parsed is None
+    assert concat_error is not None
+
+
 def test_normalize_decoded_text_repairs_byte_level_json_markers(
     tmp_path: Path,
 ) -> None:
@@ -263,6 +287,43 @@ def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> 
     assert sample["attempts"][1]["reasoning_text"] == "Grounded reasoning."
     assert sample["parsed_output"]["schema_version"] == "segment_enrichment_sample_v1"
     assert enriched["aggregation_status"] == "not_implemented_yet"
+
+
+def test_self_consistency_treats_target_text_mismatch_as_warning(
+    tmp_path: Path,
+) -> None:
+    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {candidate_example_codes_json}")
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    codebook = _codebook_payload()
+    payload = _valid_sample(record, codebook_version="v1")
+    payload["analysis_unit"]["target_text"] = (
+        "AI can help, but someone still needs to check the corrected result."
+    )
+    teacher = QueueTeacher([f"<think>\nReasoning.\n</think>\n{json.dumps(payload)}"])
+
+    enriched = run_self_consistency(
+        record=record,
+        teacher=teacher,
+        prompt=PromptTemplate(prompt_path),
+        prompt_vars={},
+        codebook=codebook,
+        generation_options=GenerationOptions(seed=10),
+        num_samples=1,
+        aggregation="scaffold",
+        json_retry_attempts=0,
+        logger=RunLogger(tmp_path / "logs"),
+    )
+
+    sample = enriched["samples"][0]
+    assert sample["final_parse_status"] == "valid"
+    assert sample["validation_errors"] == []
+    assert sample["validation_warnings"] == [
+        "analysis_unit.target_text differs from the segment text."
+    ]
+    assert (
+        sample["parsed_output"]["analysis_unit"]["target_text"]
+        == "AI can help, but someone still needs to check the corrected result."
+    )
 
 
 def test_enrichment_cli_default_max_new_tokens_is_deepseek_budget() -> None:
@@ -433,6 +494,32 @@ def test_segment_enrichment_schema_requires_code_quality_examples(
     )
 
     assert any("useful_analytical_code" in error for error in errors)
+
+
+def test_segment_enrichment_result_warns_for_target_text_mismatch(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
+    payload = _valid_sample(record, codebook_version="v1")
+    payload["analysis_unit"]["target_text"] = "AI can help, but someone still needs to check the corrected result."
+
+    strict_errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+    )
+    relaxed = validate_segment_enrichment_sample_result(
+        payload,
+        record,
+        expected_codebook_version="v1",
+        allow_target_text_mismatch=True,
+    )
+
+    assert strict_errors == ["analysis_unit.target_text must equal the segment text."]
+    assert relaxed.errors == []
+    assert relaxed.warnings == [
+        "analysis_unit.target_text differs from the segment text."
+    ]
 
 
 def test_segment_enrichment_schema_requires_prompt_top_level_sections(

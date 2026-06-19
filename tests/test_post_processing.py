@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from post_processing import collect_failed_outputs, main, write_aggregate
+from post_processing import collect_failed_outputs, main, repair_failed_outputs, write_aggregate
 
 
 def test_collects_invalid_samples_and_raw_final_attempt(tmp_path: Path) -> None:
@@ -244,7 +244,250 @@ def test_main_writes_default_output_and_protects_existing_file(tmp_path: Path) -
     )
 
 
-def test_main_accepts_repair_process_as_not_implemented_placeholder() -> None:
+def test_repair_updates_one_invalid_sample_in_place(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    segment_path = run_dir / "INT01_self_consistency" / "segments" / "INT01_SEG001.json"
+    original_samples = [
+        _sample(1, "valid", []),
+        _sample(2, "valid", []),
+        _sample(
+            3,
+            "invalid",
+            ["analysis_unit.target_text must equal the segment text."],
+            parsed_output=_valid_parsed_output(target_text="Participant text corrected."),
+        ),
+        _sample(4, "valid", []),
+        _sample(5, "valid", []),
+    ]
+    _write_json(segment_path, _segment_payload(samples=original_samples))
+    failed_path = tmp_path / "failed.json"
+    failed_payload = collect_failed_outputs(enriched_dir=run_dir, include_raw=False)
+    _write_json(failed_path, failed_payload)
+
+    report = repair_failed_outputs(failed_path=failed_path)
+
+    repaired_segment = json.loads(segment_path.read_text(encoding="utf-8"))
+    assert report["counts"]["repaired"] == 1
+    assert report["counts"]["files_written"] == 1
+    assert repaired_segment["samples"][0] == original_samples[0]
+    assert repaired_segment["samples"][1] == original_samples[1]
+    assert repaired_segment["samples"][3] == original_samples[3]
+    assert repaired_segment["samples"][4] == original_samples[4]
+    repaired_sample = repaired_segment["samples"][2]
+    assert repaired_sample["final_parse_status"] == "valid"
+    assert repaired_sample["validation_errors"] == []
+    assert repaired_sample["validation_warnings"] == [
+        "analysis_unit.target_text differs from the segment text."
+    ]
+    assert (
+        repaired_sample["parsed_output"]["analysis_unit"]["target_text"]
+        == "Participant text corrected."
+    )
+    assert repaired_sample["repair_metadata"]["method"] == "relaxed_target_text_validation"
+
+
+def test_repair_batches_multiple_samples_in_one_segment_file(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    segment_path = run_dir / "INT01_self_consistency" / "segments" / "INT01_SEG001.json"
+    _write_json(
+        segment_path,
+        _segment_payload(
+            samples=[
+                _sample(
+                    1,
+                    "invalid",
+                    ["analysis_unit.target_text must equal the segment text."],
+                    parsed_output=_valid_parsed_output(target_text="Corrected one."),
+                ),
+                _sample(2, "valid", []),
+                _sample(
+                    3,
+                    "invalid",
+                    ["analysis_unit.target_text must equal the segment text."],
+                    parsed_output=_valid_parsed_output(target_text="Corrected three."),
+                ),
+            ]
+        ),
+    )
+    failed_path = tmp_path / "failed.json"
+    _write_json(failed_path, collect_failed_outputs(enriched_dir=run_dir, include_raw=False))
+
+    report = repair_failed_outputs(failed_path=failed_path)
+
+    repaired_segment = json.loads(segment_path.read_text(encoding="utf-8"))
+    assert report["counts"]["repaired"] == 2
+    assert report["counts"]["files_written"] == 1
+    assert repaired_segment["samples"][0]["final_parse_status"] == "valid"
+    assert repaired_segment["samples"][2]["final_parse_status"] == "valid"
+
+
+def test_repair_skips_when_fingerprint_changed(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    segment_path = run_dir / "INT01_self_consistency" / "segments" / "INT01_SEG001.json"
+    sample = _sample(
+        1,
+        "invalid",
+        ["analysis_unit.target_text must equal the segment text."],
+        parsed_output=_valid_parsed_output(target_text="Corrected text."),
+    )
+    _write_json(segment_path, _segment_payload(samples=[sample]))
+    failed_path = tmp_path / "failed.json"
+    _write_json(failed_path, collect_failed_outputs(enriched_dir=run_dir, include_raw=False))
+    changed = {**sample, "reasoning_text": "Changed after aggregation"}
+    _write_json(segment_path, _segment_payload(samples=[changed]))
+
+    report = repair_failed_outputs(failed_path=failed_path)
+
+    current_segment = json.loads(segment_path.read_text(encoding="utf-8"))
+    assert report["counts"]["skipped"] == 1
+    assert report["counts"]["repaired"] == 0
+    assert current_segment["samples"][0]["reasoning_text"] == "Changed after aggregation"
+
+
+def test_repair_recovers_trailing_extra_brace_raw_json(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    interview_dir = run_dir / "INT01_self_consistency"
+    segment_path = interview_dir / "segments" / "INT01_SEG001.json"
+    _write_json(
+        segment_path,
+        _segment_payload(
+            samples=[
+                _sample(
+                    1,
+                    "invalid",
+                    [
+                        "Extra data: line 1 column 10 (char 9)",
+                        "No JSON object could be parsed.",
+                    ],
+                )
+            ]
+        ),
+    )
+    parsed = _valid_parsed_output(target_text="Participant text corrected.")
+    raw_output_text = "<think>\nReasoning\n</think>\n" + json.dumps(parsed) + "}"
+    _write_jsonl(interview_dir / "events.jsonl", [_event(1, 1, raw_output_text)])
+    failed_path = tmp_path / "failed.json"
+    _write_json(failed_path, collect_failed_outputs(enriched_dir=run_dir))
+
+    report = repair_failed_outputs(failed_path=failed_path)
+
+    repaired_segment = json.loads(segment_path.read_text(encoding="utf-8"))
+    assert report["counts"]["repaired"] == 1
+    assert repaired_segment["samples"][0]["final_parse_status"] == "valid"
+    assert (
+        repaired_segment["samples"][0]["repair_metadata"]["method"]
+        == "trailing_extra_brace_parse_recovery"
+    )
+
+
+def test_repair_reports_no_json_and_reflective_link_errors_unrepairable(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    segment_path = run_dir / "INT01_self_consistency" / "segments" / "INT01_SEG001.json"
+    parsed_with_link_error = _valid_parsed_output(target_text="Participant text.")
+    parsed_with_link_error["reflective_question_candidates"][0][
+        "linked_code_quality_example"
+    ] = "too_broad_code"
+    _write_json(
+        segment_path,
+        _segment_payload(
+            samples=[
+                _sample(1, "invalid", ["No JSON object could be parsed."]),
+                _sample(
+                    2,
+                    "invalid",
+                    [
+                        "reflective_question_candidates[0].linked_code_quality_example "
+                        "must be 'useful_analytical_code'."
+                    ],
+                    parsed_output=parsed_with_link_error,
+                ),
+            ]
+        ),
+    )
+    failed_path = tmp_path / "failed.json"
+    _write_json(failed_path, collect_failed_outputs(enriched_dir=run_dir, include_raw=False))
+
+    report = repair_failed_outputs(failed_path=failed_path)
+
+    current_segment = json.loads(segment_path.read_text(encoding="utf-8"))
+    assert report["counts"]["unrepairable"] == 2
+    assert report["counts"]["repaired"] == 0
+    assert current_segment["samples"][0]["final_parse_status"] == "invalid"
+    assert current_segment["samples"][1]["final_parse_status"] == "invalid"
+
+
+def test_repair_dry_run_writes_report_but_not_segment(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    segment_path = run_dir / "INT01_self_consistency" / "segments" / "INT01_SEG001.json"
+    _write_json(
+        segment_path,
+        _segment_payload(
+            samples=[
+                _sample(
+                    1,
+                    "invalid",
+                    ["analysis_unit.target_text must equal the segment text."],
+                    parsed_output=_valid_parsed_output(target_text="Corrected text."),
+                )
+            ]
+        ),
+    )
+    failed_path = tmp_path / "failed.json"
+    report_path = tmp_path / "repair_report.json"
+    _write_json(failed_path, collect_failed_outputs(enriched_dir=run_dir, include_raw=False))
+
+    report = repair_failed_outputs(
+        failed_path=failed_path,
+        report_path=report_path,
+        dry_run=True,
+    )
+
+    current_segment = json.loads(segment_path.read_text(encoding="utf-8"))
+    assert report_path.exists()
+    assert report["counts"]["repaired"] == 1
+    assert report["counts"]["files_written"] == 0
+    assert current_segment["samples"][0]["final_parse_status"] == "invalid"
+
+
+def test_main_runs_repair_with_failed_path(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    segment_path = run_dir / "INT01_self_consistency" / "segments" / "INT01_SEG001.json"
+    _write_json(
+        segment_path,
+        _segment_payload(
+            samples=[
+                _sample(
+                    1,
+                    "invalid",
+                    ["analysis_unit.target_text must equal the segment text."],
+                    parsed_output=_valid_parsed_output(target_text="Corrected text."),
+                )
+            ]
+        ),
+    )
+    failed_path = tmp_path / "failed.json"
+    report_path = tmp_path / "report.json"
+    _write_json(failed_path, collect_failed_outputs(enriched_dir=run_dir, include_raw=False))
+
+    status = main(
+        [
+            "--process",
+            "repair",
+            "--failed-path",
+            str(failed_path),
+            "--report-path",
+            str(report_path),
+            "--dry-run",
+        ]
+    )
+
+    assert status == 0
+    assert report_path.exists()
+
+
+def test_main_requires_failed_path_for_repair() -> None:
     assert main(["--process", "repair"]) == 1
 
 
@@ -275,7 +518,11 @@ def _segment_payload(
         "interview_id": "INT01",
         "segment_id": segment_id,
         "input_text": "Participant text.",
-        "metadata": {"interview_id": "INT01", "segment_id": segment_id},
+        "metadata": {
+            "interview_id": "INT01",
+            "segment_id": segment_id,
+            "speaker": "participant",
+        },
         "source": {"segments_path": "segments.jsonl", "segments_line": 1},
         "strategy": "self_consistency",
         "num_samples": len(samples),
@@ -288,13 +535,17 @@ def _sample(
     sample_index: int,
     status: str,
     validation_errors: list[str],
+    *,
+    parsed_output: dict[str, object] | None = None,
 ) -> dict[str, object]:
     return {
         "sample_index": sample_index,
         "final_parse_status": status,
         "validation_errors": validation_errors,
         "reasoning_text": f"Reasoning {sample_index}",
-        "parsed_output": None if status == "invalid" else {"ok": True},
+        "parsed_output": parsed_output
+        if parsed_output is not None
+        else (None if status == "invalid" else {"ok": True}),
     }
 
 
@@ -315,6 +566,126 @@ def _event(sample_index: int, attempt_index: int, raw_output_text: str) -> dict[
         "raw_output_text": raw_output_text,
         "generation_options": {"seed": 10},
         "elapsed_seconds": 1.2,
+    }
+
+
+def _valid_parsed_output(*, target_text: str) -> dict[str, object]:
+    return {
+        "schema_version": "segment_enrichment_sample_v1",
+        "record_id": "INT01_SEG001",
+        "codebook_version": "v1",
+        "analysis_unit": {
+            "interview_id": "INT01",
+            "segment_id": "SEG001",
+            "speaker": "participant",
+            "target_text": target_text,
+            "previous_context_used": True,
+            "next_context_used": False,
+            "context_warning": "",
+        },
+        "research_question_relevance": {
+            "relevant_research_questions": ["How do participants discuss energy?"],
+            "segment_relevance_summary": "The segment is analytically useful.",
+            "is_segment_analytically_useful": True,
+            "why_or_why_not": "It speaks to the supplied research question.",
+        },
+        "candidate_code_matches": [],
+        "possible_new_codes": [],
+        "code_quality_examples": {
+            "wrong_code": {
+                "code_label": "Unsupported code",
+                "actual_segment_quote": "Participant text",
+                "why_plausible_for_wider_dataset": "It could occur elsewhere.",
+                "why_unsupported_by_this_segment": "This segment does not support it.",
+                "relation_to_research_questions": "It would mislead the analysis.",
+                "category_boundary": "Unsupported for this specific segment.",
+            },
+            "descriptive_not_answering_research_question": {
+                "code_label": "Mentions participant text",
+                "evidence_quote": "Participant text",
+                "surface_description": "It describes the text.",
+                "why_true_of_segment": "The text is present.",
+                "why_not_useful_for_research_questions": "It is too surface-level.",
+                "relation_to_research_questions": "It does not answer much analytically.",
+                "category_boundary": "True but analytically weak here.",
+            },
+            "too_broad_code": {
+                "code_label": "Energy issue",
+                "evidence_quote": "Participant text",
+                "broad_relevance_to_research_questions": "It is broadly relevant.",
+                "specific_meaning_lost": "The specific participant meaning is lost.",
+                "why_it_is_too_broad": "It is too general.",
+                "relation_to_research_questions": "It is relevant but vague.",
+                "category_boundary": "Relevant but too broad here.",
+            },
+            "useful_analytical_code": {
+                "code_label": "Specific useful analytical code",
+                "evidence_quote": "Participant text",
+                "specific_analytical_insight": "It preserves the specific meaning.",
+                "why_it_is_useful": "It helps answer the question.",
+                "relation_to_research_questions": "It is directly useful.",
+                "why_better_than_other_three": "It is grounded and specific.",
+                "category_boundary": "Useful for this specific segment.",
+            },
+        },
+        "contrastive_judgement": {
+            "wrong_vs_descriptive": "The wrong code is unsupported; the descriptive code is shallow.",
+            "descriptive_vs_too_broad": "The descriptive code is surface-level; the broad code is vague.",
+            "too_broad_vs_useful": "The useful code keeps the specific meaning.",
+            "final_preference_reason": "The useful code is preferable.",
+        },
+        "reflective_question_candidates": [
+            {
+                "question_id": "Q1",
+                "question": "Does this over-read the evidence?",
+                "linked_code_ids": [],
+                "linked_provisional_code_ids": [],
+                "linked_code_quality_example": "useful_analytical_code",
+                "question_type": "devils_advocate",
+                "reflexive_dimension": "methodological",
+                "trigger_quote": "Participant text",
+                "why_this_question_is_useful": "It checks over-interpretation.",
+                "what_human_researcher_should_inspect": "The quote.",
+                "risk_if_ignored": "The code may overstate the data.",
+                "confidence": 8,
+            },
+            {
+                "question_id": "Q2",
+                "question": "Is participant voice preserved?",
+                "linked_code_ids": [],
+                "linked_provisional_code_ids": [],
+                "linked_code_quality_example": "useful_analytical_code",
+                "question_type": "participant_voice_check",
+                "reflexive_dimension": "methodological",
+                "trigger_quote": "Participant text",
+                "why_this_question_is_useful": "It checks voice preservation.",
+                "what_human_researcher_should_inspect": "Alternative readings.",
+                "risk_if_ignored": "The analysis may lose nuance.",
+                "confidence": 8,
+            },
+            {
+                "question_id": "Q3",
+                "question": "What context is missing?",
+                "linked_code_ids": [],
+                "linked_provisional_code_ids": [],
+                "linked_code_quality_example": "useful_analytical_code",
+                "question_type": "context_check",
+                "reflexive_dimension": "contextual",
+                "trigger_quote": "Participant text",
+                "why_this_question_is_useful": "It identifies missing context.",
+                "what_human_researcher_should_inspect": "Neighboring turns.",
+                "risk_if_ignored": "The analysis may miss context.",
+                "confidence": 8,
+            },
+        ],
+        "quality_control": {
+            "hallucination_risk": "low",
+            "over_generalisation_risk": "low",
+            "participant_voice_loss_risk": "low",
+            "needs_human_review": False,
+            "review_reason": "",
+            "overall_confidence": 8,
+        },
     }
 
 
