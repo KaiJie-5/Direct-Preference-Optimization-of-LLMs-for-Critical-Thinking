@@ -107,12 +107,12 @@ Every code-quality example must be grounded in the target segment.
 For the wrong code, the quote is not evidence for the wrong code; it is evidence showing what the participant actually said.
 
 Specificity ladder:
-Bad broad topic: "energy"
-Still broad category: "energy management challenges"
-Better analytical code: "unpredictable routines make energy automation feel unreliable"
+Bad broad topic: "sexual health"
+Still broad category: "sexual health service challenges"
+Better analytical code: "privacy concerns make seeking sexual health support feel difficult to navigate"
 
 Code label rules:
-Avoid single nouns, vague topics, empty categories, and generic labels such as "energy", "motivation", "fear", "technology", or "challenges".
+Avoid single nouns, vague topics, empty categories, and generic labels such as "sexual health", "motivation", "fear", "services", or "challenges".
 Avoid bundled labels that join two ideas without explaining their relationship, such as "attitudes and reminders".
 If a label contains "and", the relationship between the two ideas must be analytically meaningful.
 Useful analytical labels should normally be short phrases or short sentences.
@@ -296,9 +296,9 @@ It must use the supplied research question(s) as the main standard of comparison
 Rules for reflective_question_candidates:
 Return exactly 3 reflective questions: Q1, Q2, and Q3.
 Each question must test the useful analytical code.
-Q1 should challenge possible over-interpretation.
-Q2 should check whether participant voice has been preserved.
-Q3 should identify missing context or uncertainty a human researcher should inspect.
+Q1 should challenge whether the useful analytical code over-interprets the evidence.
+Q2 should check whether the participant's own meaning and voice have been preserved, including whether another interpretation is possible.
+Q3 should identify missing context, researcher assumption, or model uncertainty that a human researcher should inspect before trusting the code.
 
 Rules for evidence quotes:
 Use short exact quotes from the target segment whenever possible.

@@ -37,9 +37,9 @@ TORCH_DTYPE="auto"
 DEVICE_MAP="auto"
 
 RESEARCH_QUESTIONS=(
-    "How do participants describe motivations, barriers, and routines for engaging with sexual health services?"
-    "How do service design, communication, privacy, stigma, accessibility, and inclusion shape engagement with sexual health services?"
-    "What support do participants need around information, prevention, treatment, follow-up, partner notification, and ongoing care?"
+    "What are some ways that people experience interactions with sexual health services or sexual health support systems?"
+    "What interactions do people have with sexual health services or sexual health support systems?"
+    "What barriers or challenges do people face when interacting with sexual health services or sexual health support systems?"
 )
 
 # Set LIMIT=1 for a quick smoke run. Leave empty for the full enrichment run.
