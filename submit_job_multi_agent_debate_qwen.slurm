@@ -1,0 +1,59 @@
+#!/bin/bash
+#SBATCH --job-name=dpo_debate_qwen
+#SBATCH --partition=quad_h200
+#SBATCH --account=ecs
+#SBATCH --nodes=1
+#SBATCH --ntasks-per-node=1
+#SBATCH --gres=gpu:2
+#SBATCH --cpus-per-task=12
+#SBATCH --mem=300G
+#SBATCH --time=2-12:00:00
+#SBATCH --output=dpo_debate_qwen_%j.out
+#SBATCH --error=dpo_debate_qwen_%j.err
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --mail-user=kjl1a21@soton.ac.uk
+
+# =========================
+# Easy configuration block
+# =========================
+CONDA_ENV="dpo"
+PROJECT_DIR="/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking"
+CONFIG_PATH="${PROJECT_DIR}/configs/multi_agent_debate_qwen.json"
+
+source ~/.bashrc
+conda activate "${CONDA_ENV}"
+
+cd "${PROJECT_DIR}"
+export PYTHONPATH="${PROJECT_DIR}/src:${PYTHONPATH:-}"
+export TOKENIZERS_PARALLELISM=false
+
+echo "SLURM job id: ${SLURM_JOB_ID}"
+echo "Node list: ${SLURM_JOB_NODELIST}"
+echo "CUDA devices: ${CUDA_VISIBLE_DEVICES:-unset}"
+echo "Project directory: ${PROJECT_DIR}"
+echo "Config path: ${CONFIG_PATH}"
+date
+
+echo "Python: $(which python)"
+python --version
+
+python - <<'PY'
+import torch
+print("torch:", torch.__version__)
+print("cuda available:", torch.cuda.is_available())
+print("cuda version:", torch.version.cuda)
+print("gpu count:", torch.cuda.device_count())
+if torch.cuda.is_available():
+    for index in range(torch.cuda.device_count()):
+        print(f"gpu {index}:", torch.cuda.get_device_name(index))
+PY
+
+if command -v nvidia-smi >/dev/null 2>&1; then
+    nvidia-smi
+fi
+
+python -m dpo_critical_thinking.debate.cli rank --config "${CONFIG_PATH}"
+
+echo "Multi-agent debate ranking complete"
+date
+

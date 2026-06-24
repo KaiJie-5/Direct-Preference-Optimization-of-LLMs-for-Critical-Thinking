@@ -1,0 +1,86 @@
+{
+  "review_pack_path": "/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking/outputs/researchers_preference_review/",
+  "output_root": "/iridisfs/scratch/kjl1a21/DPO/data/multi_agent_debate_rankings",
+  "run_name": "qwen_32b_72b_four_turn_debate",
+  "ranking_method": "multi_agent_fine_grained_ranking",
+  "limit": null,
+  "datasets": [
+    {
+      "dataset": "energy",
+      "enriched_parent_path": "/iridisfs/scratch/kjl1a21/DPO/data/transcripts-energy-enriched"
+    },
+    {
+      "dataset": "sexual-health",
+      "enriched_parent_path": "/iridisfs/scratch/kjl1a21/DPO/data/transcripts-sexual_health-enriched"
+    }
+  ],
+  "agents": [
+    {
+      "id": "qwen_32b",
+      "name": "Qwen2.5-32B-Instruct",
+      "role": "first_agent",
+      "backend": "transformers",
+      "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Qwen__Qwen2.5-32B-Instruct/",
+      "torch_dtype": "auto",
+      "device_map": "auto",
+      "trust_remote_code": false
+    },
+    {
+      "id": "qwen_72b",
+      "name": "Qwen2.5-72B-Instruct",
+      "role": "second_agent",
+      "backend": "transformers",
+      "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Qwen__Qwen2.5-72B-Instruct",
+      "torch_dtype": "auto",
+      "device_map": "auto",
+      "trust_remote_code": false
+    }
+  ],
+  "turns": [
+    {
+      "id": "turn1_initial_32b",
+      "agent_id": "qwen_32b",
+      "role": "initial_ranking",
+      "prompt_path": "../prompts/debate/qwen_32b_turn1_initial_placeholder.txt",
+      "contributes_to_aggregation": false
+    },
+    {
+      "id": "turn2_response_72b",
+      "agent_id": "qwen_72b",
+      "role": "response_agreement_disagreement",
+      "prompt_path": "../prompts/debate/qwen_72b_turn2_response_placeholder.txt",
+      "contributes_to_aggregation": false
+    },
+    {
+      "id": "turn3_revision_32b",
+      "agent_id": "qwen_32b",
+      "role": "revised_ranking",
+      "prompt_path": "../prompts/debate/qwen_32b_turn3_revision_placeholder.txt",
+      "contributes_to_aggregation": true
+    },
+    {
+      "id": "turn4_final_72b",
+      "agent_id": "qwen_72b",
+      "role": "final_ranking",
+      "prompt_path": "../prompts/debate/qwen_72b_turn4_final_placeholder.txt",
+      "contributes_to_aggregation": true
+    }
+  ],
+  "generation": {
+    "max_new_tokens": 2048,
+    "temperature": 0.0,
+    "top_p": 1.0,
+    "do_sample": false,
+    "json_retry_attempts": 2,
+    "seed": null
+  },
+  "review_blocks": [
+    "wrong_code",
+    "descriptive_not_answering_research_question",
+    "too_broad_code",
+    "useful_analytical_code",
+    "reflective_question_q1",
+    "reflective_question_q2",
+    "reflective_question_q3"
+  ]
+}

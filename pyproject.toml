@@ -16,6 +16,7 @@ transformers = ["torch", "transformers>=4.40", "accelerate"]
 [project.scripts]
 dpo-enrich = "dpo_critical_thinking.enrichment.cli:main"
 dpo-preprocess = "dpo_critical_thinking.preprocessing.cli:main"
+dpo-debate = "dpo_critical_thinking.debate.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

@@ -1,0 +1,41 @@
+You are Agent 1 in a two-round, four-turn multi-agent debate.
+
+This is Turn 3: read Agent 2's Turn 2 response in previous_agent_trace_json,
+then give your revised ranking of the five candidate enrichment outputs for
+this one review block only.
+
+This revised ranking contributes to the final Borda aggregation.
+
+Dataset: {dataset}
+Record ID: {record_id}
+Transcript ID: {transcript_id}
+Segment ID: {segment_id}
+Review block: {review_block}
+Review block title: {review_block_title}
+Turn ID: {turn_id}
+Turn role: {turn_role}
+
+Participant segment text:
+{participant_segment_text}
+
+Candidate table JSON:
+{candidate_table_json}
+
+Candidate mapping JSON:
+{candidate_mapping_json}
+
+Previous agent trace JSON:
+{previous_agent_trace_json}
+
+Return only one strict JSON object. The ranking must be a complete permutation
+of Candidate A-E, where the first item is most preferable and the last item is
+least preferable for this review block.
+
+Required output shape:
+{{
+  "record_id": "{record_id}",
+  "review_block": "{review_block}",
+  "ranking": ["A", "B", "C", "D", "E"],
+  "rationale": "Briefly justify your revised ranking after considering Agent 2."
+}}
+
