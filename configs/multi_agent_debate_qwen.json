@@ -28,9 +28,10 @@
     {
       "id": "qwen_32b",
       "name": "Qwen2.5-32B-Instruct",
-      "role": "first_agent",
+      "role": "Interpretive QDA Methodologist",
       "backend": "transformers",
       "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Qwen__Qwen2.5-32B-Instruct/",
+      "prompt_path": "../prompts/debate/qwen_32b_debate_placeholder.txt",
       "torch_dtype": "auto",
       "device_map": "auto",
       "trust_remote_code": false
@@ -38,9 +39,10 @@
     {
       "id": "qwen_72b",
       "name": "Qwen2.5-72B-Instruct",
-      "role": "second_agent",
+      "role": "Reflexive Evidence and Interpretation Auditor",
       "backend": "transformers",
       "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Qwen__Qwen2.5-72B-Instruct",
+      "prompt_path": "../prompts/debate/qwen_72b_debate_placeholder.txt",
       "torch_dtype": "auto",
       "device_map": "auto",
       "trust_remote_code": false
@@ -51,28 +53,24 @@
       "id": "turn1_initial_32b",
       "agent_id": "qwen_32b",
       "role": "initial_ranking",
-      "prompt_path": "../prompts/debate/qwen_32b_turn1_initial_placeholder.txt",
       "contributes_to_aggregation": false
     },
     {
       "id": "turn2_response_72b",
       "agent_id": "qwen_72b",
       "role": "response_agreement_disagreement",
-      "prompt_path": "../prompts/debate/qwen_72b_turn2_response_placeholder.txt",
       "contributes_to_aggregation": false
     },
     {
       "id": "turn3_revision_32b",
       "agent_id": "qwen_32b",
       "role": "revised_ranking",
-      "prompt_path": "../prompts/debate/qwen_32b_turn3_revision_placeholder.txt",
       "contributes_to_aggregation": true
     },
     {
       "id": "turn4_final_72b",
       "agent_id": "qwen_72b",
       "role": "final_ranking",
-      "prompt_path": "../prompts/debate/qwen_72b_turn4_final_placeholder.txt",
       "contributes_to_aggregation": true
     }
   ],

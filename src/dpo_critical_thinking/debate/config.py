@@ -21,7 +21,7 @@ class AgentConfig:
     role: str
     backend: str
     model_path: str | None
-    prompt_path: Path | None = None
+    prompt_path: Path
     torch_dtype: str = "auto"
     device_map: str = "auto"
     trust_remote_code: bool = False
@@ -32,7 +32,6 @@ class TurnConfig:
     id: str
     agent_id: str
     role: str
-    prompt_path: Path
     contributes_to_aggregation: bool = False
 
 
@@ -87,7 +86,7 @@ def debate_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> De
             role=str(item.get("role", item["id"])),
             backend=str(item.get("backend", "transformers")),
             model_path=item.get("model_path"),
-            prompt_path=_optional_path(item.get("prompt_path"), base_dir),
+            prompt_path=_required_path(item["prompt_path"], base_dir),
             torch_dtype=str(item.get("torch_dtype", "auto")),
             device_map=str(item.get("device_map", "auto")),
             trust_remote_code=bool(item.get("trust_remote_code", False)),
@@ -103,7 +102,6 @@ def debate_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> De
             id=str(item["id"]),
             agent_id=str(item["agent_id"]),
             role=str(item["role"]),
-            prompt_path=_required_path(item["prompt_path"], base_dir),
             contributes_to_aggregation=bool(
                 item.get("contributes_to_aggregation", False)
             ),
@@ -172,7 +170,7 @@ def config_to_jsonable(config: DebateConfig) -> dict[str, Any]:
                 "role": item.role,
                 "backend": item.backend,
                 "model_path": item.model_path,
-                "prompt_path": str(item.prompt_path) if item.prompt_path else None,
+                "prompt_path": str(item.prompt_path),
                 "torch_dtype": item.torch_dtype,
                 "device_map": item.device_map,
                 "trust_remote_code": item.trust_remote_code,
@@ -184,7 +182,6 @@ def config_to_jsonable(config: DebateConfig) -> dict[str, Any]:
                 "id": item.id,
                 "agent_id": item.agent_id,
                 "role": item.role,
-                "prompt_path": str(item.prompt_path),
                 "contributes_to_aggregation": item.contributes_to_aggregation,
             }
             for item in config.turns

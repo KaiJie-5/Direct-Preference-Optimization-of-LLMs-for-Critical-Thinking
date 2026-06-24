@@ -1,7 +1,14 @@
-You are Agent 1 in a two-round, four-turn multi-agent debate.
+You are {agent_name}.
+Your methodological role is: {agent_role}.
 
-This is Turn 1: give your initial ranking of the five candidate enrichment
-outputs for this one review block only. Do not rank the whole segment overall.
+You are Agent 1 in a two-round, four-turn multi-agent debate.
+Use the turn metadata to decide whether this is your initial ranking or revised
+ranking.
+
+Turn ID: {turn_id}
+Turn index: {turn_index}
+Turn role: {turn_role}
+Contributes to final aggregation: {contributes_to_aggregation}
 
 Dataset: {dataset}
 Record ID: {record_id}
@@ -9,8 +16,6 @@ Transcript ID: {transcript_id}
 Segment ID: {segment_id}
 Review block: {review_block}
 Review block title: {review_block_title}
-Turn ID: {turn_id}
-Turn role: {turn_role}
 
 Research questions:
 {research_questions}
@@ -27,6 +32,12 @@ Candidate mapping JSON:
 Previous agent trace JSON:
 {previous_agent_trace_json}
 
+Rank the five candidate enrichment outputs for this review block only. Do not
+rank the whole segment overall.
+
+If turn_role is initial_ranking, give your initial ranking. If turn_role is
+revised_ranking, revise your ranking after considering the previous agent trace.
+
 Return only one strict JSON object. The ranking must be a complete permutation
 of Candidate A-E, where the first item is most preferable and the last item is
 least preferable for this review block.
@@ -36,5 +47,6 @@ Required output shape:
   "record_id": "{record_id}",
   "review_block": "{review_block}",
   "ranking": ["A", "B", "C", "D", "E"],
-  "rationale": "Briefly justify your initial ranking for this review block only."
+  "rationale": "Briefly justify your ranking for this review block and turn role."
 }}
+

@@ -33,9 +33,10 @@ def run_debate_ranking(config: DebateConfig) -> Path:
     review_blocks = configured_review_blocks(list(config.review_blocks))
     agents = [build_agent(agent_config) for agent_config in config.agents]
     agent_by_id = {agent.agent_id: agent for agent in agents}
-    prompt_by_turn = {
-        turn.id: PromptTemplate(turn.prompt_path)
-        for turn in config.turns
+    agent_config_by_id = {agent_config.id: agent_config for agent_config in config.agents}
+    prompt_by_agent_id = {
+        agent_config.id: PromptTemplate(agent_config.prompt_path)
+        for agent_config in config.agents
     }
     block_inputs = build_block_inputs(
         review_pack_path=config.review_pack_path,
@@ -51,6 +52,15 @@ def run_debate_ranking(config: DebateConfig) -> Path:
             "config": config_to_jsonable(config),
             "review_blocks": [asdict(block) for block in review_blocks],
             "agents": [agent.metadata() for agent in agents],
+            "agent_configs": [
+                {
+                    "id": agent_config.id,
+                    "name": agent_config.name,
+                    "role": agent_config.role,
+                    "prompt_path": str(agent_config.prompt_path),
+                }
+                for agent_config in config.agents
+            ],
             "output_files": {
                 "debate_trace": str(trace_path),
                 "failures": str(failures_path),
@@ -74,7 +84,8 @@ def run_debate_ranking(config: DebateConfig) -> Path:
             block_input=block_input,
             turns=list(config.turns),
             agent_by_id=agent_by_id,
-            prompt_by_turn=prompt_by_turn,
+            agent_config_by_id=agent_config_by_id,
+            prompt_by_agent_id=prompt_by_agent_id,
             config=config,
             trace_path=trace_path,
         )
@@ -114,7 +125,8 @@ def _rank_block(
     block_input: DebateBlockInput,
     turns: list[TurnConfig],
     agent_by_id: dict[str, DebateAgent],
-    prompt_by_turn: dict[str, PromptTemplate],
+    agent_config_by_id: dict[str, Any],
+    prompt_by_agent_id: dict[str, PromptTemplate],
     config: DebateConfig,
     trace_path: Path,
 ) -> dict[str, Any]:
@@ -125,7 +137,8 @@ def _rank_block(
 
     for turn_index, turn_config in enumerate(turns, start=1):
         agent = agent_by_id[turn_config.agent_id]
-        prompt = prompt_by_turn[turn_config.id]
+        agent_config = agent_config_by_id[turn_config.agent_id]
+        prompt = prompt_by_agent_id[turn_config.agent_id]
         messages = [
             {
                 "role": "user",
@@ -134,6 +147,7 @@ def _rank_block(
                         block_input,
                         previous_agent_trace=previous_agent_trace,
                         agent=agent,
+                        agent_role=agent_config.role,
                         turn=turn_config,
                         turn_index=turn_index,
                     )
@@ -165,6 +179,7 @@ def _rank_block(
             "contributes_to_aggregation": turn_config.contributes_to_aggregation,
             "agent_id": agent.agent_id,
             "agent_name": agent.name,
+            "agent_role": agent_config.role,
             "turn_index": turn_index,
             **turn,
         }
@@ -299,12 +314,14 @@ def _prompt_variables(
     *,
     previous_agent_trace: list[dict[str, Any]],
     agent: DebateAgent,
+    agent_role: str,
     turn: TurnConfig,
     turn_index: int,
 ) -> dict[str, Any]:
     return {
         "agent_id": agent.agent_id,
         "agent_name": agent.name,
+        "agent_role": agent_role,
         "turn_id": turn.id,
         "turn_index": turn_index,
         "turn_role": turn.role,

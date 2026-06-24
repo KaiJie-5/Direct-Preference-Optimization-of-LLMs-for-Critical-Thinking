@@ -108,22 +108,17 @@ def test_borda_aggregation_uses_qwen_72b_tiebreak_and_records_it() -> None:
 
 def test_dry_run_debate_writes_trace_final_jsonl_and_long_csv(tmp_path: Path) -> None:
     review_pack, enriched_parent = _write_review_pack_fixture(tmp_path)
-    first_prompt = tmp_path / "first.txt"
-    second_prompt = tmp_path / "second.txt"
-    third_prompt = tmp_path / "third.txt"
-    fourth_prompt = tmp_path / "fourth.txt"
-    first_prompt.write_text(
-        "{record_id} {review_block} {research_questions} {candidate_table_json}",
+    qwen32_prompt = tmp_path / "qwen32.txt"
+    qwen72_prompt = tmp_path / "qwen72.txt"
+    qwen32_prompt.write_text(
+        "QWEN32 {agent_role} {turn_id} {record_id} {review_block} "
+        "{research_questions} {candidate_table_json}",
         encoding="utf-8",
     )
-    second_prompt.write_text(
-        "{record_id} {review_block} {previous_agent_trace_json}", encoding="utf-8"
-    )
-    third_prompt.write_text(
-        "{record_id} {review_block} {previous_agent_trace_json}", encoding="utf-8"
-    )
-    fourth_prompt.write_text(
-        "{record_id} {review_block} {previous_agent_trace_json}", encoding="utf-8"
+    qwen72_prompt.write_text(
+        "QWEN72 {agent_role} {turn_id} {record_id} {review_block} "
+        "{previous_agent_trace_json}",
+        encoding="utf-8",
     )
     config = debate_config_from_mapping(
         {
@@ -141,14 +136,16 @@ def test_dry_run_debate_writes_trace_final_jsonl_and_long_csv(tmp_path: Path) ->
                 {
                     "id": "qwen_32b",
                     "name": "Qwen 32B",
-                    "role": "first_agent",
+                    "role": "Interpretive QDA Methodologist",
                     "backend": "dry-run",
+                    "prompt_path": str(qwen32_prompt),
                 },
                 {
                     "id": "qwen_72b",
                     "name": "Qwen 72B",
-                    "role": "second_agent",
+                    "role": "Reflexive Evidence and Interpretation Auditor",
                     "backend": "dry-run",
+                    "prompt_path": str(qwen72_prompt),
                 },
             ],
             "turns": [
@@ -156,28 +153,24 @@ def test_dry_run_debate_writes_trace_final_jsonl_and_long_csv(tmp_path: Path) ->
                     "id": "turn1_initial_32b",
                     "agent_id": "qwen_32b",
                     "role": "initial_ranking",
-                    "prompt_path": str(first_prompt),
                     "contributes_to_aggregation": False,
                 },
                 {
                     "id": "turn2_response_72b",
                     "agent_id": "qwen_72b",
                     "role": "response_agreement_disagreement",
-                    "prompt_path": str(second_prompt),
                     "contributes_to_aggregation": False,
                 },
                 {
                     "id": "turn3_revision_32b",
                     "agent_id": "qwen_32b",
                     "role": "revised_ranking",
-                    "prompt_path": str(third_prompt),
                     "contributes_to_aggregation": True,
                 },
                 {
                     "id": "turn4_final_72b",
                     "agent_id": "qwen_72b",
                     "role": "final_ranking",
-                    "prompt_path": str(fourth_prompt),
                     "contributes_to_aggregation": True,
                 },
             ],
@@ -205,6 +198,15 @@ def test_dry_run_debate_writes_trace_final_jsonl_and_long_csv(tmp_path: Path) ->
     assert long_rows[0]["review_block"] == "wrong_code"
     assert long_rows[0]["candidate_A_sample_index"] == "2"
     assert "What interactions happen?" in trace_rows[0]["rendered_prompt"]
+    assert "QWEN32" in trace_rows[0]["rendered_prompt"]
+    assert "QWEN72" in trace_rows[1]["rendered_prompt"]
+    assert "QWEN32" in trace_rows[2]["rendered_prompt"]
+    assert "QWEN72" in trace_rows[3]["rendered_prompt"]
+    assert "Interpretive QDA Methodologist" in trace_rows[0]["rendered_prompt"]
+    assert (
+        "Reflexive Evidence and Interpretation Auditor"
+        in trace_rows[1]["rendered_prompt"]
+    )
     assert trace_rows[1]["turn_id"] == "turn2_response_72b"
     assert "Dry-run ranking for smoke testing." in trace_rows[1]["rendered_prompt"]
 
@@ -237,7 +239,8 @@ def test_four_turn_debate_aggregates_only_turn_3_and_turn_4(tmp_path: Path) -> N
         block_input=block_input,
         turns=turns,
         agent_by_id={"qwen_32b": qwen32, "qwen_72b": qwen72},
-        prompt_by_turn=_prompt_templates(prompt_paths),
+        agent_config_by_id=_agent_config_by_id(prompt_paths),
+        prompt_by_agent_id=_prompt_templates(prompt_paths),
         config=_dummy_config(tmp_path, review_pack, enriched_parent, turns),
         trace_path=tmp_path / "trace.jsonl",
     )
@@ -279,7 +282,8 @@ def test_failed_terminal_turn_marks_block_failed(tmp_path: Path) -> None:
         block_input=block_input,
         turns=turns,
         agent_by_id={"qwen_32b": qwen32, "qwen_72b": qwen72},
-        prompt_by_turn=_prompt_templates(prompt_paths),
+        agent_config_by_id=_agent_config_by_id(prompt_paths),
+        prompt_by_agent_id=_prompt_templates(prompt_paths),
         config=_dummy_config(tmp_path, review_pack, enriched_parent, turns),
         trace_path=tmp_path / "trace.jsonl",
     )
@@ -381,14 +385,13 @@ def _ranking_text(ranking: list[str], rationale: str) -> str:
 
 def _write_turn_prompts(tmp_path: Path) -> dict[str, Path]:
     paths = {
-        "turn1_initial_32b": tmp_path / "turn1.txt",
-        "turn2_response_72b": tmp_path / "turn2.txt",
-        "turn3_revision_32b": tmp_path / "turn3.txt",
-        "turn4_final_72b": tmp_path / "turn4.txt",
+        "qwen_32b": tmp_path / "qwen32.txt",
+        "qwen_72b": tmp_path / "qwen72.txt",
     }
-    for turn_id, path in paths.items():
+    for agent_id, path in paths.items():
         path.write_text(
-            f"{turn_id} {{record_id}} {{review_block}} {{previous_agent_trace_json}}",
+            f"{agent_id} {{agent_role}} {{turn_id}} {{record_id}} "
+            "{review_block} {previous_agent_trace_json}",
             encoding="utf-8",
         )
     return paths
@@ -400,28 +403,24 @@ def _turns(prompt_paths: dict[str, Path]) -> list[TurnConfig]:
             id="turn1_initial_32b",
             agent_id="qwen_32b",
             role="initial_ranking",
-            prompt_path=prompt_paths["turn1_initial_32b"],
             contributes_to_aggregation=False,
         ),
         TurnConfig(
             id="turn2_response_72b",
             agent_id="qwen_72b",
             role="response_agreement_disagreement",
-            prompt_path=prompt_paths["turn2_response_72b"],
             contributes_to_aggregation=False,
         ),
         TurnConfig(
             id="turn3_revision_32b",
             agent_id="qwen_32b",
             role="revised_ranking",
-            prompt_path=prompt_paths["turn3_revision_32b"],
             contributes_to_aggregation=True,
         ),
         TurnConfig(
             id="turn4_final_72b",
             agent_id="qwen_72b",
             role="final_ranking",
-            prompt_path=prompt_paths["turn4_final_72b"],
             contributes_to_aggregation=True,
         ),
     ]
@@ -431,8 +430,31 @@ def _prompt_templates(prompt_paths: dict[str, Path]):
     from dpo_critical_thinking.enrichment.prompts import PromptTemplate
 
     return {
-        turn_id: PromptTemplate(path)
-        for turn_id, path in prompt_paths.items()
+        agent_id: PromptTemplate(path)
+        for agent_id, path in prompt_paths.items()
+    }
+
+
+def _agent_config_by_id(prompt_paths: dict[str, Path]):
+    from dpo_critical_thinking.debate.config import AgentConfig
+
+    return {
+        "qwen_32b": AgentConfig(
+            id="qwen_32b",
+            name="Qwen 32B",
+            role="Interpretive QDA Methodologist",
+            backend="dry-run",
+            model_path=None,
+            prompt_path=prompt_paths["qwen_32b"],
+        ),
+        "qwen_72b": AgentConfig(
+            id="qwen_72b",
+            name="Qwen 72B",
+            role="Reflexive Evidence and Interpretation Auditor",
+            backend="dry-run",
+            model_path=None,
+            prompt_path=prompt_paths["qwen_72b"],
+        ),
     }
 
 
@@ -452,16 +474,18 @@ def _dummy_config(
             AgentConfig(
                 id="qwen_32b",
                 name="Qwen 32B",
-                role="first_agent",
+                role="Interpretive QDA Methodologist",
                 backend="dry-run",
                 model_path=None,
+                prompt_path=tmp_path / "qwen32.txt",
             ),
             AgentConfig(
                 id="qwen_72b",
                 name="Qwen 72B",
-                role="second_agent",
+                role="Reflexive Evidence and Interpretation Auditor",
                 backend="dry-run",
                 model_path=None,
+                prompt_path=tmp_path / "qwen72.txt",
             ),
         ),
         turns=tuple(turns),
