@@ -108,13 +108,16 @@ def test_borda_aggregation_uses_qwen_72b_tiebreak_and_records_it() -> None:
     assert result["tiebreaks"][0]["applied_order"] == ["B", "A"]
 
 
-def test_dry_run_debate_writes_trace_final_jsonl_and_long_csv(tmp_path: Path) -> None:
+def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
+    tmp_path: Path,
+) -> None:
     review_pack, enriched_parent = _write_review_pack_fixture(tmp_path)
     qwen32_prompt = tmp_path / "qwen32.txt"
     qwen72_prompt = tmp_path / "qwen72.txt"
     qwen32_prompt.write_text(
         "QWEN32 {agent_role} {turn_id} {record_id} {review_block} "
-        "{research_questions} {candidate_table_json}",
+        "{research_questions} {previous_context} {participant_segment_text} "
+        "{next_context} {candidate_table_json}",
         encoding="utf-8",
     )
     qwen72_prompt.write_text(
@@ -189,15 +192,49 @@ def test_dry_run_debate_writes_trace_final_jsonl_and_long_csv(tmp_path: Path) ->
 
     run_dir = run_debate_ranking(config)
 
-    trace_rows = _read_jsonl(run_dir / "debate_trace.jsonl")
+    assert not (run_dir / "debate_trace.jsonl").exists()
+    segment_trace_path = run_dir / "debate_traces" / "energy" / "INT01_SEG001.json"
+    segment_trace = json.loads(segment_trace_path.read_text(encoding="utf-8"))
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
     final_rows = _read_jsonl(run_dir / "final_rankings.jsonl")
     long_rows = _read_csv(run_dir / "final_rankings_long.csv")
+    trace_rows = [
+        turn
+        for block in segment_trace["review_blocks"].values()
+        for turn in block["turns"]
+    ]
 
+    assert "debate_trace" not in manifest["output_files"]
+    assert "debate_traces_dir" in manifest["output_files"]
+    assert manifest["trace_storage"]["path_template"] == (
+        "debate_traces/{dataset}/{record_id}.json"
+    )
+    assert segment_trace["dataset"] == "energy"
+    assert segment_trace["record_id"] == "INT01_SEG001"
+    assert segment_trace["participant_segment_text"] == "Participant text."
+    assert segment_trace["previous_context"] == "Interviewer: Previous question?"
+    assert segment_trace["next_context"] == "Interviewer: Next question?"
+    assert segment_trace["research_questions"] == ["What interactions happen?"]
+    assert len(segment_trace["review_blocks"]) == 7
+    assert segment_trace["review_blocks"]["wrong_code"]["status"] == "success"
+    assert len(segment_trace["review_blocks"]["wrong_code"]["turns"]) == 4
+    assert segment_trace["review_blocks"]["wrong_code"]["final_ranking"] == [
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+    ]
+    assert segment_trace["review_blocks"]["wrong_code"]["borda_scores"]["A"] == 10
+    assert "tiebreaks" in segment_trace["review_blocks"]["wrong_code"]
     assert len(trace_rows) == 28
     assert len(final_rows) == 1
     assert len(long_rows) == 7
     assert final_rows[0]["rankings"]["wrong_code"] == ["A", "B", "C", "D", "E"]
     assert long_rows[0]["review_block"] == "wrong_code"
+    assert long_rows[0]["segment_trace_file"] == str(
+        Path("debate_traces") / "energy" / "INT01_SEG001.json"
+    )
     assert long_rows[0]["candidate_A_sample_index"] == "2"
     assert "What interactions happen?" in trace_rows[0]["rendered_prompt"]
     assert "Interviewer: Previous question?" in trace_rows[0]["rendered_prompt"]
@@ -246,7 +283,6 @@ def test_four_turn_debate_aggregates_only_turn_3_and_turn_4(tmp_path: Path) -> N
         agent_config_by_id=_agent_config_by_id(prompt_paths),
         prompt_by_agent_id=_prompt_templates(prompt_paths),
         config=_dummy_config(tmp_path, review_pack, enriched_parent, turns),
-        trace_path=tmp_path / "trace.jsonl",
     )
 
     assert result["status"] == "success"
@@ -289,12 +325,13 @@ def test_failed_terminal_turn_marks_block_failed(tmp_path: Path) -> None:
         agent_config_by_id=_agent_config_by_id(prompt_paths),
         prompt_by_agent_id=_prompt_templates(prompt_paths),
         config=_dummy_config(tmp_path, review_pack, enriched_parent, turns),
-        trace_path=tmp_path / "trace.jsonl",
     )
 
     assert result["status"] == "failed"
     assert result["failed_turn_id"] == "turn3_revision_32b"
     assert result["failed_agent_id"] == "qwen_32b"
+    assert len(result["turns"]) == 3
+    assert result["turns"][-1]["parse_status"] == "invalid"
 
 
 def test_missing_context_fields_are_empty_strings(tmp_path: Path) -> None:

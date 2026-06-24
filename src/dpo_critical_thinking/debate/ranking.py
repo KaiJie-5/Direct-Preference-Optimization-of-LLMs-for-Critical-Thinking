@@ -25,7 +25,8 @@ from .schema import (
 def run_debate_ranking(config: DebateConfig) -> Path:
     run_dir = _new_run_dir(config.output_root, config.run_name)
     run_dir.mkdir(parents=True, exist_ok=False)
-    trace_path = run_dir / "debate_trace.jsonl"
+    trace_dir = run_dir / "debate_traces"
+    trace_dir.mkdir()
     failures_path = run_dir / "failures.jsonl"
     final_jsonl_path = run_dir / "final_rankings.jsonl"
     final_csv_path = run_dir / "final_rankings_long.csv"
@@ -62,16 +63,21 @@ def run_debate_ranking(config: DebateConfig) -> Path:
                 for agent_config in config.agents
             ],
             "output_files": {
-                "debate_trace": str(trace_path),
+                "debate_traces_dir": str(trace_dir),
                 "failures": str(failures_path),
                 "final_rankings": str(final_jsonl_path),
                 "final_rankings_long": str(final_csv_path),
+            },
+            "trace_storage": {
+                "layout": "one JSON file per dataset + record_id",
+                "path_template": "debate_traces/{dataset}/{record_id}.json",
             },
         },
     )
     failures_path.touch()
 
     record_results: dict[tuple[str, str], dict[str, Any]] = {}
+    record_traces: dict[tuple[str, str], dict[str, Any]] = {}
     long_rows: list[dict[str, Any]] = []
     for index, block_input in enumerate(block_inputs, start=1):
         print(
@@ -87,12 +93,23 @@ def run_debate_ranking(config: DebateConfig) -> Path:
             agent_config_by_id=agent_config_by_id,
             prompt_by_agent_id=prompt_by_agent_id,
             config=config,
-            trace_path=trace_path,
         )
+        segment_trace_file = _segment_trace_file(trace_dir, block_input)
+        result["segment_trace_file"] = str(segment_trace_file.relative_to(run_dir))
         if result["status"] != "success":
             _append_jsonl(failures_path, result)
 
         record_key = (block_input.segment.dataset, block_input.segment.record_id)
+        record_trace = record_traces.setdefault(
+            record_key,
+            _new_segment_trace_payload(block_input, config.ranking_method),
+        )
+        record_trace["updated_at_utc"] = _timestamp()
+        record_trace["review_blocks"][block_input.review_block.id] = _block_trace_payload(
+            result
+        )
+        _write_json(segment_trace_file, record_trace)
+
         record_payload = record_results.setdefault(
             record_key,
             {
@@ -128,12 +145,12 @@ def _rank_block(
     agent_config_by_id: dict[str, Any],
     prompt_by_agent_id: dict[str, PromptTemplate],
     config: DebateConfig,
-    trace_path: Path,
 ) -> dict[str, Any]:
     previous_agent_trace: list[dict[str, Any]] = []
     agent_rankings: list[dict[str, Any]] = []
     aggregation_rankings: list[dict[str, Any]] = []
     trace_ids: list[str] = []
+    turns_trace: list[dict[str, Any]] = []
 
     for turn_index, turn_config in enumerate(turns, start=1):
         agent = agent_by_id[turn_config.agent_id]
@@ -183,7 +200,7 @@ def _rank_block(
             "turn_index": turn_index,
             **turn,
         }
-        _append_jsonl(trace_path, trace_payload)
+        turns_trace.append(trace_payload)
         trace_ids.append(trace_id)
         if turn["parse_status"] != "valid":
             return {
@@ -196,6 +213,7 @@ def _rank_block(
                 "failed_agent_id": agent.agent_id,
                 "failure_reason": "; ".join(turn["validation_errors"]),
                 "trace_ids": trace_ids,
+                "turns": turns_trace,
                 "agent_rankings": agent_rankings,
                 "aggregation_rankings": aggregation_rankings,
             }
@@ -226,6 +244,7 @@ def _rank_block(
         "record_id": block_input.segment.record_id,
         "review_block": block_input.review_block.id,
         "trace_ids": trace_ids,
+        "turns": turns_trace,
         "agent_rankings": agent_rankings,
         "aggregation_rankings": aggregation_rankings,
         "final_ranking": aggregation["ranking"],
@@ -384,6 +403,7 @@ def _long_row(
         "ranking_method": ranking_method,
         "status": result["status"],
         "failure_reason": result.get("failure_reason", ""),
+        "segment_trace_file": result.get("segment_trace_file", ""),
         "trace_ids": json.dumps(result.get("trace_ids", []), ensure_ascii=False),
         "tiebreak_agent_id": result.get("tiebreak_agent_id", ""),
         "tiebreak_applied": result.get("tiebreak_applied", False),
@@ -405,6 +425,60 @@ def _long_row(
         )
         row[f"candidate_{label}_sample_index"] = mapping["original_sample_index"]
     return row
+
+
+def _new_segment_trace_payload(
+    block_input: DebateBlockInput,
+    ranking_method: str,
+) -> dict[str, Any]:
+    return {
+        "created_at_utc": _timestamp(),
+        "updated_at_utc": _timestamp(),
+        "dataset": block_input.segment.dataset,
+        "record_id": block_input.segment.record_id,
+        "transcript_id": block_input.segment.transcript_id,
+        "segment_id": block_input.segment.segment_id,
+        "ranking_method": ranking_method,
+        "num_candidates": len(CANDIDATE_LABELS),
+        "participant_segment_text": block_input.participant_segment_text,
+        "previous_context": block_input.previous_context,
+        "next_context": block_input.next_context,
+        "research_questions": list(block_input.research_questions),
+        "segment_json_path": str(block_input.segment_json_path),
+        "review_blocks": {},
+    }
+
+
+def _block_trace_payload(result: dict[str, Any]) -> dict[str, Any]:
+    payload = {
+        "status": result["status"],
+        "review_block": result.get("review_block", ""),
+        "trace_ids": result.get("trace_ids", []),
+        "turns": result.get("turns", []),
+        "agent_rankings": result.get("agent_rankings", []),
+        "aggregation_rankings": result.get("aggregation_rankings", []),
+        "final_ranking": result.get("final_ranking", []),
+        "borda_scores": result.get("borda_scores", {}),
+        "tiebreak_agent_id": result.get("tiebreak_agent_id", ""),
+        "tiebreak_applied": result.get("tiebreak_applied", False),
+        "tiebreaks": result.get("tiebreaks", []),
+    }
+    if result["status"] != "success":
+        payload.update(
+            {
+                "failed_turn_id": result.get("failed_turn_id", ""),
+                "failed_turn_role": result.get("failed_turn_role", ""),
+                "failed_agent_id": result.get("failed_agent_id", ""),
+                "failure_reason": result.get("failure_reason", ""),
+            }
+        )
+    return payload
+
+
+def _segment_trace_file(trace_dir: Path, block_input: DebateBlockInput) -> Path:
+    dataset_dir = trace_dir / block_input.segment.dataset
+    dataset_dir.mkdir(parents=True, exist_ok=True)
+    return dataset_dir / f"{block_input.segment.record_id}.json"
 
 
 def _new_run_dir(output_root: Path, run_name: str) -> Path:
