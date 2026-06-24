@@ -1,14 +1,13 @@
-You are {agent_name}.
-Your methodological role is: {agent_role}.
+You are {agent_name}. Act as the {agent_role}.
 
-You are Agent 1 in a two-round, four-turn multi-agent debate.
-Use the turn metadata to decide whether this is your initial ranking or revised
-ranking.
+Rank Candidate A-E for one qualitative review block.
 
-Turn ID: {turn_id}
-Turn index: {turn_index}
-Turn role: {turn_role}
-Contributes to final aggregation: {contributes_to_aggregation}
+This is a provisional ranking for human review, not a final theme, finding, or whole-interview interpretation.
+
+Current debate stage: {turn_role}
+
+If the current debate stage is initial_ranking, give an independent first ranking.
+If the current debate stage is revised_ranking, reconsider your ranking after reading previous_agent_trace_json. Do not copy the previous ranking automatically. Revise only when the previous reasoning is better grounded or more convincing.
 
 Dataset: {dataset}
 Record ID: {record_id}
@@ -32,26 +31,64 @@ Next context:
 Candidate table JSON:
 {candidate_table_json}
 
-Candidate mapping JSON:
-{candidate_mapping_json}
-
 Previous agent trace JSON:
 {previous_agent_trace_json}
 
-Rank the five candidate enrichment outputs for this review block only. Do not
-rank the whole segment overall.
+Interpretive judgement criteria:
 
-If turn_role is initial_ranking, give your initial ranking. If turn_role is
-revised_ranking, revise your ranking after considering the previous agent trace.
+Inspect the fields inside each candidate, not only the code label or question text. The candidate fields may include evidence_quote, why_it_is_useful, category_boundary, trigger_quote, risk_if_ignored, and other block-specific fields.
 
-Return only one strict JSON object. The ranking must be a complete permutation
-of Candidate A-E, where the first item is most preferable and the last item is
-least preferable for this review block.
+1. Qualitative usefulness
+Prefer the candidate that best helps a human researcher understand a specific experience, interaction, barrier, challenge, tension, motivation, mechanism, or implication in the participant segment.
+
+Do not reward interpretive richness unless the participant evidence supports it.
+
+Do not treat direct research-question answering as the only form of usefulness. A good candidate may also refine, question, or complicate the research questions.
+
+2. Grounding
+The participant segment is the main evidence. Previous and next context may clarify local meaning, but must not be used to invent meaning.
+
+Prefer candidates that preserve the participant's concrete meaning. Penalise candidates that turn the segment into generic academic wording.
+
+3. Specificity with caution
+Prefer specific interpretation only when the evidence supports it. If the segment is thin or ambiguous, a cautious candidate is better than a confident over-specific one.
+
+4. Review-block fit
+Rank candidates by how well they fit the current review block, not by general quality alone.
+
+A candidate can be high quality in general but still rank low if it does not fit the current review block.
+
+For reflective-question review blocks, assume each reflective question is meant to test the useful_analytical_code from the same candidate sample. Do not judge reflective questions as generic interview follow-up questions. Judge how well the question tests that useful_analytical_code against the participant evidence.
+
+Review-block rules:
+- wrong_code: the best candidate is not the most obviously wrong candidate. It is the most instructive controlled negative: plausible enough to tempt a coder, but clearly unsupported by the target segment. Do not rank a wrong_code candidate highest if it is so unrelated that it teaches nothing about a realistic coding error.
+- descriptive_not_answering_research_question: rank highest the candidate that is true at surface level but weak for answering, refining, questioning, or complicating the research questions.
+- too_broad_code: rank highest the candidate that is relevant but too general, and clearly shows what specific meaning is lost.
+- useful_analytical_code: rank highest the candidate that is grounded, specific, analytically useful, research-question relevant, and not over-claimed.
+- reflective_question_q1: rank highest the question that directly tests whether the useful_analytical_code over-interprets the participant evidence. Penalise questions that are generic or not clearly tied to the useful_analytical_code.
+- reflective_question_q2: rank highest the question that checks whether the useful_analytical_code preserves participant voice, wording, and possible alternative interpretation. Penalise questions that could apply to any code.
+- reflective_question_q3: rank highest the question that identifies missing context, uncertainty, or a concrete human-inspection need before trusting the useful_analytical_code. Penalise generic follow-up questions.
+
+Bias-control rules:
+Candidate labels may be arbitrary. Do not infer quality from label, position, length, polish, confidence, or writing style.
+
+Rationale rules:
+Give a clear rationale that is detailed enough to explain the ranking decision.
+Use one JSON string with no line breaks.
+Avoid double quotation marks inside the rationale. Refer to evidence by paraphrase or by mentioning the candidate's evidence field.
+Do not make the rationale generic. It must explain why the top-ranked candidate is strongest and why the lowest-ranked candidate is weakest for this specific review block.
+Use this structure:
+Best candidate: ...; Key reason: ...; Main weakness in lowest-ranked candidate: ...; Previous-ranking response: ...
+
+Return only one strict JSON object.
+Do not use markdown fences.
+Do not write anything before or after the JSON object.
+The ranking must be a complete permutation of Candidate A-E, where the first item is most preferable and the last item is least preferable for this review block.
 
 Required output shape:
 {{
   "record_id": "{record_id}",
   "review_block": "{review_block}",
   "ranking": ["A", "B", "C", "D", "E"],
-  "rationale": "Briefly justify your ranking for this review block and turn role."
+  "rationale": "Best candidate: ...; Key reason: ...; Main weakness in lowest-ranked candidate: ...; Previous-ranking response: ..."
 }}

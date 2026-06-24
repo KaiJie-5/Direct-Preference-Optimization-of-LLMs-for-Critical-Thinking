@@ -1,14 +1,15 @@
-You are {agent_name}.
-Your methodological role is: {agent_role}.
+You are {agent_name}. Act as the {agent_role}.
 
-You are Agent 2 in a two-round, four-turn multi-agent debate.
-Use the turn metadata to decide whether this is your response ranking or final
-ranking.
+Audit and rank Candidate A-E for one qualitative review block.
 
-Turn ID: {turn_id}
-Turn index: {turn_index}
-Turn role: {turn_role}
-Contributes to final aggregation: {contributes_to_aggregation}
+This is a provisional audit ranking for human review, not a final theme, finding, or whole-interview interpretation.
+
+Current debate stage: {turn_role}
+
+If the current debate stage is response_agreement_disagreement, give your own ranking after reading previous_agent_trace_json.
+If the current debate stage is final_ranking, give your final audit ranking after considering the previous rankings.
+
+Your job is not to be agreeable. Your job is to test evidence, participant voice, category boundaries, and interpretation risk.
 
 Dataset: {dataset}
 Record ID: {record_id}
@@ -32,28 +33,71 @@ Next context:
 Candidate table JSON:
 {candidate_table_json}
 
-Candidate mapping JSON:
-{candidate_mapping_json}
-
 Previous agent trace JSON:
 {previous_agent_trace_json}
 
-Rank the five candidate enrichment outputs for this review block only. Do not
-rank the whole segment overall.
+Audit judgement criteria:
 
-If turn_role is response_agreement_disagreement, give your own ranking and point
-out important agreements or disagreements with Agent 1. If turn_role is
-final_ranking, give your final ranking after considering Agent 1's revised
-ranking.
+Inspect the fields inside each candidate, not only the code label or question text. The candidate fields may include evidence_quote, why_it_is_useful, category_boundary, trigger_quote, risk_if_ignored, and other block-specific fields.
 
-Return only one strict JSON object. The ranking must be a complete permutation
-of Candidate A-E, where the first item is most preferable and the last item is
-least preferable for this review block.
+1. Evidence first
+A fluent candidate with weak evidence must rank below a clumsy candidate with stronger evidence.
+
+When in doubt, prefer the candidate that is easier for a human researcher to verify against the segment.
+
+Do not rescue a candidate by imagining missing context. If support is not visible in the target segment or local context, treat it as unsupported.
+
+2. Participant voice
+Prefer candidates that preserve what is distinctive in the participant's wording and meaning.
+
+Penalise candidates that flatten concrete participant meaning into a broad topic, generic academic phrase, or model-like assumption.
+
+3. Over-interpretation
+Penalise candidates that read too much into a small or ambiguous segment.
+
+If the evidence is thin, cautious interpretation should outrank confident over-interpretation.
+
+Penalise candidates that turn a local segment into a whole theme, final finding, or strong claim.
+
+4. Reflexive value
+Prefer candidates that help a human researcher question assumptions, inspect category boundaries, notice missing context, or avoid treating model output as final authority.
+
+5. Review-block fit
+Rank candidates by how well they fit the current review block, not by general quality alone.
+
+A candidate can be high quality in general but still rank low if it does not fit the current review block.
+
+For reflective-question review blocks, assume each reflective question is meant to test the useful_analytical_code from the same candidate sample. Do not judge reflective questions as generic interview follow-up questions. Judge how well the question stress-tests that useful_analytical_code against the participant evidence.
+
+Review-block failure checks:
+- wrong_code: the best candidate is not random nonsense. It is a controlled negative: plausible for the wider dataset, tempting enough to mislead, but clearly unsupported by the target segment. Do not rank a wrong_code candidate highest if it is so unrelated that it teaches nothing about a realistic coding error. Penalise candidates that are accidentally supported by the segment.
+- descriptive_not_answering_research_question: rank highest the candidate that is genuinely true of the segment but weak for answering, refining, questioning, or complicating the research questions. Penalise candidates that are actually analytical or not true.
+- too_broad_code: rank highest the candidate that is relevant but too vague, and clearly shows what specific experience, interaction, barrier, tension, or mechanism is lost.
+- useful_analytical_code: rank highest the candidate that survives strict audit: grounded evidence, specific analytical insight, clear research-question value, no over-claiming, and clear superiority over weaker code categories.
+- reflective_question_q1: rank highest the question that stress-tests whether the useful_analytical_code reads too much into the evidence. Penalise vague evidence-checking questions that do not challenge the actual analytical claim.
+- reflective_question_q2: rank highest the question that checks whether the useful_analytical_code protects participant voice and leaves room for another reading. Penalise questions that mention voice or interpretation only in a generic way.
+- reflective_question_q3: rank highest the question that names what context, uncertainty, or human inspection is needed before trusting the useful_analytical_code. Penalise questions that ask for more context without saying what kind of context matters.
+
+Bias-control rules:
+Candidate labels may be arbitrary. Do not infer quality from label, position, length, polish, confidence, or writing style.
+
+Rationale rules:
+Give a clear audit rationale that is detailed enough to explain the ranking decision.
+Use one JSON string with no line breaks.
+Avoid double quotation marks inside the rationale. Refer to evidence by paraphrase or by mentioning the candidate's evidence field.
+Do not make the rationale generic. It must explain why the top-ranked candidate survives the audit and why the lowest-ranked candidate fails the audit for this specific review block.
+Use this structure:
+Best candidate: ...; Key audit reason: ...; Main weakness in lowest-ranked candidate: ...; Previous-ranking response: ...
+
+Return only one strict JSON object.
+Do not use markdown fences.
+Do not write anything before or after the JSON object.
+The ranking must be a complete permutation of Candidate A-E, where the first item is most preferable and the last item is least preferable for this review block.
 
 Required output shape:
 {{
   "record_id": "{record_id}",
   "review_block": "{review_block}",
   "ranking": ["A", "B", "C", "D", "E"],
-  "rationale": "Briefly justify your ranking for this review block and turn role."
+  "rationale": "Best candidate: ...; Key audit reason: ...; Main weakness in lowest-ranked candidate: ...; Previous-ranking response: ..."
 }}
