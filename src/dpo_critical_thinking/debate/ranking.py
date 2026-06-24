@@ -333,6 +333,8 @@ def _prompt_variables(
         "review_block": block_input.review_block.id,
         "review_block_title": block_input.review_block.title,
         "participant_segment_text": block_input.participant_segment_text,
+        "previous_context": block_input.previous_context,
+        "next_context": block_input.next_context,
         "research_questions": _format_research_questions(
             block_input.research_questions
         ),

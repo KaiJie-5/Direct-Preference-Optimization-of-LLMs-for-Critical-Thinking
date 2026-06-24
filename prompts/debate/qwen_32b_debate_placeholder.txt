@@ -20,8 +20,14 @@ Review block title: {review_block_title}
 Research questions:
 {research_questions}
 
+Previous context:
+{previous_context}
+
 Participant segment text:
 {participant_segment_text}
+
+Next context:
+{next_context}
 
 Candidate table JSON:
 {candidate_table_json}
@@ -49,4 +55,3 @@ Required output shape:
   "ranking": ["A", "B", "C", "D", "E"],
   "rationale": "Briefly justify your ranking for this review block and turn role."
 }}
-

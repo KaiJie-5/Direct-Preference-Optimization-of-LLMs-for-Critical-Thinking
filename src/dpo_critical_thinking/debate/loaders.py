@@ -38,6 +38,8 @@ class DebateBlockInput:
     segment: ReviewSegment
     review_block: ReviewBlock
     participant_segment_text: str
+    previous_context: str
+    next_context: str
     research_questions: tuple[str, ...]
     candidate_table: list[dict[str, Any]]
     candidate_mapping: list[dict[str, Any]]
@@ -132,6 +134,8 @@ def build_block_inputs(
                     segment=segment,
                     review_block=block,
                     participant_segment_text=str(payload.get("input_text", "")),
+                    previous_context=_metadata_text(payload, "previous_context"),
+                    next_context=_metadata_text(payload, "next_context"),
                     research_questions=dataset_config.research_questions,
                     candidate_table=[
                         _candidate_payload(payload, mapping, block)
@@ -188,6 +192,14 @@ def _candidate_payload(
             if isinstance(block_payload, dict)
         },
     }
+
+
+def _metadata_text(segment_payload: dict[str, Any], key: str) -> str:
+    metadata = segment_payload.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    value = metadata.get(key, "")
+    return "" if value is None else str(value)
 
 
 def _sample_by_index(segment_payload: dict[str, Any], sample_index: int) -> dict[str, Any]:

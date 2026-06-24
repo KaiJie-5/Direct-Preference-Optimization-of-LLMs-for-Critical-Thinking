@@ -44,6 +44,8 @@ def test_review_pack_loader_reconstructs_candidates_and_reflective_questions(
     wrong_code = block_inputs[0]
     assert wrong_code.review_block.id == "wrong_code"
     assert wrong_code.participant_segment_text == "Participant text."
+    assert wrong_code.previous_context == "Interviewer: Previous question?"
+    assert wrong_code.next_context == "Interviewer: Next question?"
     assert wrong_code.research_questions == ("What interactions happen?",)
     assert wrong_code.candidate_table[0]["candidate_label"] == "A"
     assert wrong_code.candidate_table[0]["original_sample_index"] == 2
@@ -198,6 +200,8 @@ def test_dry_run_debate_writes_trace_final_jsonl_and_long_csv(tmp_path: Path) ->
     assert long_rows[0]["review_block"] == "wrong_code"
     assert long_rows[0]["candidate_A_sample_index"] == "2"
     assert "What interactions happen?" in trace_rows[0]["rendered_prompt"]
+    assert "Interviewer: Previous question?" in trace_rows[0]["rendered_prompt"]
+    assert "Interviewer: Next question?" in trace_rows[0]["rendered_prompt"]
     assert "QWEN32" in trace_rows[0]["rendered_prompt"]
     assert "QWEN72" in trace_rows[1]["rendered_prompt"]
     assert "QWEN32" in trace_rows[2]["rendered_prompt"]
@@ -291,6 +295,22 @@ def test_failed_terminal_turn_marks_block_failed(tmp_path: Path) -> None:
     assert result["status"] == "failed"
     assert result["failed_turn_id"] == "turn3_revision_32b"
     assert result["failed_agent_id"] == "qwen_32b"
+
+
+def test_missing_context_fields_are_empty_strings(tmp_path: Path) -> None:
+    review_pack, enriched_parent = _write_review_pack_fixture(
+        tmp_path,
+        include_context=False,
+    )
+
+    block_input = build_block_inputs(
+        review_pack_path=review_pack,
+        dataset_configs=(_dataset_config("energy", enriched_parent),),
+        review_blocks=configured_review_blocks(["wrong_code"]),
+    )[0]
+
+    assert block_input.previous_context == ""
+    assert block_input.next_context == ""
 
 
 def test_compare_rankings_outputs_descriptive_alignment_only(tmp_path: Path) -> None:
@@ -493,7 +513,11 @@ def _dummy_config(
     )
 
 
-def _write_review_pack_fixture(tmp_path: Path) -> tuple[Path, Path]:
+def _write_review_pack_fixture(
+    tmp_path: Path,
+    *,
+    include_context: bool = True,
+) -> tuple[Path, Path]:
     review_pack = tmp_path / "review_pack"
     review_pack.mkdir()
     enriched_parent = tmp_path / "enriched_parent"
@@ -501,7 +525,7 @@ def _write_review_pack_fixture(tmp_path: Path) -> tuple[Path, Path]:
     run_dir.mkdir(parents=True)
     segment_path = run_dir / "INT01_SEG001.json"
     segment_path.write_text(
-        json.dumps(_segment_payload(), ensure_ascii=False),
+        json.dumps(_segment_payload(include_context=include_context), ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -541,8 +565,8 @@ def _write_review_pack_fixture(tmp_path: Path) -> tuple[Path, Path]:
     return review_pack, enriched_parent
 
 
-def _segment_payload() -> dict:
-    return {
+def _segment_payload(*, include_context: bool = True) -> dict:
+    payload = {
         "record_id": "INT01_SEG001",
         "input_text": "Participant text.",
         "samples": [
@@ -554,6 +578,12 @@ def _segment_payload() -> dict:
             for index in range(1, 6)
         ],
     }
+    if include_context:
+        payload["metadata"] = {
+            "previous_context": "Interviewer: Previous question?",
+            "next_context": "Interviewer: Next question?",
+        }
+    return payload
 
 
 def _parsed_output(index: int) -> dict:
