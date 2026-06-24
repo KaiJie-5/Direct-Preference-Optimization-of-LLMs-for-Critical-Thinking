@@ -21,13 +21,13 @@ mkdir -p "$PROJECT_SCRATCH/logs/downloads"
 # hf download deepseek-ai/DeepSeek-R1-Distill-Llama-70B \
 #   --local-dir "$PROJECT_SCRATCH/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B"
 
-echo "Downloading Qwen2.5-32B-Instruct teacher model..."
-hf download Qwen/Qwen2.5-32B-Instruct \
-  --local-dir "$PROJECT_SCRATCH/models/teacher/Qwen__Qwen2.5-32B-Instruct"
+# echo "Downloading Qwen2.5-32B-Instruct teacher model..."
+# hf download Qwen/Qwen2.5-32B-Instruct \
+#   --local-dir "$PROJECT_SCRATCH/models/teacher/Qwen__Qwen2.5-32B-Instruct"
 
-echo "Downloading Mistral-Small-3.1-24B-Instruct-2503 teacher model..."
-hf download mistralai/Mistral-Small-3.1-24B-Instruct-2503 \
-  --local-dir "$PROJECT_SCRATCH/models/teacher/mistralai__Mistral-Small-3.1-24B-Instruct-2503"
+echo "Downloading Qwen2.5-72B-Instruct teacher/ranking-agent model..."
+hf download Qwen/Qwen2.5-72B-Instruct \
+  --local-dir "$PROJECT_SCRATCH/models/teacher/Qwen__Qwen2.5-72B-Instruct"
 
 echo "Download completed."
 echo "Models saved in:"
