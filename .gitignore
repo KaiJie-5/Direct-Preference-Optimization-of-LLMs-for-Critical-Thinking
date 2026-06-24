@@ -23,3 +23,6 @@ checkpoints/
 
 .env
 .env.*
+
+*.ps1
+reviewer_preference_pack.md
