@@ -7,11 +7,21 @@
   "datasets": [
     {
       "dataset": "energy",
-      "enriched_parent_path": "/iridisfs/scratch/kjl1a21/DPO/data/transcripts-energy-enriched"
+      "enriched_parent_path": "/iridisfs/scratch/kjl1a21/DPO/data/transcripts-energy-enriched",
+      "research_questions": [
+        "What are some ways that people experience interactions with energy services or energy management systems?",
+        "What interactions do people have with energy services or energy management systems?",
+        "What barriers or challenges do people face when interacting with energy services or energy management systems?"
+      ]
     },
     {
       "dataset": "sexual-health",
-      "enriched_parent_path": "/iridisfs/scratch/kjl1a21/DPO/data/transcripts-sexual_health-enriched"
+      "enriched_parent_path": "/iridisfs/scratch/kjl1a21/DPO/data/transcripts-sexual_health-enriched",
+      "research_questions": [
+        "What are some ways that people experience interactions with sexual health services or sexual health support systems?",
+        "What interactions do people have with sexual health services or sexual health support systems?",
+        "What barriers or challenges do people face when interacting with sexual health services or sexual health support systems?"
+      ]
     }
   ],
   "agents": [

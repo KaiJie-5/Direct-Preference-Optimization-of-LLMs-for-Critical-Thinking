@@ -316,6 +316,12 @@ def _prompt_variables(
         "review_block": block_input.review_block.id,
         "review_block_title": block_input.review_block.title,
         "participant_segment_text": block_input.participant_segment_text,
+        "research_questions": _format_research_questions(
+            block_input.research_questions
+        ),
+        "research_questions_json": json.dumps(
+            list(block_input.research_questions), ensure_ascii=False, indent=2
+        ),
         "candidate_table_json": json.dumps(
             block_input.candidate_table, ensure_ascii=False, indent=2
         ),
@@ -385,6 +391,15 @@ def _long_row(
 def _new_run_dir(output_root: Path, run_name: str) -> Path:
     timestamp = time.strftime("%Y%m%d_%H%M%S", time.localtime())
     return output_root / f"{run_name}_{timestamp}"
+
+
+def _format_research_questions(research_questions: tuple[str, ...]) -> str:
+    if not research_questions:
+        return "No research questions supplied."
+    return "\n".join(
+        f"{index}. {question}"
+        for index, question in enumerate(research_questions, start=1)
+    )
 
 
 def _timestamp() -> str:

@@ -11,6 +11,7 @@ class DatasetConfig:
     dataset: str
     enriched_parent_path: Path | None = None
     enriched_run_path: Path | None = None
+    research_questions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +71,9 @@ def debate_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> De
             dataset=str(item["dataset"]),
             enriched_parent_path=_optional_path(item.get("enriched_parent_path"), base_dir),
             enriched_run_path=_optional_path(item.get("enriched_run_path"), base_dir),
+            research_questions=tuple(
+                str(question) for question in item.get("research_questions", [])
+            ),
         )
         for item in payload.get("datasets", [])
     )
@@ -157,6 +161,7 @@ def config_to_jsonable(config: DebateConfig) -> dict[str, Any]:
                 "enriched_run_path": (
                     str(item.enriched_run_path) if item.enriched_run_path else None
                 ),
+                "research_questions": list(item.research_questions),
             }
             for item in config.datasets
         ],

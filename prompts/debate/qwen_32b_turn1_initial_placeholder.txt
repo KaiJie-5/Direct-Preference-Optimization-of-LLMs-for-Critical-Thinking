@@ -12,6 +12,9 @@ Review block title: {review_block_title}
 Turn ID: {turn_id}
 Turn role: {turn_role}
 
+Research questions:
+{research_questions}
+
 Participant segment text:
 {participant_segment_text}
 
@@ -35,4 +38,3 @@ Required output shape:
   "ranking": ["A", "B", "C", "D", "E"],
   "rationale": "Briefly justify your initial ranking for this review block only."
 }}
-

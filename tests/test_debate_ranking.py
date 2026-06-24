@@ -31,7 +31,11 @@ def test_review_pack_loader_reconstructs_candidates_and_reflective_questions(
     block_inputs = build_block_inputs(
         review_pack_path=review_pack,
         dataset_configs=(
-            _dataset_config("energy", enriched_parent),
+            _dataset_config(
+                "energy",
+                enriched_parent,
+                research_questions=("What interactions happen?",),
+            ),
         ),
         review_blocks=configured_review_blocks(None),
     )
@@ -40,6 +44,7 @@ def test_review_pack_loader_reconstructs_candidates_and_reflective_questions(
     wrong_code = block_inputs[0]
     assert wrong_code.review_block.id == "wrong_code"
     assert wrong_code.participant_segment_text == "Participant text."
+    assert wrong_code.research_questions == ("What interactions happen?",)
     assert wrong_code.candidate_table[0]["candidate_label"] == "A"
     assert wrong_code.candidate_table[0]["original_sample_index"] == 2
     assert wrong_code.candidate_table[0]["fields"]["code_label"] == "wrong 2"
@@ -107,7 +112,10 @@ def test_dry_run_debate_writes_trace_final_jsonl_and_long_csv(tmp_path: Path) ->
     second_prompt = tmp_path / "second.txt"
     third_prompt = tmp_path / "third.txt"
     fourth_prompt = tmp_path / "fourth.txt"
-    first_prompt.write_text("{record_id} {review_block} {candidate_table_json}", encoding="utf-8")
+    first_prompt.write_text(
+        "{record_id} {review_block} {research_questions} {candidate_table_json}",
+        encoding="utf-8",
+    )
     second_prompt.write_text(
         "{record_id} {review_block} {previous_agent_trace_json}", encoding="utf-8"
     )
@@ -126,6 +134,7 @@ def test_dry_run_debate_writes_trace_final_jsonl_and_long_csv(tmp_path: Path) ->
                 {
                     "dataset": "energy",
                     "enriched_parent_path": str(enriched_parent),
+                    "research_questions": ["What interactions happen?"],
                 }
             ],
             "agents": [
@@ -195,6 +204,7 @@ def test_dry_run_debate_writes_trace_final_jsonl_and_long_csv(tmp_path: Path) ->
     assert final_rows[0]["rankings"]["wrong_code"] == ["A", "B", "C", "D", "E"]
     assert long_rows[0]["review_block"] == "wrong_code"
     assert long_rows[0]["candidate_A_sample_index"] == "2"
+    assert "What interactions happen?" in trace_rows[0]["rendered_prompt"]
     assert trace_rows[1]["turn_id"] == "turn2_response_72b"
     assert "Dry-run ranking for smoke testing." in trace_rows[1]["rendered_prompt"]
 
@@ -329,10 +339,18 @@ def test_compare_rankings_outputs_descriptive_alignment_only(tmp_path: Path) -> 
     assert summary[0]["review_block"] == "wrong_code"
 
 
-def _dataset_config(dataset: str, enriched_parent: Path):
+def _dataset_config(
+    dataset: str,
+    enriched_parent: Path,
+    research_questions: tuple[str, ...] = (),
+):
     from dpo_critical_thinking.debate.config import DatasetConfig
 
-    return DatasetConfig(dataset=dataset, enriched_parent_path=enriched_parent)
+    return DatasetConfig(
+        dataset=dataset,
+        enriched_parent_path=enriched_parent,
+        research_questions=research_questions,
+    )
 
 
 class QueueDebateAgent:

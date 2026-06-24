@@ -38,6 +38,7 @@ class DebateBlockInput:
     segment: ReviewSegment
     review_block: ReviewBlock
     participant_segment_text: str
+    research_questions: tuple[str, ...]
     candidate_table: list[dict[str, Any]]
     candidate_mapping: list[dict[str, Any]]
     segment_json_path: Path
@@ -131,6 +132,7 @@ def build_block_inputs(
                     segment=segment,
                     review_block=block,
                     participant_segment_text=str(payload.get("input_text", "")),
+                    research_questions=dataset_config.research_questions,
                     candidate_table=[
                         _candidate_payload(payload, mapping, block)
                         for mapping in block_mappings
@@ -217,4 +219,3 @@ def _read_csv_dicts(path: Path) -> list[dict[str, str]]:
         raise FileNotFoundError(f"Required CSV does not exist: {path}")
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
-
