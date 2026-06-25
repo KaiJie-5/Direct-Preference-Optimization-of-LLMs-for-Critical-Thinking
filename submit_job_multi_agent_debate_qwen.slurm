@@ -12,6 +12,7 @@
 #SBATCH --error=dpo_debate_qwen_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=kjl1a21@soton.ac.uk
+#SBATCH --exclude=blossom04
 
 # =========================
 # Easy configuration block
