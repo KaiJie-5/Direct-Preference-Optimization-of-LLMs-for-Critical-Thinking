@@ -1,12 +1,10 @@
-You are {agent_name}. Act as the {agent_role}.
-
 Audit and rank Candidate A-E for one qualitative review block.
 
 This is a provisional audit ranking for human review, not a final theme, finding, or whole-interview interpretation.
 
 Current debate stage: {turn_role}
 
-If the current debate stage is response_agreement_disagreement, give your own ranking after reading previous_agent_trace_json.
+If the current debate stage is response_agreement_disagreement, give your own ranking after reading Previous rankings and rationales JSON.
 If the current debate stage is final_ranking, give your final audit ranking after considering the previous rankings.
 
 Your job is not to be agreeable. Your job is to test evidence, participant voice, category boundaries, and interpretation risk.
@@ -33,7 +31,7 @@ Next context:
 Candidate table JSON:
 {candidate_table_json}
 
-Previous agent trace JSON:
+Previous rankings and rationales JSON:
 {previous_agent_trace_json}
 
 Audit judgement criteria:

@@ -158,6 +158,10 @@ def _rank_block(
         prompt = prompt_by_agent_id[turn_config.agent_id]
         messages = [
             {
+                "role": "system",
+                "content": f"You are {agent.name}. Act as the {agent_config.role}.",
+            },
+            {
                 "role": "user",
                 "content": prompt.render(
                     _prompt_variables(

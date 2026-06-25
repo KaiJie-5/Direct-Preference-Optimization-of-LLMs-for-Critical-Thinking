@@ -108,6 +108,26 @@ def test_borda_aggregation_uses_qwen_72b_tiebreak_and_records_it() -> None:
     assert result["tiebreaks"][0]["applied_order"] == ["B", "A"]
 
 
+def test_qwen_debate_prompt_templates_start_with_task_body() -> None:
+    repo_root = Path(__file__).parents[1]
+    qwen32 = (
+        repo_root / "prompts" / "debate" / "qwen_32b_debate_placeholder.txt"
+    ).read_text(encoding="utf-8")
+    qwen72 = (
+        repo_root / "prompts" / "debate" / "qwen_72b_debate_placeholder.txt"
+    ).read_text(encoding="utf-8")
+
+    assert qwen32.splitlines()[0] == "Rank Candidate A-E for one qualitative review block."
+    assert (
+        qwen72.splitlines()[0]
+        == "Audit and rank Candidate A-E for one qualitative review block."
+    )
+    for template in (qwen32, qwen72):
+        assert not template.startswith("You are {agent_name}. Act as")
+        assert "Previous rankings and rationales JSON:" in template
+        assert "Previous agent trace JSON:" not in template
+
+
 def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
     tmp_path: Path,
 ) -> None:
@@ -117,12 +137,13 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
     qwen32_prompt.write_text(
         "QWEN32 {agent_role} {turn_id} {record_id} {review_block} "
         "{research_questions} {previous_context} {participant_segment_text} "
-        "{next_context} {candidate_table_json}",
+        "{next_context} {candidate_table_json} "
+        "Previous rankings and rationales JSON: {previous_agent_trace_json}",
         encoding="utf-8",
     )
     qwen72_prompt.write_text(
         "QWEN72 {agent_role} {turn_id} {record_id} {review_block} "
-        "{previous_agent_trace_json}",
+        "Previous rankings and rationales JSON: {previous_agent_trace_json}",
         encoding="utf-8",
     )
     config = debate_config_from_mapping(
@@ -236,6 +257,13 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
         Path("debate_traces") / "energy" / "INT01_SEG001.json"
     )
     assert long_rows[0]["candidate_A_sample_index"] == "2"
+    assert trace_rows[0]["rendered_prompt"].startswith(
+        "You are Qwen 32B. Act as the Interpretive QDA Methodologist.\n\nQWEN32"
+    )
+    assert trace_rows[1]["rendered_prompt"].startswith(
+        "You are Qwen 72B. Act as the Reflexive Evidence and Interpretation "
+        "Auditor.\n\nQWEN72"
+    )
     assert "What interactions happen?" in trace_rows[0]["rendered_prompt"]
     assert "Interviewer: Previous question?" in trace_rows[0]["rendered_prompt"]
     assert "Interviewer: Next question?" in trace_rows[0]["rendered_prompt"]
@@ -249,6 +277,9 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
         in trace_rows[1]["rendered_prompt"]
     )
     assert trace_rows[1]["turn_id"] == "turn2_response_72b"
+    assert '"turn_id": "turn1_initial_32b"' in trace_rows[1]["rendered_prompt"]
+    assert '"turn_id": "turn2_response_72b"' in trace_rows[2]["rendered_prompt"]
+    assert '"turn_id": "turn3_revision_32b"' in trace_rows[3]["rendered_prompt"]
     assert "Dry-run ranking for smoke testing." in trace_rows[1]["rendered_prompt"]
 
 
@@ -295,6 +326,35 @@ def test_four_turn_debate_aggregates_only_turn_3_and_turn_4(tmp_path: Path) -> N
         "turn4_final_72b",
     ]
     assert result["tiebreak_agent_id"] == "qwen_72b"
+    for call in [*qwen32.calls, *qwen72.calls]:
+        assert [message["role"] for message in call] == ["system", "user"]
+
+    assert qwen32.calls[0][0]["content"] == (
+        "You are qwen_32b. Act as the Interpretive QDA Methodologist."
+    )
+    assert qwen72.calls[0][0]["content"] == (
+        "You are qwen_72b. Act as the Reflexive Evidence and Interpretation Auditor."
+    )
+    assert not qwen32.calls[0][1]["content"].startswith("You are qwen_32b. Act as")
+    assert "Previous rankings and rationales JSON:" in qwen72.calls[0][1]["content"]
+
+    turn2_user_prompt = qwen72.calls[0][1]["content"]
+    assert '"turn_id": "turn1_initial_32b"' in turn2_user_prompt
+    assert "early 32b" in turn2_user_prompt
+    assert "early 72b" not in turn2_user_prompt
+
+    turn3_user_prompt = qwen32.calls[1][1]["content"]
+    assert '"turn_id": "turn1_initial_32b"' in turn3_user_prompt
+    assert '"turn_id": "turn2_response_72b"' in turn3_user_prompt
+    assert "early 32b" in turn3_user_prompt
+    assert "early 72b" in turn3_user_prompt
+
+    turn4_user_prompt = qwen72.calls[1][1]["content"]
+    assert '"turn_id": "turn1_initial_32b"' in turn4_user_prompt
+    assert '"turn_id": "turn2_response_72b"' in turn4_user_prompt
+    assert '"turn_id": "turn3_revision_32b"' in turn4_user_prompt
+    assert "terminal 32b" in turn4_user_prompt
+    assert "terminal 72b" not in turn4_user_prompt
 
 
 def test_failed_terminal_turn_marks_block_failed(tmp_path: Path) -> None:
@@ -419,12 +479,14 @@ class QueueDebateAgent:
         self.agent_id = agent_id
         self.name = agent_id
         self.outputs = outputs
+        self.calls: list[list[dict[str, str]]] = []
 
     def generate(
         self,
         messages: list[dict[str, str]],
         generation: GenerationConfig,
     ) -> DebateGenerationResult:
+        self.calls.append([dict(message) for message in messages])
         return DebateGenerationResult(
             text=self.outputs.pop(0),
             raw={"message_count": len(messages)},
@@ -448,7 +510,8 @@ def _write_turn_prompts(tmp_path: Path) -> dict[str, Path]:
     for agent_id, path in paths.items():
         path.write_text(
             f"{agent_id} {{agent_role}} {{turn_id}} {{record_id}} "
-            "{review_block} {previous_agent_trace_json}",
+            "{review_block} Previous rankings and rationales JSON: "
+            "{previous_agent_trace_json}",
             encoding="utf-8",
         )
     return paths
