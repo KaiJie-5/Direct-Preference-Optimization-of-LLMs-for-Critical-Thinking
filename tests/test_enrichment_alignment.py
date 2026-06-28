@@ -536,7 +536,9 @@ def test_canonicalize_source_fields_repairs_all_structured_quote_locations(
     )
 
 
-def test_v2_schema_rejects_quote_with_changed_characters(tmp_path: Path) -> None:
+def test_v2_schema_warns_for_non_empty_quote_with_changed_characters(
+    tmp_path: Path,
+) -> None:
     record = load_segment_records(
         _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
     )[0]
@@ -545,7 +547,7 @@ def test_v2_schema_rejects_quote_with_changed_characters(tmp_path: Path) -> None
         "evidence_quote"
     ] = "someone still needs to check the results"
 
-    errors = validate_segment_enrichment_sample(
+    result = validate_segment_enrichment_sample_result(
         payload,
         record,
         expected_codebook_version="v1",
@@ -553,14 +555,15 @@ def test_v2_schema_rejects_quote_with_changed_characters(tmp_path: Path) -> None
         expected_context_scope="immediate",
     )
 
-    assert any(
-        "code_quality_examples.useful_analytical_code.evidence_quote" in error
-        and "exact non-empty substring" in error
-        for error in errors
-    )
+    assert result.errors == []
+    assert result.warnings == [
+        "code_quality_examples.useful_analytical_code.evidence_quote is "
+        "non-empty but is not an exact target-segment substring; manual "
+        "correction is required."
+    ]
 
 
-def test_canonicalize_source_fields_rejects_ambiguous_quote_match(
+def test_canonicalize_source_fields_warns_for_ambiguous_quote_match(
     tmp_path: Path,
 ) -> None:
     segment = _segment("INT01", 1)
@@ -586,14 +589,75 @@ def test_canonicalize_source_fields_rejects_ambiguous_quote_match(
         == "code_quality_examples.too_broad_code.evidence_quote"
         for item in corrections
     )
-    errors = validate_segment_enrichment_sample(
+    result = validate_segment_enrichment_sample_result(
         canonical,
         record,
         expected_codebook_version="v1",
         expected_schema_version="segment_enrichment_sample_v2",
         expected_context_scope="immediate",
     )
-    assert any("too_broad_code.evidence_quote" in error for error in errors)
+    assert result.errors == []
+    assert any(
+        "too_broad_code.evidence_quote" in warning
+        for warning in result.warnings
+    )
+
+
+def test_v2_schema_keeps_empty_structured_quote_invalid(tmp_path: Path) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload["code_quality_examples"]["wrong_code"]["actual_segment_quote"] = ""
+
+    result = validate_segment_enrichment_sample_result(
+        payload,
+        record,
+        expected_codebook_version="v1",
+        expected_schema_version="segment_enrichment_sample_v2",
+        expected_context_scope="immediate",
+    )
+
+    assert any("exact non-empty substring" in error for error in result.errors)
+    assert result.warnings == []
+
+
+def test_self_consistency_does_not_retry_non_empty_quote_warning(
+    tmp_path: Path,
+) -> None:
+    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}")
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload["code_quality_examples"]["wrong_code"][
+        "actual_segment_quote"
+    ] = "A quotation that is unrelated to the target."
+    teacher = QueueTeacher(
+        [f"<think>\nReasoning.\n</think>\n{json.dumps(payload)}"]
+    )
+
+    enriched = run_self_consistency(
+        record=record,
+        teacher=teacher,
+        prompt=PromptTemplate(prompt_path),
+        prompt_vars={},
+        codebook=_codebook_payload(),
+        generation_options=GenerationOptions(),
+        num_samples=1,
+        aggregation="scaffold",
+        json_retry_attempts=2,
+        logger=RunLogger(tmp_path / "logs"),
+    )
+
+    sample = enriched["samples"][0]
+    assert sample["attempt_count"] == 1
+    assert sample["final_parse_status"] == "valid"
+    assert sample["validation_errors"] == []
+    assert any(
+        "manual correction is required" in warning
+        for warning in sample["validation_warnings"]
+    )
 
 
 def test_v2_schema_rejects_broadly_collapsed_narrative_text(tmp_path: Path) -> None:

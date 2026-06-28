@@ -640,7 +640,7 @@ def validate_segment_enrichment_sample_result(
             errors.append("quality_control must be an object.")
 
     if is_v2:
-        _validate_structured_quotes(payload, record.text, errors)
+        _validate_structured_quotes(payload, record.text, errors, warnings)
         collapsed_paths = _collapsed_narrative_paths(payload)
         if len(collapsed_paths) >= 3:
             errors.append(
@@ -652,15 +652,23 @@ def validate_segment_enrichment_sample_result(
 
 
 def _validate_structured_quotes(
-    payload: dict[str, Any], target_text: str, errors: list[str]
+    payload: dict[str, Any],
+    target_text: str,
+    errors: list[str],
+    warnings: list[str],
 ) -> None:
     for container, key, path in _structured_quote_slots(payload):
         quote = container.get(key)
         if isinstance(quote, str) and quote and quote in target_text:
             continue
-        if isinstance(quote, str):
+        if isinstance(quote, str) and not quote:
             errors.append(
                 f"{path} must be an exact non-empty substring of the target segment."
+            )
+        elif isinstance(quote, str):
+            warnings.append(
+                f"{path} is non-empty but is not an exact target-segment "
+                "substring; manual correction is required."
             )
 
 
