@@ -9,11 +9,11 @@
 CONDA_ENV="${CONDA_ENV:-dpo}"
 PROJECT_DIR="${PROJECT_DIR:-/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking}"
 SCRATCH_DPO="${SCRATCH_DPO:-/iridisfs/scratch/kjl1a21/DPO}"
-OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH_DPO}/data/transcripts-energy-preprocessed}"
+OUTPUT_DIR="${OUTPUT_DIR:-${SCRATCH_DPO}/data/transcripts-sexual_health-preprocessed}"
 INPUT_PATH="${1:-${INPUT_PATH:-}}"
 
 if [[ -z "${INPUT_PATH}" ]]; then
-    echo "Usage: bash run_preprocessing_energy.sh /path/to/transcripts-energy.html" >&2
+    echo "Usage: bash run_preprocessing.sh /path/to/transcripts.html" >&2
     echo "The input may also be a directory containing HTML interview files." >&2
     exit 2
 fi
@@ -40,8 +40,8 @@ python -m preprocessing.cli html \
     --raw-html-dir "${OUTPUT_DIR}/raw_html" \
     --segments-dir "${OUTPUT_DIR}/segments_jsonl" \
     --manifest-path "${OUTPUT_DIR}/preprocessing_manifest.json" \
-    --dataset-id "transcripts-energy" \
-    --domain "energy services" \
+    --dataset-id "transcripts-sexual_health" \
+    --domain "sexual_health services" \
     --overwrite
 
 echo "Preprocessing complete."
