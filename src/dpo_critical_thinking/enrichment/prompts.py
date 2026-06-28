@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from string import Formatter
 from typing import Any
 
 
@@ -18,6 +19,13 @@ class PromptTemplate:
 
     def render(self, variables: dict[str, Any]) -> str:
         return self.template.format_map(_SafeFormatDict(variables))
+
+    def uses_variable(self, name: str) -> bool:
+        return any(
+            field_name == name
+            for _, field_name, _, _ in Formatter().parse(self.template)
+            if field_name is not None
+        )
 
 
 def parse_prompt_vars(values: list[str] | None) -> dict[str, str]:

@@ -27,6 +27,7 @@ def run_self_consistency(
     json_retry_attempts: int,
     logger: RunLogger,
     codebook: dict[str, Any] | None = None,
+    context_scope: str = "immediate",
 ) -> dict[str, Any]:
     if aggregation != "scaffold":
         raise ValueError(
@@ -34,7 +35,11 @@ def run_self_consistency(
             "Use --self-consistency-aggregation scaffold."
         )
 
-    variables = {**record.to_prompt_vars(codebook), **prompt_vars}
+    variables = {
+        **record.to_prompt_vars(codebook, context_scope=context_scope),
+        **prompt_vars,
+    }
+    variables["analysis_context"] = record.analysis_context(context_scope)
     rendered_prompt = prompt.render(variables)
     expected_codebook_version = _expected_codebook_version(record, codebook)
     samples: list[dict[str, Any]] = []
@@ -60,6 +65,7 @@ def run_self_consistency(
         "metadata": record.metadata,
         "source": record.source,
         "strategy": "self_consistency",
+        "context_scope": context_scope,
         "prompt_path": str(prompt.path),
         "num_samples": num_samples,
         "aggregation": aggregation,
@@ -85,8 +91,13 @@ def run_self_refine(
     json_retry_attempts: int,
     logger: RunLogger,
     codebook: dict[str, Any] | None = None,
+    context_scope: str = "immediate",
 ) -> dict[str, Any]:
-    variables = {**record.to_prompt_vars(codebook), **prompt_vars}
+    variables = {
+        **record.to_prompt_vars(codebook, context_scope=context_scope),
+        **prompt_vars,
+    }
+    variables["analysis_context"] = record.analysis_context(context_scope)
     expected_codebook_version = _expected_codebook_version(record, codebook)
     initial_rendered = initial_prompt.render(variables)
     initial_sample = _generate_validated_sample(
@@ -192,6 +203,7 @@ def run_self_refine(
         "metadata": record.metadata,
         "source": record.source,
         "strategy": "self_refine",
+        "context_scope": context_scope,
         "prompt_paths": {
             "initial": str(initial_prompt.path),
             "critique": str(critique_prompt.path),

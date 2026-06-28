@@ -17,7 +17,10 @@ from dpo_critical_thinking.enrichment.schema import (
     validate_segment_enrichment_sample,
     validate_segment_enrichment_sample_result,
 )
-from dpo_critical_thinking.enrichment.strategies import run_self_consistency
+from dpo_critical_thinking.enrichment.strategies import (
+    run_self_consistency,
+    run_self_refine,
+)
 from dpo_critical_thinking.enrichment.teachers import (
     GenerationOptions,
     GenerationResult,
@@ -97,6 +100,33 @@ def test_preprocess_html_writes_raw_interviews_and_participant_turn_segments(
     assert segments[0]["speaker"] == "participant"
     assert segments[0]["previous_context"].startswith("Interviewer:")
     assert segments[0]["next_context"].startswith("Interviewer:")
+    assert segments[0]["interview_turns"] == [
+        {
+            "turn_index": 1,
+            "speaker": "interviewer",
+            "text": "Question one?",
+            "paragraph_index": 1,
+        },
+        {
+            "turn_index": 2,
+            "speaker": "participant",
+            "text": "Answer one.",
+            "paragraph_index": 2,
+        },
+        {
+            "turn_index": 3,
+            "speaker": "interviewer",
+            "text": "Question two?",
+            "paragraph_index": 3,
+        },
+        {
+            "turn_index": 4,
+            "speaker": "participant",
+            "text": "Answer two.",
+            "paragraph_index": 4,
+        },
+    ]
+    assert segments[1]["interview_turns"] == segments[0]["interview_turns"]
     assert segments[0]["line_start"] is None
     assert segments[0]["paragraph_index_start"] == 2
     assert segments[0]["participant_characteristics"] == {
@@ -162,6 +192,58 @@ def test_load_segment_records_accepts_file_or_directory(tmp_path: Path) -> None:
     assert [record.record_id for record in one_file] == ["INT01_SEG001"]
     assert [record.record_id for record in all_files] == ["INT01_SEG001", "INT02_SEG001"]
     assert all_files[0].to_prompt_vars()["candidate_example_codes_json"] == "[]"
+
+
+def test_context_scope_immediate_supports_legacy_segments(tmp_path: Path) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+
+    variables = record.to_prompt_vars(context_scope="immediate")
+
+    assert variables["analysis_context"] == (
+        "Previous context:\nInterviewer: Can AI help?\n\nNext context:\n"
+    )
+
+
+def test_context_scope_full_interview_marks_target_and_excludes_turns_from_json(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(
+        _write_jsonl(
+            tmp_path / "segments.jsonl",
+            [_segment("INT01", 1, include_interview_turns=True)],
+        )
+    )[0]
+
+    variables = record.to_prompt_vars(context_scope="full_interview")
+
+    assert variables["analysis_context"].splitlines() == [
+        "Turn 1 | Interviewer: Can AI help?",
+        "Turn 2 | Participant [TARGET SEGMENT SEG001]: "
+        "AI can help, but someone still needs to check the result.",
+        "Turn 3 | Interviewer: What are the risks?",
+    ]
+    assert "interview_turns" not in variables
+    assert "interview_turns" not in variables["segment_json"]
+
+
+def test_context_scope_full_interview_rejects_missing_or_mismatched_turns(
+    tmp_path: Path,
+) -> None:
+    legacy = load_segment_records(
+        _write_jsonl(tmp_path / "legacy.jsonl", [_segment("INT01", 1)])
+    )[0]
+    with pytest.raises(ValueError, match="Reprocess the source HTML"):
+        legacy.analysis_context("full_interview")
+
+    mismatched_payload = _segment("INT01", 1, include_interview_turns=True)
+    mismatched_payload["interview_turns"][1]["text"] = "Different target text."
+    mismatched = load_segment_records(
+        _write_jsonl(tmp_path / "mismatched.jsonl", [mismatched_payload])
+    )[0]
+    with pytest.raises(ValueError, match="same participant text"):
+        mismatched.analysis_context("full_interview")
 
 
 def test_parse_json_object_prefers_content_after_think_block() -> None:
@@ -326,6 +408,83 @@ def test_self_consistency_treats_target_text_mismatch_as_warning(
     )
 
 
+def test_self_consistency_receives_full_interview_context(tmp_path: Path) -> None:
+    record = load_segment_records(
+        _write_jsonl(
+            tmp_path / "segments.jsonl",
+            [_segment("INT01", 1, include_interview_turns=True)],
+        )
+    )[0]
+    prompt_path = _write_prompt(tmp_path, "Context:\n{analysis_context}")
+    teacher = QueueTeacher(
+        [json.dumps(_valid_sample(record, codebook_version="v1"))]
+    )
+
+    enriched = run_self_consistency(
+        record=record,
+        teacher=teacher,
+        prompt=PromptTemplate(prompt_path),
+        prompt_vars={},
+        codebook=_codebook_payload(),
+        generation_options=GenerationOptions(),
+        num_samples=1,
+        aggregation="scaffold",
+        json_retry_attempts=0,
+        logger=RunLogger(tmp_path / "logs"),
+        context_scope="full_interview",
+    )
+
+    assert "[TARGET SEGMENT SEG001]" in teacher.prompts[0]
+    assert enriched["context_scope"] == "full_interview"
+
+
+def test_self_refine_receives_full_context_in_every_prompt(tmp_path: Path) -> None:
+    record = load_segment_records(
+        _write_jsonl(
+            tmp_path / "segments.jsonl",
+            [_segment("INT01", 1, include_interview_turns=True)],
+        )
+    )[0]
+    initial_prompt = _write_prompt(tmp_path, "Initial:\n{analysis_context}")
+    critique_prompt = _write_prompt(
+        tmp_path,
+        "Critique:\n{analysis_context}\n{current_answer}",
+    )
+    revision_prompt = _write_prompt(
+        tmp_path,
+        "Revision:\n{analysis_context}\n{current_answer}\n{feedback}",
+    )
+    valid_output = json.dumps(_valid_sample(record, codebook_version="v1"))
+    teacher = QueueTeacher(
+        [
+            valid_output,
+            json.dumps({"needs_refinement": True, "feedback": "Revise it."}),
+            valid_output,
+        ]
+    )
+
+    enriched = run_self_refine(
+        record=record,
+        teacher=teacher,
+        initial_prompt=PromptTemplate(initial_prompt),
+        critique_prompt=PromptTemplate(critique_prompt),
+        revision_prompt=PromptTemplate(revision_prompt),
+        prompt_vars={},
+        codebook=_codebook_payload(),
+        generation_options=GenerationOptions(),
+        refine_rounds=1,
+        stop_parser="json",
+        history_format="text",
+        json_retry_attempts=0,
+        logger=RunLogger(tmp_path / "refine_logs"),
+        context_scope="full_interview",
+    )
+
+    assert len(teacher.prompts) == 3
+    assert all("[TARGET SEGMENT SEG001]" in prompt for prompt in teacher.prompts)
+    assert enriched["context_scope"] == "full_interview"
+
+
 def test_enrichment_cli_default_max_new_tokens_is_deepseek_budget() -> None:
     args = build_parser().parse_args(
         [
@@ -365,6 +524,64 @@ def test_enrichment_cli_accepts_repeated_research_questions() -> None:
         "How do participants discuss energy efficiency?",
         "How do participants describe smart technology use?",
     ]
+
+
+def test_enrichment_cli_context_scope_defaults_to_immediate() -> None:
+    args = build_parser().parse_args(
+        [
+            "--segments-path",
+            "segments",
+            "--output-dir",
+            "outputs",
+            "--strategy",
+            "self_consistency",
+            "--prompt-path",
+            "prompt.txt",
+        ]
+    )
+
+    assert args.context_scope == "immediate"
+
+
+def test_full_interview_rejects_missing_prompt_placeholder_before_teacher_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    segments_path = _write_jsonl(
+        tmp_path / "segments.jsonl",
+        [_segment("INT01", 1, include_interview_turns=True)],
+    )
+    prompt_path = _write_prompt(
+        tmp_path,
+        "An escaped placeholder does not inject context: {{analysis_context}}",
+    )
+    codebook_path = _write_codebook(tmp_path)
+
+    def unexpected_teacher_build(args: Any) -> Any:
+        raise AssertionError("Teacher construction must happen after context validation.")
+
+    monkeypatch.setattr(
+        "dpo_critical_thinking.enrichment.cli.build_teacher",
+        unexpected_teacher_build,
+    )
+
+    with pytest.raises(ValueError, match=r"requires \{analysis_context\}"):
+        enrich_main(
+            [
+                "--segments-path",
+                str(segments_path),
+                "--output-dir",
+                str(tmp_path / "outputs"),
+                "--codebook-path",
+                str(codebook_path),
+                "--strategy",
+                "self_consistency",
+                "--prompt-path",
+                str(prompt_path),
+                "--context-scope",
+                "full_interview",
+            ]
+        )
 
 
 def test_transformers_token_budget_clamps_to_context_window() -> None:
@@ -430,6 +647,11 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
     segment_payload = json.loads(segment_json.read_text(encoding="utf-8"))
     assert segment_payload["interview_id"] == "INT01"
     assert segment_payload["segment_id"] == "SEG001"
+    assert segment_payload["context_scope"] == "immediate"
+    manifest = json.loads(
+        (interview_dir / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["args"]["context_scope"] == "immediate"
     sample = segment_payload["samples"][0]
     assert "reasoning_text" in sample
     assert "attempts" not in sample
@@ -692,6 +914,20 @@ def test_sexual_health_slurm_uses_separate_dataset_paths() -> None:
     assert "transcripts-energy-enriched" not in text
 
 
+@pytest.mark.parametrize(
+    "script_name",
+    [
+        "submit_job_enrichment_self_consistency.slurm",
+        "submit_job_enrichment_self_consistency_sexual_health.slurm",
+    ],
+)
+def test_enrichment_slurm_exposes_context_scope(script_name: str) -> None:
+    text = Path(script_name).read_text(encoding="utf-8")
+
+    assert 'CONTEXT_SCOPE="immediate"' in text
+    assert '--context-scope "${CONTEXT_SCOPE}"' in text
+
+
 def _write_example_workbook(path: Path) -> None:
     from openpyxl import Workbook
 
@@ -780,7 +1016,11 @@ def _sexual_health_html_with_mojibake() -> str:
 
 
 def _segment(
-    interview_id: str, index: int, *, include_codebook: bool = False
+    interview_id: str,
+    index: int,
+    *,
+    include_codebook: bool = False,
+    include_interview_turns: bool = False,
 ) -> dict[str, Any]:
     segment_id = f"SEG{index:03d}"
     payload = {
@@ -802,6 +1042,27 @@ def _segment(
         payload["codebook_id"] = "example_codes"
         payload["codebook_version"] = "v1"
         payload["candidate_example_codes"] = _codebook_payload()["codes"]
+    if include_interview_turns:
+        payload["interview_turns"] = [
+            {
+                "turn_index": 1,
+                "speaker": "interviewer",
+                "text": "Can AI help?",
+                "paragraph_index": 1,
+            },
+            {
+                "turn_index": 2,
+                "speaker": "participant",
+                "text": payload["text"],
+                "paragraph_index": 2,
+            },
+            {
+                "turn_index": 3,
+                "speaker": "interviewer",
+                "text": "What are the risks?",
+                "paragraph_index": 3,
+            },
+        ]
     return payload
 
 

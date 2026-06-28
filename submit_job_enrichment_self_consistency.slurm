@@ -27,6 +27,7 @@ OUTPUT_ROOT="${SCRATCH_DPO}/data/transcripts-energy-enriched"
 PROMPT_PATH="${PROJECT_DIR}/prompts/enrichment/self_consistency_placeholder.txt"
 
 STRATEGY="self_consistency"
+CONTEXT_SCOPE="immediate"
 TEACHER_BACKEND="transformers"
 SELF_CONSISTENCY_SAMPLES=5
 JSON_RETRY_ATTEMPTS=2
@@ -83,6 +84,7 @@ CODEBOOK_PATH=${CODEBOOK_PATH}
 OUTPUT_ROOT=${OUTPUT_ROOT}
 PROMPT_PATH=${PROMPT_PATH}
 STRATEGY=${STRATEGY}
+CONTEXT_SCOPE=${CONTEXT_SCOPE}
 TEACHER_BACKEND=${TEACHER_BACKEND}
 SELF_CONSISTENCY_SAMPLES=${SELF_CONSISTENCY_SAMPLES}
 JSON_RETRY_ATTEMPTS=${JSON_RETRY_ATTEMPTS}
@@ -125,6 +127,7 @@ ENRICH_ARGS=(
     --output-dir "${RUN_DIR}"
     --codebook-path "${CODEBOOK_PATH}"
     --strategy "${STRATEGY}"
+    --context-scope "${CONTEXT_SCOPE}"
     --prompt-path "${PROMPT_PATH}"
     --teacher-backend "${TEACHER_BACKEND}"
     --model-path "${MODEL_PATH}"

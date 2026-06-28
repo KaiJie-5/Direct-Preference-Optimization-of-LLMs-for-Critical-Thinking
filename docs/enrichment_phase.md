@@ -51,7 +51,11 @@ Preprocessing writes:
 - `data/segments_jsonl/INT01_segments.jsonl`
 - `data/preprocessing_manifest.json`
 
-Each JSONL line is one participant-turn segment with previous/next context and participant characteristics extracted from the interview metadata table. Codebooks are selected later during enrichment so the same segments can be reused with different codebook versions.
+Each JSONL line is one participant-turn segment with previous/next context,
+participant characteristics extracted from the interview metadata table, and an
+`interview_turns` array containing every interviewer and participant turn in
+source order. Codebooks are selected later during enrichment so the same
+segments can be reused with different codebook versions.
 
 ## Enrich Segments
 
@@ -67,6 +71,7 @@ dpo-enrich \
   --research-question "How do participants discuss energy efficiency?" \
   --research-question "How do participants describe smart technology use?" \
   --teacher-backend dry-run \
+  --context-scope immediate \
   --self-consistency-samples 5 \
   --json-retry-attempts 2 \
   --limit 1
@@ -84,6 +89,7 @@ dpo-enrich \
   --research-question "How do participants discuss energy efficiency?" \
   --research-question "How do participants describe smart technology use?" \
   --teacher-backend transformers \
+  --context-scope immediate \
   --model-path /path/to/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B \
   --temperature 0.6 \
   --max-new-tokens 32768 \
@@ -93,6 +99,13 @@ dpo-enrich \
 ```
 
 The default `--max-new-tokens` is `32768`, matching the DeepSeek-R1 README's high generation-length setting. The Transformers backend still checks the model context window separately and clamps the effective generation budget when the prompt plus requested output would exceed that context.
+
+`--context-scope immediate` is the backward-compatible default and renders the
+existing previous/next context into `{analysis_context}`. The
+`full_interview` scope requires newly preprocessed JSONL, renders every ordered
+turn, and marks the current participant turn as the target. Full-interview mode
+also requires `{analysis_context}` in every prompt used by the selected
+strategy, and validates this before loading the teacher model.
 
 Outputs are grouped by interview:
 
@@ -115,6 +128,7 @@ Templates can use:
 
 - `{record_id}`
 - `{input_text}`
+- `{analysis_context}` (selected by `--context-scope`)
 - `{segment_json}`
 - `{interview_id}`, `{segment_id}`, `{speaker}`
 - `{previous_context}`, `{next_context}`

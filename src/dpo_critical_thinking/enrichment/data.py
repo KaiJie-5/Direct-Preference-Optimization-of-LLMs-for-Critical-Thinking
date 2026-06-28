@@ -22,6 +22,15 @@ SEGMENT_PROMPT_EXCLUDED_FIELDS = {
     "candidate_example_codes",
     "codebook_id",
     "codebook_version",
+    "interview_turns",
+}
+
+CONTEXT_SCOPES = {"immediate", "full_interview"}
+INTERVIEW_TURN_REQUIRED_FIELDS = {
+    "turn_index",
+    "speaker",
+    "text",
+    "paragraph_index",
 }
 
 
@@ -38,7 +47,12 @@ class DatasetRecord:
     def interview_id(self) -> str:
         return str(self.metadata["interview_id"])
 
-    def to_prompt_vars(self, codebook: dict[str, Any] | None = None) -> dict[str, Any]:
+    def to_prompt_vars(
+        self,
+        codebook: dict[str, Any] | None = None,
+        *,
+        context_scope: str = "immediate",
+    ) -> dict[str, Any]:
         payload = {
             "record_id": self.record_id,
             "text": self.text,
@@ -57,6 +71,7 @@ class DatasetRecord:
         variables = {
             "record_id": self.record_id,
             "input_text": self.text,
+            "analysis_context": self.analysis_context(context_scope),
             "segment_json": json.dumps(payload, ensure_ascii=False, indent=2),
             "candidate_example_codes_json": json.dumps(
                 candidate_codes, ensure_ascii=False, indent=2
@@ -78,6 +93,110 @@ class DatasetRecord:
                 else value
             )
         return variables
+
+    def analysis_context(self, context_scope: str = "immediate") -> str:
+        if context_scope not in CONTEXT_SCOPES:
+            options = ", ".join(sorted(CONTEXT_SCOPES))
+            raise ValueError(
+                f"context_scope must be one of {options}; got {context_scope!r}."
+            )
+        if context_scope == "immediate":
+            previous = str(self.metadata.get("previous_context", ""))
+            following = str(self.metadata.get("next_context", ""))
+            return (
+                f"Previous context:\n{previous}\n\n"
+                f"Next context:\n{following}"
+            )
+        return self._full_interview_context()
+
+    def _full_interview_context(self) -> str:
+        turns = self.metadata.get("interview_turns")
+        if not isinstance(turns, list) or not turns:
+            raise ValueError(
+                f"Record {self.record_id} cannot use context_scope='full_interview': "
+                "interview_turns is missing or empty. Reprocess the source HTML first."
+            )
+
+        validated_turns: list[dict[str, Any]] = []
+        seen_indexes: set[int] = set()
+        previous_index = 0
+        for position, turn in enumerate(turns, start=1):
+            if not isinstance(turn, dict):
+                raise ValueError(
+                    f"Record {self.record_id} interview_turns[{position - 1}] "
+                    "must be an object."
+                )
+            missing = sorted(INTERVIEW_TURN_REQUIRED_FIELDS - set(turn))
+            if missing:
+                raise ValueError(
+                    f"Record {self.record_id} interview_turns[{position - 1}] "
+                    f"is missing required fields: {missing}."
+                )
+
+            turn_index = turn["turn_index"]
+            paragraph_index = turn["paragraph_index"]
+            speaker = turn["speaker"]
+            text = turn["text"]
+            if isinstance(turn_index, bool) or not isinstance(turn_index, int):
+                raise ValueError(
+                    f"Record {self.record_id} interview turn_index must be an integer."
+                )
+            if turn_index <= previous_index or turn_index in seen_indexes:
+                raise ValueError(
+                    f"Record {self.record_id} interview_turns must have unique, "
+                    "strictly increasing turn_index values."
+                )
+            if speaker not in {"interviewer", "participant"}:
+                raise ValueError(
+                    f"Record {self.record_id} interview turn {turn_index} has "
+                    f"unsupported speaker {speaker!r}."
+                )
+            if not isinstance(text, str):
+                raise ValueError(
+                    f"Record {self.record_id} interview turn {turn_index} text "
+                    "must be a string."
+                )
+            if isinstance(paragraph_index, bool) or not isinstance(paragraph_index, int):
+                raise ValueError(
+                    f"Record {self.record_id} interview turn {turn_index} "
+                    "paragraph_index must be an integer."
+                )
+            seen_indexes.add(turn_index)
+            previous_index = turn_index
+            validated_turns.append(turn)
+
+        target_turn_index = self.metadata.get("turn_index")
+        target_turns = [
+            turn for turn in validated_turns
+            if turn["turn_index"] == target_turn_index
+        ]
+        if len(target_turns) != 1:
+            raise ValueError(
+                f"Record {self.record_id} full interview must contain exactly one "
+                f"target turn with turn_index={target_turn_index!r}; "
+                f"found {len(target_turns)}."
+            )
+        target_turn = target_turns[0]
+        if target_turn["speaker"] != "participant" or target_turn["text"] != self.text:
+            raise ValueError(
+                f"Record {self.record_id} target interview turn must be the same "
+                "participant text as the segment."
+            )
+
+        segment_id = str(self.metadata.get("segment_id", ""))
+        lines = []
+        for turn in validated_turns:
+            speaker_label = str(turn["speaker"]).capitalize()
+            target_label = (
+                f" [TARGET SEGMENT {segment_id}]"
+                if turn["turn_index"] == target_turn_index
+                else ""
+            )
+            lines.append(
+                f"Turn {turn['turn_index']} | {speaker_label}{target_label}: "
+                f"{turn['text']}"
+            )
+        return "\n".join(lines)
 
 
 def load_segment_records(

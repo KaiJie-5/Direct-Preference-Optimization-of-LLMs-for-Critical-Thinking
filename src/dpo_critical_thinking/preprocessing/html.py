@@ -308,6 +308,15 @@ def _segments_from_turns(
 ) -> list[dict[str, Any]]:
     segments: list[dict[str, Any]] = []
     participant_turns = [turn for turn in turns if turn.role == "participant"]
+    interview_turns = [
+        {
+            "turn_index": item.turn_index,
+            "speaker": item.role,
+            "text": item.text,
+            "paragraph_index": item.paragraph_index,
+        }
+        for item in turns
+    ]
     width = max(3, len(str(len(participant_turns))))
 
     for segment_index, turn in enumerate(participant_turns, start=1):
@@ -327,6 +336,7 @@ def _segments_from_turns(
             "line_end": None,
             "previous_context": _format_context(previous_turn),
             "next_context": _format_context(next_turn),
+            "interview_turns": interview_turns,
             "participant_characteristics": participant_characteristics,
             "source_html_path": str(source_html_path),
         }

@@ -36,6 +36,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     io_group.add_argument("--limit", type=int)
     io_group.add_argument(
+        "--context-scope",
+        choices=["immediate", "full_interview"],
+        default="immediate",
+        help=(
+            "Use immediate previous/next context or the complete ordered interview. "
+            "Full interview mode requires reprocessed segment JSONL and an "
+            "{analysis_context} placeholder in every strategy prompt."
+        ),
+    )
+    io_group.add_argument(
         "--continue-on-error",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -127,7 +137,6 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    teacher = build_teacher(args)
     records = load_segment_records(args.segments_path, limit=args.limit)
     codebook = _load_runtime_codebook(args.codebook_path, records)
     prompt_vars = {
@@ -155,6 +164,16 @@ def main(argv: list[str] | None = None) -> int:
             )
         critique_prompt = PromptTemplate(args.refine_critique_prompt_path)
         revision_prompt = PromptTemplate(args.refine_revision_prompt_path)
+
+    _validate_context_configuration(
+        context_scope=args.context_scope,
+        records=records,
+        strategy=args.strategy,
+        prompt=prompt,
+        critique_prompt=critique_prompt,
+        revision_prompt=revision_prompt,
+    )
+    teacher = build_teacher(args)
 
     grouped_records = group_records_by_interview(records)
     batch_summary = {
@@ -331,6 +350,7 @@ def _run_strategy(
             aggregation=args.self_consistency_aggregation,
             json_retry_attempts=args.json_retry_attempts,
             logger=logger,
+            context_scope=args.context_scope,
         )
 
     if args.strategy == "self_refine":
@@ -350,6 +370,7 @@ def _run_strategy(
             history_format=args.refine_history_format,
             json_retry_attempts=args.json_retry_attempts,
             logger=logger,
+            context_scope=args.context_scope,
         )
 
     raise ValueError(f"Unsupported strategy: {args.strategy}")
@@ -428,6 +449,7 @@ def _focused_self_consistency_payload(enriched: dict[str, Any]) -> dict[str, Any
         "metadata": metadata,
         "source": enriched["source"],
         "strategy": enriched["strategy"],
+        "context_scope": enriched["context_scope"],
         "prompt_path": enriched["prompt_path"],
         "num_samples": enriched["num_samples"],
         "aggregation": enriched["aggregation"],
@@ -446,6 +468,39 @@ def _focused_self_consistency_payload(enriched: dict[str, Any]) -> dict[str, Any
             for sample in enriched["samples"]
         ],
     }
+
+
+def _validate_context_configuration(
+    *,
+    context_scope: str,
+    records: list[DatasetRecord],
+    strategy: str,
+    prompt: PromptTemplate,
+    critique_prompt: PromptTemplate | None,
+    revision_prompt: PromptTemplate | None,
+) -> None:
+    if context_scope != "full_interview":
+        return
+
+    required_prompts = [("main", prompt)]
+    if strategy == "self_refine":
+        if critique_prompt is None or revision_prompt is None:
+            raise ValueError("Self-refine prompt templates are not loaded.")
+        required_prompts.extend(
+            [
+                ("critique", critique_prompt),
+                ("revision", revision_prompt),
+            ]
+        )
+    for label, template in required_prompts:
+        if not template.uses_variable("analysis_context"):
+            raise ValueError(
+                f"context_scope='full_interview' requires {{analysis_context}} "
+                f"in the {label} prompt: {template.path}"
+            )
+
+    for record in records:
+        record.analysis_context(context_scope)
 
 
 if __name__ == "__main__":
