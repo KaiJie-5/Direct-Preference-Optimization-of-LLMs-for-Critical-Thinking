@@ -117,178 +117,150 @@ Valid values:
 
 Required JSON schema:
 {{
-  "schema_version": "segment_enrichment_sample_v1",
-  "record_id": "{record_id}",
-  "codebook_version": "{codebook_version}",
-  "analysis_unit": {{
-    "interview_id": "{interview_id}",
-    "segment_id": "{segment_id}",
-    "speaker": "{speaker}",
-    "target_text": "{input_text}",
-    "analysis_context_used": true,
-    "analysis_context_scope": "full_interview",
-    "context_warning": ""
-  }},
-  "research_question_relevance": {{
-    "relevant_research_questions": [],
-    "segment_relevance_summary": "",
-    "is_segment_analytically_useful": true,
-    "why_or_why_not": ""
-  }},
-  "candidate_code_matches": [
-    {{
-      "code_id": "",
-      "code_label": "",
-      "match_strength": "strong",
-      "evidence_quote": "",
-      "rationale": "",
-      "confidence": 1
-    }}
-  ],
-  "possible_new_codes": [
-    {{
-      "provisional_code_id": "",
-      "provisional_code_label": "",
-      "definition": "",
-      "evidence_quote": "",
-      "why_candidate_codes_do_not_fully_cover_it": "",
-      "confidence": 1
-    }}
-  ],
-  "code_quality_examples": {{
-    "wrong_code": {{
-      "code_label": "",
-      "actual_segment_quote": "",
-      "why_plausible_for_wider_dataset": "",
-      "why_unsupported_by_this_segment": "",
-      "relation_to_research_questions": "",
-      "category_boundary": ""
-    }},
-    "descriptive_not_answering_research_question": {{
-      "code_label": "",
-      "evidence_quote": "",
-      "surface_description": "",
-      "why_true_of_segment": "",
-      "why_not_useful_for_research_questions": "",
-      "relation_to_research_questions": "",
-      "category_boundary": ""
-    }},
-    "too_broad_code": {{
-      "code_label": "",
-      "evidence_quote": "",
-      "broad_relevance_to_research_questions": "",
-      "specific_meaning_lost": "",
-      "why_it_is_too_broad": "",
-      "relation_to_research_questions": "",
-      "category_boundary": ""
-    }},
-    "useful_analytical_code": {{
-      "code_label": "",
-      "evidence_quote": "",
-      "specific_analytical_insight": "",
-      "why_it_is_useful": "",
-      "relation_to_research_questions": "",
-      "category_boundary": ""
-    }}
-  }},
-  "reflective_question_candidates": [
-    {{
-      "question_id": "Q1",
-      "question": "",
-      "linked_code_ids": [],
-      "linked_provisional_code_ids": [],
-      "linked_code_quality_example": "useful_analytical_code",
-      "question_type": "",
-      "reflexive_dimension": "",
-      "trigger_quote": "",
-      "why_this_question_is_useful": "",
-      "what_human_researcher_should_inspect": "",
-      "risk_if_ignored": "",
-      "confidence": 0
-    }},
-    {{
-      "question_id": "Q2",
-      "question": "",
-      "linked_code_ids": [],
-      "linked_provisional_code_ids": [],
-      "linked_code_quality_example": "useful_analytical_code",
-      "question_type": "",
-      "reflexive_dimension": "",
-      "trigger_quote": "",
-      "why_this_question_is_useful": "",
-      "what_human_researcher_should_inspect": "",
-      "risk_if_ignored": "",
-      "confidence": 0
-    }},
-    {{
-      "question_id": "Q3",
-      "question": "",
-      "linked_code_ids": [],
-      "linked_provisional_code_ids": [],
-      "linked_code_quality_example": "useful_analytical_code",
-      "question_type": "",
-      "reflexive_dimension": "",
-      "trigger_quote": "",
-      "why_this_question_is_useful": "",
-      "what_human_researcher_should_inspect": "",
-      "risk_if_ignored": "",
-      "confidence": 0
-    }}
-  ],
-  "quality_control": {{
-    "hallucination_risk": "",
-    "over_generalisation_risk": "",
-    "participant_voice_loss_risk": "",
-    "needs_human_review": true,
-    "review_reason": "",
-    "overall_confidence": 0
-  }}
+"schema_version": "segment_enrichment_sample_v1",
+"record_id": "{record_id}",
+"codebook_version": "{codebook_version}",
+"analysis_unit": {{
+"interview_id": "{interview_id}",
+"segment_id": "{segment_id}",
+"speaker": "{speaker}",
+"target_text": "<copy Target segment exactly>",
+"analysis_context_used": true,
+"analysis_context_scope": "full_interview",
+"context_warning": "<empty string if no warning, otherwise explain context limitation>"
+}},
+"research_question_relevance": {{
+"relevant_research_questions": ["<research question id or exact research question text>"],
+"segment_relevance_summary": "<brief explanation of how the target segment relates to the relevant research question(s)>",
+"is_segment_analytically_useful": "<true | false>",
+"why_or_why_not": "<brief explanation of why the segment is or is not analytically useful>"
+}},
+"candidate_code_matches": [
+{{
+"code_id": "<candidate code id>",
+"code_label": "<candidate code label>",
+"match_strength": "<strong | partial | weak>",
+"evidence_quote": "<short exact quote from the target segment>",
+"rationale": "<why this candidate code fits the target segment>",
+"confidence": "<integer from 1 to 10>"
+}}
+],
+"possible_new_codes": [
+{{
+"provisional_code_id": "<new provisional code id>",
+"provisional_code_label": "<new provisional code label>",
+"definition": "<brief definition of the provisional code>",
+"evidence_quote": "<short exact quote from the target segment>",
+"why_candidate_codes_do_not_fully_cover_it": "<why the candidate codes miss this meaning>",
+"confidence": "<integer from 1 to 10>"
+}}
+],
+"code_quality_examples": {{
+"wrong_code": {{
+"code_label": "<plausible but unsupported code label>",
+"actual_segment_quote": "<short exact quote from the target segment>",
+"why_plausible_for_wider_dataset": "<why this code could sound plausible in the wider dataset>",
+"why_unsupported_by_this_segment": "<why the target segment does not support this code>",
+"relation_to_research_questions": "<relation or lack of relation to the supplied research question(s)>",
+"category_boundary": "<why this specific code belongs in wrong_code for this specific segment>"
+}},
+"descriptive_not_answering_research_question": {{
+"code_label": "<true but surface-level descriptive code label>",
+"evidence_quote": "<short exact quote from the target segment>",
+"surface_description": "<what the code describes at surface level>",
+"why_true_of_segment": "<why this code is factually true of the target segment>",
+"why_not_useful_for_research_questions": "<why this code does not help answer the supplied research question(s)>",
+"relation_to_research_questions": "<why the relation to the research question(s) is weak, background-only, or unclear>",
+"category_boundary": "<why this specific code belongs in descriptive_not_answering_research_question for this specific segment>"
+}},
+"too_broad_code": {{
+"code_label": "<relevant but too broad code label>",
+"evidence_quote": "<short exact quote from the target segment>",
+"broad_relevance_to_research_questions": "<how this broad code is at least partly relevant to the supplied research question(s)>",
+"specific_meaning_lost": "<specific experience, interaction, barrier, tension, motivation, or mechanism hidden by this broad label>",
+"why_it_is_too_broad": "<why the label is too vague for this target segment>",
+"relation_to_research_questions": "<relation to the supplied research question(s)>",
+"category_boundary": "<why this specific code belongs in too_broad_code for this specific segment>"
+}},
+"useful_analytical_code": {{
+"code_label": "<specific analytical code label>",
+"evidence_quote": "<short exact quote from the target segment>",
+"specific_analytical_insight": "<specific insight captured by this code>",
+"why_it_is_useful": "<why this code helps answer at least one supplied research question>",
+"relation_to_research_questions": "<which research question(s) this code helps answer and how>",
+"category_boundary": "<why this specific code belongs in useful_analytical_code for this specific segment>"
+}}
+}},
+"reflective_question_candidates": [
+{{
+"question_id": "Q1",
+"question": "<reflective question that tests the useful analytical code>",
+"linked_code_ids": ["<candidate code id if relevant>"],
+"linked_provisional_code_ids": ["<provisional code id if relevant>"],
+"linked_code_quality_example": "useful_analytical_code",
+"question_type": "<valid question_type>",
+"reflexive_dimension": "<valid reflexive_dimension>",
+"trigger_quote": "<short exact quote from the target segment>",
+"why_this_question_is_useful": "<why this question helps test the useful analytical code>",
+"what_human_researcher_should_inspect": "<what the human researcher should check in the data>",
+"risk_if_ignored": "<what could go wrong if this question is ignored>",
+"confidence": "<integer from 1 to 10>"
+}},
+{{
+"question_id": "Q2",
+"question": "<reflective question that tests the useful analytical code>",
+"linked_code_ids": ["<candidate code id if relevant>"],
+"linked_provisional_code_ids": ["<provisional code id if relevant>"],
+"linked_code_quality_example": "useful_analytical_code",
+"question_type": "<valid question_type>",
+"reflexive_dimension": "<valid reflexive_dimension>",
+"trigger_quote": "<short exact quote from the target segment>",
+"why_this_question_is_useful": "<why this question helps test the useful analytical code>",
+"what_human_researcher_should_inspect": "<what the human researcher should check in the data>",
+"risk_if_ignored": "<what could go wrong if this question is ignored>",
+"confidence": "<integer from 1 to 10>"
+}},
+{{
+"question_id": "Q3",
+"question": "<reflective question that tests the useful analytical code>",
+"linked_code_ids": ["<candidate code id if relevant>"],
+"linked_provisional_code_ids": ["<provisional code id if relevant>"],
+"linked_code_quality_example": "useful_analytical_code",
+"question_type": "<valid question_type>",
+"reflexive_dimension": "<valid reflexive_dimension>",
+"trigger_quote": "<short exact quote from the target segment>",
+"why_this_question_is_useful": "<why this question helps test the useful analytical code>",
+"what_human_researcher_should_inspect": "<what the human researcher should check in the data>",
+"risk_if_ignored": "<what could go wrong if this question is ignored>",
+"confidence": "<integer from 1 to 10>"
+}}
+],
+"quality_control": {{
+"hallucination_risk": "<low | medium | high>",
+"over_generalisation_risk": "<low | medium | high>",
+"participant_voice_loss_risk": "<low | medium | high>",
+"needs_human_review": true,
+"review_reason": "<specific reason this segment or generated output needs human review>",
+"overall_confidence": "<integer from 1 to 10>"
+}}
 }}
 
-Rules for candidate_code_matches:
-Only include candidate example codes that are relevant to the target segment.
-If no candidate example code fits, return:
-"candidate_code_matches": []
+Output rules:
+Replace every placeholder in angle brackets with a real value in the final JSON. Do not copy placeholder text into the final JSON. Boolean values must be JSON booleans, not strings. Confidence values must be JSON integers from 1 to 10, not strings. Risk values, match_strength, question_type, and reflexive_dimension must use only the valid values listed above. The example objects inside candidate_code_matches and possible_new_codes show the required object shape only. Return an empty list when no candidate code match or provisional new code is justified. The final answer after </think> must be valid JSON. Do not use markdown fences. Do not write anything after the JSON object.
 
-Rules for possible_new_codes:
-Only suggest a provisional new code when the candidate example codes do not fully capture the target segment.
-If no provisional new code is needed, return:
-"possible_new_codes": []
+Field rules:
+If no research question is clearly answered, return "relevant_research_questions": []. If no candidate example code fits, return "candidate_code_matches": []. If no provisional new code is needed, return "possible_new_codes": []. Only include linked_code_ids or linked_provisional_code_ids that are actually present in candidate_code_matches or possible_new_codes. Otherwise return empty lists. Return exactly four code_quality_examples keys: wrong_code, descriptive_not_answering_research_question, too_broad_code, useful_analytical_code. Each category_boundary must explain why this specific generated code belongs in that category for this specific segment. Return exactly three reflective questions: Q1, Q2, and Q3. Q1, Q2, and Q3 are identifiers only; they do not have fixed meanings. Each reflective question must test the useful analytical code from a different angle. Choose question_type and reflexive_dimension based on the actual content of each question. Do not force a question into a predefined type if it does not fit. Choose hallucination_risk, over_generalisation_risk, and participant_voice_loss_risk based on the generated output. Do not default to "low". Use "medium" or "high" risk when the target segment is short, ambiguous, weakly linked to the research questions, or when the useful analytical code depends strongly on wider interview context. Keep "needs_human_review": true. Do not use a generic review_reason. Explain the specific issue, such as ambiguity, weak research-question relevance, possible over-interpretation, or dependence on wider context.
 
-Rules for code_quality_examples:
-Return exactly these four keys and exactly one example under each key:
-- wrong_code
-- descriptive_not_answering_research_question
-- too_broad_code
-- useful_analytical_code
-
-Do not repeat generic category definitions in category_boundary.
-Each category_boundary must explain why this specific generated code belongs in this category for this specific segment.
-
-Rules for reflective_question_candidates:
-Return exactly 3 reflective questions: Q1, Q2, and Q3.
-Each question must test the useful analytical code.
-
-Rules for evidence quotes:
-Use short exact quotes from the target segment whenever possible.
-Do not quote from the wider interview context as the main evidence unless the target segment is too short or ambiguous.
-If the segment is too short or ambiguous, explain this in "context_warning" and "review_reason".
-Copy the Target segment text exactly into analysis_unit.target_text.
-
-Rules for JSON:
-The final answer after </think> must be valid JSON.
-Use double quotes for all JSON keys and string values.
-Do not use trailing commas.
-Do not include comments inside the JSON.
-Do not wrap the JSON in markdown fences.
+Evidence rules:
+Use short exact quotes from the target segment whenever possible. Do not quote from the wider interview context as the main evidence unless the target segment is too short or ambiguous. If the segment is too short or ambiguous, explain this in "context_warning" and "review_reason". Copy the Target segment text exactly into analysis_unit.target_text.
 
 Segment identifiers:
-- record_id: {record_id}
-- interview_id: {interview_id}
-- segment_id: {segment_id}
-- speaker: {speaker}
-- codebook_id: {codebook_id}
-- codebook_version: {codebook_version}
+record_id: {record_id}
+interview_id: {interview_id}
+segment_id: {segment_id}
+speaker: {speaker}
+codebook_id: {codebook_id}
+codebook_version: {codebook_version}
 
 Research questions:
 {research_questions}
