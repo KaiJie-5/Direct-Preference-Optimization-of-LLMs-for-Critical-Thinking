@@ -19,7 +19,8 @@ Your response must begin with:
 
 <think>
 
-Inside the thinking block, use the exact CAT-CoT structure below.
+Inside this block, complete the exact CAT-CoT evidence checklist below.
+This checklist is used to check grounding before writing the JSON.
 Keep each section concise, evidence-based, and specific to the target segment.
 
 CAT-CoT structure:
@@ -99,7 +100,7 @@ Every code-quality example must be grounded in the target segment.
 For the wrong code, the quote is not evidence for the wrong code; it is evidence showing what the participant actually said.
 
 Code label rules:
-Avoid single nouns, vague topics, empty categories, and generic labels such as "sexual health", "motivation", "fear", "services", or "challenges".
+Avoid single nouns, vague topics, empty categories, and generic labels such as "motivation", "fear", "services", or "challenges".
 Avoid bundled labels that join two ideas without explaining their relationship, such as "attitudes and reminders".
 If a label contains "and", the relationship between the two ideas must be analytically meaningful.
 Useful analytical labels should normally be short phrases or short sentences.
@@ -197,13 +198,13 @@ Required JSON schema:
       "linked_code_ids": [],
       "linked_provisional_code_ids": [],
       "linked_code_quality_example": "useful_analytical_code",
-      "question_type": "devils_advocate",
-      "reflexive_dimension": "methodological",
+      "question_type": "",
+      "reflexive_dimension": "",
       "trigger_quote": "",
       "why_this_question_is_useful": "",
       "what_human_researcher_should_inspect": "",
       "risk_if_ignored": "",
-      "confidence": 1
+      "confidence": 0
     }},
     {{
       "question_id": "Q2",
@@ -211,13 +212,13 @@ Required JSON schema:
       "linked_code_ids": [],
       "linked_provisional_code_ids": [],
       "linked_code_quality_example": "useful_analytical_code",
-      "question_type": "participant_voice_check",
-      "reflexive_dimension": "interpersonal",
+      "question_type": "",
+      "reflexive_dimension": "",
       "trigger_quote": "",
       "why_this_question_is_useful": "",
       "what_human_researcher_should_inspect": "",
       "risk_if_ignored": "",
-      "confidence": 1
+      "confidence": 0
     }},
     {{
       "question_id": "Q3",
@@ -225,22 +226,22 @@ Required JSON schema:
       "linked_code_ids": [],
       "linked_provisional_code_ids": [],
       "linked_code_quality_example": "useful_analytical_code",
-      "question_type": "context_check",
-      "reflexive_dimension": "contextual",
+      "question_type": "",
+      "reflexive_dimension": "",
       "trigger_quote": "",
       "why_this_question_is_useful": "",
       "what_human_researcher_should_inspect": "",
       "risk_if_ignored": "",
-      "confidence": 1
+      "confidence": 0
     }}
   ],
   "quality_control": {{
-    "hallucination_risk": "low",
-    "over_generalisation_risk": "low",
-    "participant_voice_loss_risk": "low",
+    "hallucination_risk": "",
+    "over_generalisation_risk": "",
+    "participant_voice_loss_risk": "",
     "needs_human_review": true,
     "review_reason": "",
-    "overall_confidence": 1
+    "overall_confidence": 0
   }}
 }}
 
