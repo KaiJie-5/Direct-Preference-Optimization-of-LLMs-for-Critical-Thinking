@@ -1,5 +1,4 @@
 #!/bin/bash
-set -euo pipefail
 
 # Usage:
 #   bash run_preprocessing_energy.sh /path/to/transcripts-energy.html
