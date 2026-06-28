@@ -1,6 +1,6 @@
 #!/bin/bash
 #SBATCH --job-name=dpo_enrich_sc
-#SBATCH --partition=a100
+#SBATCH --partition=quad_h200
 #SBATCH --account=ecs
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
@@ -12,8 +12,6 @@
 #SBATCH --error=dpo_enrich_sc_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=kjl1a21@soton.ac.uk
-
-set -eo pipefail
 
 # =========================
 # Easy configuration block
