@@ -5,18 +5,18 @@ import json
 from pathlib import Path
 from typing import Any
 
-from dpo_critical_thinking.debate.agents import DebateGenerationResult
-from dpo_critical_thinking.debate.aggregation import borda_aggregate
-from dpo_critical_thinking.debate.compare import compare_rankings
-from dpo_critical_thinking.debate.config import (
+from debate.agents import DebateGenerationResult
+from debate.aggregation import borda_aggregate
+from debate.compare import compare_rankings
+from debate.config import (
     DebateConfig,
     GenerationConfig,
     TurnConfig,
     debate_config_from_mapping,
 )
-from dpo_critical_thinking.debate.loaders import build_block_inputs
-from dpo_critical_thinking.debate.ranking import _rank_block, run_debate_ranking
-from dpo_critical_thinking.debate.schema import (
+from debate.loaders import build_block_inputs
+from debate.ranking import _rank_block, run_debate_ranking
+from debate.schema import (
     REVIEW_BLOCKS,
     configured_review_blocks,
     validate_ranking_payload,
@@ -465,7 +465,7 @@ def _dataset_config(
     enriched_parent: Path,
     research_questions: tuple[str, ...] = (),
 ):
-    from dpo_critical_thinking.debate.config import DatasetConfig
+    from debate.config import DatasetConfig
 
     return DatasetConfig(
         dataset=dataset,
@@ -547,7 +547,7 @@ def _turns(prompt_paths: dict[str, Path]) -> list[TurnConfig]:
 
 
 def _prompt_templates(prompt_paths: dict[str, Path]):
-    from dpo_critical_thinking.enrichment.prompts import PromptTemplate
+    from enrichment.prompts import PromptTemplate
 
     return {
         agent_id: PromptTemplate(path)
@@ -556,7 +556,7 @@ def _prompt_templates(prompt_paths: dict[str, Path]):
 
 
 def _agent_config_by_id(prompt_paths: dict[str, Path]):
-    from dpo_critical_thinking.debate.config import AgentConfig
+    from debate.config import AgentConfig
 
     return {
         "qwen_32b": AgentConfig(
@@ -584,7 +584,7 @@ def _dummy_config(
     enriched_parent: Path,
     turns: list[TurnConfig],
 ) -> DebateConfig:
-    from dpo_critical_thinking.debate.config import AgentConfig, DatasetConfig
+    from debate.config import AgentConfig, DatasetConfig
 
     return DebateConfig(
         review_pack_path=review_pack,

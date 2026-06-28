@@ -7,28 +7,28 @@ from typing import Any
 
 import pytest
 
-from dpo_critical_thinking.enrichment.cli import build_parser, main as enrich_main
-from dpo_critical_thinking.enrichment.data import load_segment_records
-from dpo_critical_thinking.enrichment.logging import RunLogger
-from dpo_critical_thinking.enrichment.prompts import PromptTemplate
-from dpo_critical_thinking.enrichment.schema import (
+from enrichment.cli import build_parser, main as enrich_main
+from enrichment.data import load_segment_records
+from enrichment.logging import RunLogger
+from enrichment.prompts import PromptTemplate
+from enrichment.schema import (
     parse_json_object,
     split_response_sections,
     validate_segment_enrichment_sample,
     validate_segment_enrichment_sample_result,
 )
-from dpo_critical_thinking.enrichment.strategies import (
+from enrichment.strategies import (
     run_self_consistency,
     run_self_refine,
 )
-from dpo_critical_thinking.enrichment.teachers import (
+from enrichment.teachers import (
     GenerationOptions,
     GenerationResult,
     normalize_decoded_text,
     resolve_effective_max_new_tokens,
 )
-from dpo_critical_thinking.preprocessing.codebook import convert_xlsx_codebook
-from dpo_critical_thinking.preprocessing.html import preprocess_html_dataset
+from preprocessing.codebook import convert_xlsx_codebook
+from preprocessing.html import preprocess_html_dataset
 
 
 class QueueTeacher:
@@ -561,7 +561,7 @@ def test_full_interview_rejects_missing_prompt_placeholder_before_teacher_load(
         raise AssertionError("Teacher construction must happen after context validation.")
 
     monkeypatch.setattr(
-        "dpo_critical_thinking.enrichment.cli.build_teacher",
+        "enrichment.cli.build_teacher",
         unexpected_teacher_build,
     )
 

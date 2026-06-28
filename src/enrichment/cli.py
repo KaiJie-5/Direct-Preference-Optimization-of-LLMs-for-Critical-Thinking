@@ -9,7 +9,7 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from dpo_critical_thinking.preprocessing.codebook import load_codebook
+from preprocessing.codebook import load_codebook
 
 from .data import DatasetRecord, group_records_by_interview, load_segment_records
 from .logging import RunLogger

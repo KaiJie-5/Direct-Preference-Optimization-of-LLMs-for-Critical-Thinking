@@ -79,7 +79,7 @@ A successful setup should contain the student model and teacher model under the 
 
 ## Enrichment phase
 
-The enrichment phase code lives under `src/dpo_critical_thinking/enrichment`.
+The enrichment phase code lives under `src/enrichment`.
 
 It supports configurable teacher backends, prompt templates, HTML/JSONL/JSON/CSV/TXT inputs, self-consistency, self-refine, and detailed JSON/JSONL logs for manual review. See:
 

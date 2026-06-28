@@ -53,8 +53,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi
 fi
 
-python -m dpo_critical_thinking.debate.cli rank --config "${CONFIG_PATH}"
+python -m debate.cli rank --config "${CONFIG_PATH}"
 
 echo "Multi-agent debate ranking complete"
 date
-

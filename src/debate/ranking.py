@@ -7,8 +7,8 @@ from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
-from dpo_critical_thinking.enrichment.prompts import PromptTemplate
-from dpo_critical_thinking.enrichment.schema import parse_json_object
+from enrichment.prompts import PromptTemplate
+from enrichment.schema import parse_json_object
 
 from .agents import DebateAgent, build_agent
 from .aggregation import borda_aggregate

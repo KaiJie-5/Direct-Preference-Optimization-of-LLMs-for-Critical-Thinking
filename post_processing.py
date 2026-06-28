@@ -8,8 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
-from dpo_critical_thinking.enrichment.data import DatasetRecord
-from dpo_critical_thinking.enrichment.schema import (
+from enrichment.data import DatasetRecord
+from enrichment.schema import (
     parse_json_object,
     validate_segment_enrichment_sample_result,
 )

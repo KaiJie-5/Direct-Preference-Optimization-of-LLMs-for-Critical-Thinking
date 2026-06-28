@@ -149,11 +149,11 @@ for RESEARCH_QUESTION in "${RESEARCH_QUESTIONS[@]}"; do
     ENRICH_ARGS+=(--research-question "${RESEARCH_QUESTION}")
 done
 
-printf '%q ' python -m dpo_critical_thinking.enrichment.cli "${ENRICH_ARGS[@]}" > "${RUN_DIR}/command.txt"
+printf '%q ' python -m enrichment.cli "${ENRICH_ARGS[@]}" > "${RUN_DIR}/command.txt"
 printf '\n' >> "${RUN_DIR}/command.txt"
 cat "${RUN_DIR}/command.txt"
 
-python -m dpo_critical_thinking.enrichment.cli "${ENRICH_ARGS[@]}"
+python -m enrichment.cli "${ENRICH_ARGS[@]}"
 
 echo "Enrichment complete"
 echo "Output directory: ${RUN_DIR}"
