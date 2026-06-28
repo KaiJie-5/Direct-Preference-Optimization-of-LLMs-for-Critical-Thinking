@@ -186,11 +186,9 @@ REFLEXIVE_DIMENSIONS = {
 NARRATIVE_FIELD_NAMES = {
     "segment_relevance_summary",
     "why_or_why_not",
-    "evidence_quote",
     "rationale",
     "definition",
     "why_candidate_codes_do_not_fully_cover_it",
-    "actual_segment_quote",
     "why_plausible_for_wider_dataset",
     "why_unsupported_by_this_segment",
     "relation_to_research_questions",
@@ -204,7 +202,6 @@ NARRATIVE_FIELD_NAMES = {
     "specific_analytical_insight",
     "why_it_is_useful",
     "question",
-    "trigger_quote",
     "why_this_question_is_useful",
     "what_human_researcher_should_inspect",
     "risk_if_ignored",
@@ -264,6 +261,8 @@ def canonicalize_source_fields(
                 storage_key=field,
             )
 
+    _canonicalize_structured_quotes(canonical, record.text, corrections)
+
     return canonical, corrections
 
 
@@ -288,6 +287,116 @@ def _set_canonical_field(
             }
         )
         container[key] = expected_value
+
+
+def _canonicalize_structured_quotes(
+    payload: dict[str, Any],
+    target_text: str,
+    corrections: list[dict[str, Any]],
+) -> None:
+    for container, key, path in _structured_quote_slots(payload):
+        model_value = container.get(key)
+        if not isinstance(model_value, str) or model_value in target_text:
+            continue
+        restored = _unique_whitespace_only_source_match(model_value, target_text)
+        if restored is None:
+            continue
+        corrections.append(
+            {
+                "path": path,
+                "was_present": True,
+                "model_value": model_value,
+                "canonical_value": restored,
+                "correction_type": "whitespace_only_quote_repair",
+            }
+        )
+        container[key] = restored
+
+
+def _structured_quote_slots(
+    payload: dict[str, Any],
+) -> list[tuple[dict[str, Any], str, str]]:
+    slots: list[tuple[dict[str, Any], str, str]] = []
+    for collection_name in ("candidate_code_matches", "possible_new_codes"):
+        collection = payload.get(collection_name)
+        if not isinstance(collection, list):
+            continue
+        for index, item in enumerate(collection):
+            if isinstance(item, dict) and "evidence_quote" in item:
+                slots.append(
+                    (
+                        item,
+                        "evidence_quote",
+                        f"{collection_name}[{index}].evidence_quote",
+                    )
+                )
+
+    code_quality_examples = payload.get("code_quality_examples")
+    quote_fields = {
+        "wrong_code": "actual_segment_quote",
+        "descriptive_not_answering_research_question": "evidence_quote",
+        "too_broad_code": "evidence_quote",
+        "useful_analytical_code": "evidence_quote",
+    }
+    if isinstance(code_quality_examples, dict):
+        for example_name, quote_field in quote_fields.items():
+            example = code_quality_examples.get(example_name)
+            if isinstance(example, dict) and quote_field in example:
+                slots.append(
+                    (
+                        example,
+                        quote_field,
+                        f"code_quality_examples.{example_name}.{quote_field}",
+                    )
+                )
+
+    questions = payload.get("reflective_question_candidates")
+    if isinstance(questions, list):
+        for index, question in enumerate(questions):
+            if isinstance(question, dict) and "trigger_quote" in question:
+                slots.append(
+                    (
+                        question,
+                        "trigger_quote",
+                        f"reflective_question_candidates[{index}].trigger_quote",
+                    )
+                )
+    return slots
+
+
+def _unique_whitespace_only_source_match(
+    model_quote: str, target_text: str
+) -> str | None:
+    compact_quote = "".join(
+        character for character in model_quote if not character.isspace()
+    )
+    if not compact_quote:
+        return None
+
+    source_characters = [
+        (index, character)
+        for index, character in enumerate(target_text)
+        if not character.isspace()
+    ]
+    compact_source = "".join(character for _, character in source_characters)
+    starts: list[int] = []
+    search_from = 0
+    while True:
+        start = compact_source.find(compact_quote, search_from)
+        if start == -1:
+            break
+        starts.append(start)
+        if len(starts) > 1:
+            return None
+        search_from = start + 1
+
+    if len(starts) != 1:
+        return None
+    start = starts[0]
+    end = start + len(compact_quote) - 1
+    source_start = source_characters[start][0]
+    source_end = source_characters[end][0] + 1
+    return target_text[source_start:source_end]
 
 
 def split_response_sections(text: str) -> dict[str, str]:
@@ -531,6 +640,7 @@ def validate_segment_enrichment_sample_result(
             errors.append("quality_control must be an object.")
 
     if is_v2:
+        _validate_structured_quotes(payload, record.text, errors)
         collapsed_paths = _collapsed_narrative_paths(payload)
         if len(collapsed_paths) >= 3:
             errors.append(
@@ -539,6 +649,19 @@ def validate_segment_enrichment_sample_result(
             )
 
     return ValidationResult(errors=errors, warnings=warnings)
+
+
+def _validate_structured_quotes(
+    payload: dict[str, Any], target_text: str, errors: list[str]
+) -> None:
+    for container, key, path in _structured_quote_slots(payload):
+        quote = container.get(key)
+        if isinstance(quote, str) and quote and quote in target_text:
+            continue
+        if isinstance(quote, str):
+            errors.append(
+                f"{path} must be an exact non-empty substring of the target segment."
+            )
 
 
 def _collapsed_narrative_paths(payload: dict[str, Any]) -> list[str]:

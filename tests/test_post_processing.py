@@ -325,6 +325,46 @@ def test_repair_batches_multiple_samples_in_one_segment_file(tmp_path: Path) -> 
     assert repaired_segment["samples"][2]["final_parse_status"] == "valid"
 
 
+def test_repair_restores_whitespace_only_structured_quotes(tmp_path: Path) -> None:
+    run_dir = tmp_path / "run"
+    segment_path = (
+        run_dir / "INT01_self_consistency" / "segments" / "INT01_SEG001.json"
+    )
+    parsed = _valid_parsed_output(target_text="Participant text corrected.")
+    parsed["code_quality_examples"]["useful_analytical_code"][
+        "evidence_quote"
+    ] = "Participanttext"
+    _write_json(
+        segment_path,
+        _segment_payload(
+            samples=[
+                _sample(
+                    1,
+                    "invalid",
+                    ["analysis_unit.target_text must equal the segment text."],
+                    parsed_output=parsed,
+                )
+            ]
+        ),
+    )
+    failed_path = tmp_path / "failed.json"
+    _write_json(
+        failed_path,
+        collect_failed_outputs(enriched_dir=run_dir, include_raw=False),
+    )
+
+    repair_failed_outputs(failed_path=failed_path)
+
+    repaired = json.loads(segment_path.read_text(encoding="utf-8"))["samples"][0]
+    assert repaired["parsed_output"]["code_quality_examples"][
+        "useful_analytical_code"
+    ]["evidence_quote"] == "Participant text"
+    assert any(
+        item.get("correction_type") == "whitespace_only_quote_repair"
+        for item in repaired["canonical_corrections"]
+    )
+
+
 def test_repair_skips_when_fingerprint_changed(tmp_path: Path) -> None:
     run_dir = tmp_path / "run"
     segment_path = run_dir / "INT01_self_consistency" / "segments" / "INT01_SEG001.json"

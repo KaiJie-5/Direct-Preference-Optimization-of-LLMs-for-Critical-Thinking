@@ -494,6 +494,108 @@ def test_canonicalize_source_fields_restores_runtime_identity(tmp_path: Path) ->
     }
 
 
+def test_canonicalize_source_fields_repairs_all_structured_quote_locations(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload["candidate_code_matches"] = [{"evidence_quote": "AI canhelp"}]
+    payload["possible_new_codes"] = [{"evidence_quote": "AIcanhelp"}]
+    payload["code_quality_examples"]["wrong_code"]["actual_segment_quote"] = (
+        "someonestillneedstocheck"
+    )
+    for example_name in (
+        "descriptive_not_answering_research_question",
+        "too_broad_code",
+        "useful_analytical_code",
+    ):
+        payload["code_quality_examples"][example_name]["evidence_quote"] = (
+            "AIcanhelp"
+        )
+    for question in payload["reflective_question_candidates"]:
+        question["trigger_quote"] = "someonestillneedstocheck"
+
+    canonical, corrections = canonicalize_source_fields(
+        payload,
+        record,
+        expected_codebook_version="v1",
+        expected_context_scope="immediate",
+    )
+
+    assert canonical is not None
+    quote_corrections = [
+        item
+        for item in corrections
+        if item.get("correction_type") == "whitespace_only_quote_repair"
+    ]
+    assert len(quote_corrections) == 9
+    assert all(
+        item["canonical_value"] in record.text for item in quote_corrections
+    )
+
+
+def test_v2_schema_rejects_quote_with_changed_characters(tmp_path: Path) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload["code_quality_examples"]["useful_analytical_code"][
+        "evidence_quote"
+    ] = "someone still needs to check the results"
+
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+        expected_schema_version="segment_enrichment_sample_v2",
+        expected_context_scope="immediate",
+    )
+
+    assert any(
+        "code_quality_examples.useful_analytical_code.evidence_quote" in error
+        and "exact non-empty substring" in error
+        for error in errors
+    )
+
+
+def test_canonicalize_source_fields_rejects_ambiguous_quote_match(
+    tmp_path: Path,
+) -> None:
+    segment = _segment("INT01", 1)
+    segment["text"] += " AI can help."
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [segment])
+    )[0]
+    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload["code_quality_examples"]["too_broad_code"]["evidence_quote"] = (
+        "AIcanhelp"
+    )
+
+    canonical, corrections = canonicalize_source_fields(
+        payload,
+        record,
+        expected_codebook_version="v1",
+        expected_context_scope="immediate",
+    )
+
+    assert canonical is not None
+    assert not any(
+        item["path"]
+        == "code_quality_examples.too_broad_code.evidence_quote"
+        for item in corrections
+    )
+    errors = validate_segment_enrichment_sample(
+        canonical,
+        record,
+        expected_codebook_version="v1",
+        expected_schema_version="segment_enrichment_sample_v2",
+        expected_context_scope="immediate",
+    )
+    assert any("too_broad_code.evidence_quote" in error for error in errors)
+
+
 def test_v2_schema_rejects_broadly_collapsed_narrative_text(tmp_path: Path) -> None:
     record = load_segment_records(
         _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
