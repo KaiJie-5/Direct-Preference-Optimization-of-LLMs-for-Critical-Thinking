@@ -91,6 +91,8 @@ CAT-CoT structure:
 - Check whether the useful analytical code is more specific than the too-broad code.
 - Check whether the reflective questions genuinely test the useful analytical code rather than repeating it.
 - Check whether any claim relies too much on the wider interview context rather than the target segment.
+- Before closing the thinking block, verify that every natural-language JSON string is readable and retains normal spaces between words.
+- Verify that every evidence_quote, actual_segment_quote, and trigger_quote is a short contiguous verbatim substring of the Target segment.
 
 After the thinking block, close it with:
 
@@ -257,7 +259,7 @@ Required JSON schema:
 }}
 
 Output rules:
-Replace every placeholder in angle brackets with a real value in the final JSON. Do not copy placeholder text into the final JSON. Boolean values must be JSON booleans, not strings. Confidence values must be JSON integers from 1 to 10, not strings. Risk values, match_strength, question_type, and reflexive_dimension must use only the valid values listed above. The example objects inside candidate_code_matches and possible_new_codes show the required object shape only. Return an empty list when no candidate code match or provisional new code is justified. The final answer after </think> must be valid JSON. Do not use markdown fences. Do not write anything after the JSON object.
+Replace every placeholder in angle brackets with a real value in the final JSON. Do not copy placeholder text into the final JSON. Write every natural-language string as ordinary readable English with normal spaces between words. Never concatenate words to shorten or compact a JSON string. JSON formatting may be compact or indented, but spaces inside natural-language string values must always be preserved. Copy any supplied research-question text exactly, including its spaces and punctuation. Boolean values must be JSON booleans, not strings. Confidence values must be JSON integers from 1 to 10, not strings. Risk values, match_strength, question_type, and reflexive_dimension must use only the valid values listed above. The example objects inside candidate_code_matches and possible_new_codes show the required object shape only. Return an empty list when no candidate code match or provisional new code is justified. The final answer after </think> must be valid JSON. Do not use markdown fences. Do not write anything after the JSON object.
 
 Field rules:
 If no research question is clearly answered, return "relevant_research_questions": []. If no candidate example code fits, return "candidate_code_matches": []. If no provisional new code is needed, return "possible_new_codes": []. Only include linked_code_ids or linked_provisional_code_ids that are actually present in candidate_code_matches or possible_new_codes. Otherwise return empty lists. Return exactly four code_quality_examples keys: wrong_code, descriptive_not_answering_research_question, too_broad_code, useful_analytical_code. Each category_boundary must explain why this specific generated code belongs in that category for this specific segment. Return exactly three reflective questions: Q1, Q2, and Q3. Q1, Q2, and Q3 are identifiers only; they do not have fixed meanings. Each reflective question must test the useful analytical code from a different angle. Choose question_type and reflexive_dimension based on the actual content of each question. Do not force a question into a predefined type if it does not fit. Choose hallucination_risk, over_generalisation_risk, and participant_voice_loss_risk based on the generated output. Do not default to "low". Use "medium" or "high" risk when the target segment is short, ambiguous, weakly linked to the research questions, or when the useful analytical code depends strongly on wider interview context. Keep "needs_human_review": true. Do not use a generic review_reason. Explain the specific issue, such as ambiguity, weak research-question relevance, possible over-interpretation, or dependence on wider context.
@@ -268,7 +270,7 @@ interpretations available, and state clearly that they do not answer the
 current research questions.
 
 Evidence rules:
-Use short exact quotes from the target segment whenever possible. Do not quote from the wider interview context as the main evidence unless the target segment is too short or ambiguous. If the segment is too short or ambiguous, explain this in "context_warning" and "review_reason". Copy the Target segment text exactly into analysis_unit.target_text.
+For every evidence_quote, actual_segment_quote, and trigger_quote, copy a short contiguous substring directly from the Target segment. Preserve every character exactly, including capitalization, punctuation, apostrophes, and whitespace. Never remove spaces, paraphrase, reconstruct, or combine separate parts of the segment. Prefer a short exact quote of 3 to 12 words instead of copying a long sentence. Use only the Target segment for these structured quotation fields; never quote from the wider Interview context. If the Target segment is too short or ambiguous, explain this in "context_warning" and "review_reason" rather than substituting a wider-context quote. Copy the Target segment text exactly into analysis_unit.target_text.
 
 Segment identifiers:
 record_id: {record_id}
