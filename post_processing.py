@@ -10,6 +10,7 @@ from typing import Any
 
 from enrichment.data import DatasetRecord
 from enrichment.schema import (
+    canonicalize_source_fields,
     parse_json_object,
     validate_segment_enrichment_sample_result,
 )
@@ -557,6 +558,7 @@ def _failed_sample_item(
         "interview_id": segment.get("interview_id"),
         "segment_id": segment.get("segment_id"),
         "strategy": segment.get("strategy"),
+        "context_scope": segment.get("context_scope", "immediate"),
         "sample_index": sample.get("sample_index"),
         "segment_path": relative_segment_path,
         "repair_target": repair_target,
@@ -681,7 +683,7 @@ def _build_repaired_sample(
     failed_path: Path,
 ) -> dict[str, Any]:
     parsed = failed_sample.get("parsed_output")
-    method = "relaxed_target_text_validation"
+    method = "canonical_source_field_injection"
 
     if not isinstance(parsed, dict):
         if not _has_extra_data_error(failed_sample):
@@ -703,6 +705,19 @@ def _build_repaired_sample(
             }
         method = "trailing_extra_brace_parse_recovery"
 
+    record = _failed_sample_record(failed_sample)
+    parsed, canonical_corrections = canonicalize_source_fields(
+        parsed,
+        record,
+        expected_codebook_version=parsed.get("codebook_version"),
+        expected_context_scope=str(failed_sample.get("context_scope", "immediate")),
+        expected_schema_version=str(
+            parsed.get("schema_version", "segment_enrichment_sample_v1")
+        ),
+    )
+    if parsed is None:
+        return {"status": "unrepairable", "reason": "canonicalization failed"}
+
     validation = _validate_failed_sample_payload(parsed, failed_sample)
     if validation.errors:
         return {
@@ -716,6 +731,7 @@ def _build_repaired_sample(
     repaired["validation_errors"] = []
     repaired["validation_warnings"] = validation.warnings
     repaired["parsed_output"] = parsed
+    repaired["canonical_corrections"] = canonical_corrections
     repaired["reasoning_text"] = failed_sample.get(
         "reasoning_text",
         repaired.get("reasoning_text", ""),
@@ -728,6 +744,7 @@ def _build_repaired_sample(
             "original_sample_fingerprint"
         ),
         "original_validation_errors": failed_sample.get("validation_errors", []),
+        "canonical_corrections": canonical_corrections,
     }
     return {
         "status": "repaired",
@@ -741,6 +758,18 @@ def _validate_failed_sample_payload(
     parsed: dict[str, Any],
     failed_sample: dict[str, Any],
 ) -> Any:
+    record = _failed_sample_record(failed_sample)
+    return validate_segment_enrichment_sample_result(
+        parsed,
+        record,
+        expected_codebook_version=parsed.get("codebook_version"),
+        expected_context_scope=failed_sample.get("context_scope", "immediate"),
+        strict_prompt_schema=failed_sample.get("strategy") == "self_consistency",
+        allow_target_text_mismatch=False,
+    )
+
+
+def _failed_sample_record(failed_sample: dict[str, Any]) -> DatasetRecord:
     metadata = failed_sample.get("metadata")
     if not isinstance(metadata, dict):
         metadata = {
@@ -755,14 +784,7 @@ def _validate_failed_sample_payload(
         metadata=metadata,
         source=source,
     )
-    return validate_segment_enrichment_sample_result(
-        parsed,
-        record,
-        expected_codebook_version=parsed.get("codebook_version"),
-        expected_context_scope=failed_sample.get("context_scope"),
-        strict_prompt_schema=failed_sample.get("strategy") == "self_consistency",
-        allow_target_text_mismatch=False,
-    )
+    return record
 
 
 def _has_extra_data_error(failed_sample: dict[str, Any]) -> bool:

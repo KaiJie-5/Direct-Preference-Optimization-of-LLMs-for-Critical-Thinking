@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import re
 import time
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 
@@ -40,6 +42,59 @@ class RunLogger:
 
     def failure(self, payload: dict[str, Any]) -> None:
         self._append_jsonl(self.failures_path, self._with_timestamp(payload))
+
+    def prompt_snapshot(
+        self,
+        *,
+        record_id: str,
+        strategy: str,
+        step: str,
+        sample_index: int,
+        rendered_prompt: str,
+    ) -> dict[str, Any]:
+        prompt_hash = sha256(rendered_prompt.encode("utf-8")).hexdigest()
+        prompt_id = (
+            f"{record_id}:{strategy}:{step}:{sample_index}:{prompt_hash[:12]}"
+        )
+        self.event(
+            {
+                "event": "prompt_prepared",
+                "record_id": record_id,
+                "strategy": strategy,
+                "step": step,
+                "sample_index": sample_index,
+                "prompt_id": prompt_id,
+                "prompt_sha256": prompt_hash,
+                "rendered_prompt": rendered_prompt,
+            }
+        )
+        return {"prompt_id": prompt_id, "prompt_sha256": prompt_hash}
+
+    def decode_artifact(
+        self,
+        *,
+        record_id: str,
+        strategy: str,
+        step: str,
+        sample_index: int,
+        attempt_index: int,
+        raw_text: str,
+    ) -> dict[str, Any]:
+        artifact_dir = self.output_dir / "decode_artifacts"
+        artifact_dir.mkdir(parents=True, exist_ok=True)
+        safe_record_id = re.sub(r"[^A-Za-z0-9_.-]", "_", record_id)
+        filename = (
+            f"{safe_record_id}_{strategy}_{step}_sample{sample_index}_"
+            f"attempt{attempt_index}.txt"
+        )
+        path = artifact_dir / filename
+        path.write_text(raw_text, encoding="utf-8")
+        return {
+            "raw_decoded_artifact_path": str(path.relative_to(self.output_dir)),
+            "raw_decoded_artifact_sha256": sha256(
+                raw_text.encode("utf-8")
+            ).hexdigest(),
+        }
 
     @staticmethod
     def _with_timestamp(payload: dict[str, Any]) -> dict[str, Any]:

@@ -7,6 +7,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
+from hashlib import sha256
 from typing import Any, Protocol
 
 
@@ -37,6 +38,9 @@ class DecodeNormalization:
     text: str
     normalized: bool
     raw_text: str | None = None
+    marker_counts: dict[str, int] | None = None
+    raw_sha256: str | None = None
+    normalized_sha256: str | None = None
 
 
 class Teacher(Protocol):
@@ -108,6 +112,7 @@ class TransformersTeacher:
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_path, trust_remote_code=trust_remote_code
         )
+        self.tokenizer_context_window = _tokenizer_context_window(self.tokenizer)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
             torch_dtype=dtype,
@@ -115,6 +120,17 @@ class TransformersTeacher:
             trust_remote_code=trust_remote_code,
         )
         self.model.eval()
+        self.model_context_window = _model_context_window(self.model)
+        self.effective_context_window = (
+            self.model_context_window or self.tokenizer_context_window
+        )
+        if self.model_context_window is not None:
+            # Avoid a stale tokenizer advisory limit overriding the checkpoint's
+            # RoPE-enabled model context window.
+            self.tokenizer.model_max_length = self.model_context_window
+        self._chat_template_enabled = bool(
+            self.use_chat_template and getattr(self.tokenizer, "chat_template", None)
+        )
 
     def generate(self, prompt: str, options: GenerationOptions) -> GenerationResult:
         started = time.perf_counter()
@@ -125,13 +141,25 @@ class TransformersTeacher:
                 self._torch.cuda.manual_seed_all(options.seed)
 
         rendered_prompt = self._render_prompt(prompt)
-        inputs = self.tokenizer(rendered_prompt, return_tensors="pt")
+        inputs = self.tokenizer(
+            rendered_prompt,
+            return_tensors="pt",
+            add_special_tokens=not self._chat_template_enabled,
+        )
+        bos_token_count = _token_count(
+            inputs["input_ids"], self.tokenizer.bos_token_id
+        )
+        if self._chat_template_enabled and bos_token_count not in {None, 1}:
+            raise ValueError(
+                "Chat-template prompt must contain exactly one BOS token, got "
+                f"{bos_token_count}."
+            )
         inputs = {key: value.to(self.model.device) for key, value in inputs.items()}
         prompt_token_count = int(inputs["input_ids"].shape[-1])
         token_budget = resolve_effective_max_new_tokens(
             prompt_token_count=prompt_token_count,
             requested_max_new_tokens=options.max_new_tokens,
-            context_window=_model_context_window(self.model),
+            context_window=self.effective_context_window,
         )
         generation_kwargs: dict[str, Any] = {
             "max_new_tokens": token_budget["effective_max_new_tokens"],
@@ -149,7 +177,11 @@ class TransformersTeacher:
             output_ids = self.model.generate(**inputs, **generation_kwargs)
 
         new_tokens = output_ids[0][prompt_token_count:]
-        decoded = self.tokenizer.decode(new_tokens, skip_special_tokens=True)
+        decoded = self.tokenizer.decode(
+            new_tokens,
+            skip_special_tokens=True,
+            clean_up_tokenization_spaces=False,
+        )
         decoded_normalization = normalize_decoded_text(decoded)
         generated = decoded_normalization.text
         if self.force_think_prefix and not generated.startswith(self.think_prefix):
@@ -162,6 +194,16 @@ class TransformersTeacher:
             "prompt_token_count": prompt_token_count,
             "new_token_count": int(new_tokens.shape[-1]),
             "decode_artifact_normalized": decoded_normalization.normalized,
+            "decode_artifact_marker_counts": decoded_normalization.marker_counts,
+            "raw_decoded_sha256": decoded_normalization.raw_sha256,
+            "normalized_decoded_sha256": decoded_normalization.normalized_sha256,
+            "tokenizer_context_window": self.tokenizer_context_window,
+            "model_context_window": self.model_context_window,
+            "effective_context_window": self.effective_context_window,
+            "bos_token_count": bos_token_count,
+            "think_prefix_count_at_prompt_end": int(
+                rendered_prompt.endswith(self.think_prefix)
+            ),
             **token_budget,
         }
         if decoded_normalization.raw_text is not None:
@@ -184,10 +226,13 @@ class TransformersTeacher:
             "use_chat_template": self.use_chat_template,
             "force_think_prefix": self.force_think_prefix,
             "think_prefix": self.think_prefix,
+            "tokenizer_context_window": self.tokenizer_context_window,
+            "model_context_window": self.model_context_window,
+            "effective_context_window": self.effective_context_window,
         }
 
     def _render_prompt(self, prompt: str) -> str:
-        if self.use_chat_template and getattr(self.tokenizer, "chat_template", None):
+        if self._chat_template_enabled:
             rendered = self.tokenizer.apply_chat_template(
                 [{"role": "user", "content": prompt}],
                 tokenize=False,
@@ -196,8 +241,12 @@ class TransformersTeacher:
         else:
             rendered = prompt
 
-        if self.force_think_prefix:
+        if self.force_think_prefix and not rendered.endswith(self.think_prefix):
             rendered += self.think_prefix
+        if self.force_think_prefix and rendered.endswith(
+            self.think_prefix + self.think_prefix
+        ):
+            raise ValueError("Rendered prompt contains a duplicated thinking prefix.")
         return rendered
 
 
@@ -307,10 +356,43 @@ def build_teacher(args: Any) -> Teacher:
 
 
 def normalize_decoded_text(text: str) -> DecodeNormalization:
-    normalized = text.replace("Ċ", "\n").replace("Ġ", " ").replace("ĉ", "\t")
+    replacements = {
+        "\u010a": "\n",
+        "\u0120": " ",
+        "\u0109": "\t",
+        # Also recognize the same marker bytes after accidental UTF-8 mojibake.
+        "\u00c4\u0160": "\n",
+        "\u00c4\u00a0": " ",
+        "\u00c4\u2030": "\t",
+    }
+    marker_counts = {
+        marker: count
+        for marker, count in (
+            (marker, text.count(marker)) for marker in replacements
+        )
+        if count
+    }
+    normalized = text
+    for marker, replacement in replacements.items():
+        normalized = normalized.replace(marker, replacement)
+    raw_hash = sha256(text.encode("utf-8")).hexdigest()
+    normalized_hash = sha256(normalized.encode("utf-8")).hexdigest()
     if normalized == text:
-        return DecodeNormalization(text=text, normalized=False)
-    return DecodeNormalization(text=normalized, normalized=True, raw_text=text)
+        return DecodeNormalization(
+            text=text,
+            normalized=False,
+            marker_counts={},
+            raw_sha256=raw_hash,
+            normalized_sha256=normalized_hash,
+        )
+    return DecodeNormalization(
+        text=normalized,
+        normalized=True,
+        raw_text=text,
+        marker_counts=marker_counts,
+        raw_sha256=raw_hash,
+        normalized_sha256=normalized_hash,
+    )
 
 
 def _resolve_torch_dtype(torch: Any, torch_dtype: str) -> Any:
@@ -324,6 +406,20 @@ def _resolve_torch_dtype(torch: Any, torch_dtype: str) -> Any:
 def _model_context_window(model: Any) -> int | None:
     context_window = getattr(getattr(model, "config", None), "max_position_embeddings", None)
     return context_window if isinstance(context_window, int) else None
+
+
+def _tokenizer_context_window(tokenizer: Any) -> int | None:
+    context_window = getattr(tokenizer, "model_max_length", None)
+    if not isinstance(context_window, int) or context_window <= 0:
+        return None
+    # Transformers uses very large sentinel integers when no limit is known.
+    return context_window if context_window < 10**9 else None
+
+
+def _token_count(input_ids: Any, token_id: int | None) -> int | None:
+    if token_id is None:
+        return None
+    return int((input_ids == token_id).sum().item())
 
 
 def resolve_effective_max_new_tokens(

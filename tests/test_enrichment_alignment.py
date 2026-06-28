@@ -12,6 +12,7 @@ from enrichment.data import load_segment_records
 from enrichment.logging import RunLogger
 from enrichment.prompts import PromptTemplate
 from enrichment.schema import (
+    canonicalize_source_fields,
     parse_json_object,
     split_response_sections,
     validate_segment_enrichment_sample,
@@ -24,6 +25,7 @@ from enrichment.strategies import (
 from enrichment.teachers import (
     GenerationOptions,
     GenerationResult,
+    TransformersTeacher,
     normalize_decoded_text,
     resolve_effective_max_new_tokens,
 )
@@ -332,6 +334,46 @@ def test_normalize_decoded_text_leaves_clean_text_unchanged() -> None:
     assert normalization.raw_text is None
 
 
+def test_transformers_prompt_does_not_duplicate_template_think_prefix() -> None:
+    class TemplateTokenizer:
+        chat_template = "template"
+
+        @staticmethod
+        def apply_chat_template(*args: Any, **kwargs: Any) -> str:
+            return "<bos><assistant><think>\n"
+
+    teacher = object.__new__(TransformersTeacher)
+    teacher.tokenizer = TemplateTokenizer()
+    teacher.use_chat_template = True
+    teacher._chat_template_enabled = True
+    teacher.force_think_prefix = True
+    teacher.think_prefix = "<think>\n"
+
+    rendered = teacher._render_prompt("Prompt")
+
+    assert rendered == "<bos><assistant><think>\n"
+    assert rendered.count("<think>\n") == 1
+
+
+def test_transformers_prompt_rejects_duplicate_template_think_prefix() -> None:
+    class BrokenTemplateTokenizer:
+        chat_template = "template"
+
+        @staticmethod
+        def apply_chat_template(*args: Any, **kwargs: Any) -> str:
+            return "<bos><assistant><think>\n<think>\n"
+
+    teacher = object.__new__(TransformersTeacher)
+    teacher.tokenizer = BrokenTemplateTokenizer()
+    teacher.use_chat_template = True
+    teacher._chat_template_enabled = True
+    teacher.force_think_prefix = True
+    teacher.think_prefix = "<think>\n"
+
+    with pytest.raises(ValueError, match="duplicated thinking prefix"):
+        teacher._render_prompt("Prompt")
+
+
 def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> None:
     prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {candidate_example_codes_json}")
     record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
@@ -370,9 +412,24 @@ def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> 
     assert sample["parsed_output"]["schema_version"] == "segment_enrichment_sample_v2"
     assert "Regenerate a concise <think>...</think>" in teacher.prompts[1]
     assert enriched["aggregation_status"] == "not_implemented_yet"
+    events = [
+        json.loads(line)
+        for line in (tmp_path / "logs" / "events.jsonl").read_text(
+            encoding="utf-8"
+        ).splitlines()
+    ]
+    prompt_events = [event for event in events if event["event"] == "prompt_prepared"]
+    generation_events = [
+        event for event in events if event["event"] == "teacher_generation"
+    ]
+    assert len(prompt_events) == 1
+    assert len(generation_events) == 2
+    assert all("rendered_prompt" not in event for event in generation_events)
+    assert generation_events[0]["prompt_id"] == generation_events[1]["prompt_id"]
+    assert generation_events[1]["is_repair_prompt"] is True
 
 
-def test_self_consistency_rejects_target_text_mismatch(
+def test_self_consistency_canonicalizes_target_text_mismatch(
     tmp_path: Path,
 ) -> None:
     prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {candidate_example_codes_json}")
@@ -384,19 +441,83 @@ def test_self_consistency_rejects_target_text_mismatch(
     )
     teacher = QueueTeacher([f"<think>\nReasoning.\n</think>\n{json.dumps(payload)}"])
 
-    with pytest.raises(ValueError, match="target_text"):
-        run_self_consistency(
-            record=record,
-            teacher=teacher,
-            prompt=PromptTemplate(prompt_path),
-            prompt_vars={},
-            codebook=codebook,
-            generation_options=GenerationOptions(seed=10),
-            num_samples=1,
-            aggregation="scaffold",
-            json_retry_attempts=0,
-            logger=RunLogger(tmp_path / "logs"),
-        )
+    enriched = run_self_consistency(
+        record=record,
+        teacher=teacher,
+        prompt=PromptTemplate(prompt_path),
+        prompt_vars={},
+        codebook=codebook,
+        generation_options=GenerationOptions(seed=10),
+        num_samples=1,
+        aggregation="scaffold",
+        json_retry_attempts=0,
+        logger=RunLogger(tmp_path / "logs"),
+    )
+
+    sample = enriched["samples"][0]
+    assert sample["final_parse_status"] == "valid"
+    assert sample["parsed_output"]["analysis_unit"]["target_text"] == record.text
+    assert sample["canonical_corrections"] == [
+        {
+            "path": "analysis_unit.target_text",
+            "was_present": True,
+            "model_value": "AI can help, but someone still needs to check the corrected result.",
+            "canonical_value": record.text,
+        }
+    ]
+
+
+def test_canonicalize_source_fields_restores_runtime_identity(tmp_path: Path) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload["record_id"] = "wrong"
+    payload["analysis_unit"]["speaker"] = "interviewer"
+    payload["analysis_unit"]["analysis_context_scope"] = "full_interview"
+
+    canonical, corrections = canonicalize_source_fields(
+        payload,
+        record,
+        expected_codebook_version="v1",
+        expected_context_scope="immediate",
+    )
+
+    assert canonical is not None
+    assert canonical["record_id"] == record.record_id
+    assert canonical["analysis_unit"]["speaker"] == "participant"
+    assert canonical["analysis_unit"]["analysis_context_scope"] == "immediate"
+    assert {item["path"] for item in corrections} == {
+        "record_id",
+        "analysis_unit.speaker",
+        "analysis_unit.analysis_context_scope",
+    }
+
+
+def test_v2_schema_rejects_broadly_collapsed_narrative_text(tmp_path: Path) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload["research_question_relevance"]["segment_relevance_summary"] = (
+        "Thisresponsehaslostallordinaryspaces"
+    )
+    payload["research_question_relevance"]["why_or_why_not"] = (
+        "Anotherlongsentencewithcollapsedspacing"
+    )
+    payload["quality_control"]["review_reason"] = (
+        "Humanreviewcannotreadthiscollapsedresponse"
+    )
+
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+        expected_schema_version="segment_enrichment_sample_v2",
+        expected_context_scope="immediate",
+    )
+
+    assert any("collapsed whitespace" in error for error in errors)
 
 
 def test_self_consistency_rejects_missing_think_block(tmp_path: Path) -> None:

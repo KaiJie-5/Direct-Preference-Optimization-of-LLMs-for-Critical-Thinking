@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from hashlib import sha256
 from typing import Any
 
 from .data import DatasetRecord
@@ -9,6 +10,7 @@ from .prompts import PromptTemplate
 from .schema import (
     SAMPLE_SCHEMA_VERSION,
     build_json_repair_prompt,
+    canonicalize_source_fields,
     parse_json_object,
     split_response_sections,
     validate_segment_enrichment_sample_result,
@@ -137,14 +139,34 @@ def run_self_refine(
         }
         critique_rendered = critique_prompt.render(feedback_vars)
         critique_result = teacher.generate(critique_rendered, generation_options)
+        prompt_reference = logger.prompt_snapshot(
+            record_id=record.record_id,
+            strategy="self_refine",
+            step="feedback",
+            sample_index=round_index,
+            rendered_prompt=critique_result.rendered_prompt,
+        )
+        critique_raw = dict(critique_result.raw)
+        raw_decoded_text = critique_raw.pop("raw_decoded_text", None)
+        if isinstance(raw_decoded_text, str):
+            critique_raw.update(
+                logger.decode_artifact(
+                    record_id=record.record_id,
+                    strategy="self_refine",
+                    step="feedback",
+                    sample_index=round_index,
+                    attempt_index=1,
+                    raw_text=raw_decoded_text,
+                )
+            )
         stop_decision = _parse_stop_decision(critique_result.text, stop_parser)
         feedback_payload = {
             "step": "feedback",
             "round": round_index,
             "prompt_path": str(critique_prompt.path),
-            "rendered_prompt": critique_result.rendered_prompt,
+            **prompt_reference,
             "output_text": critique_result.text,
-            "raw_response": critique_result.raw,
+            "raw_response": critique_raw,
             "elapsed_seconds": critique_result.elapsed_seconds,
             "parsed_stop_decision": stop_decision,
         }
@@ -246,15 +268,23 @@ def _generate_validated_sample(
     current_prompt = prompt
     final_output = ""
     final_parsed: dict[str, Any] | None = None
+    final_corrections: list[dict[str, Any]] = []
     final_errors: list[str] = []
     final_warnings: list[str] = []
     final_sections = split_response_sections("")
+    prompt_reference: dict[str, Any] = {}
 
     for attempt_index in range(1, json_retry_attempts + 2):
         attempt_options = _options_with_attempt_seed(generation_options, attempt_index)
         result = teacher.generate(current_prompt, attempt_options)
         response_sections = split_response_sections(result.text)
-        parsed, parse_error = parse_json_object(result.text)
+        model_parsed, parse_error = parse_json_object(result.text)
+        parsed, canonical_corrections = canonicalize_source_fields(
+            model_parsed,
+            record,
+            expected_codebook_version=expected_codebook_version,
+            expected_context_scope=context_scope,
+        )
         validation_result = validate_segment_enrichment_sample_result(
             parsed,
             record,
@@ -274,17 +304,45 @@ def _generate_validated_sample(
         if parse_error and parsed is None:
             validation_errors = [parse_error, *validation_errors]
         parse_status = "valid" if not validation_errors else "invalid"
+        if attempt_index == 1:
+            prompt_reference = logger.prompt_snapshot(
+                record_id=record.record_id,
+                strategy=strategy,
+                step=step,
+                sample_index=sample_index,
+                rendered_prompt=result.rendered_prompt,
+            )
+        current_prompt_hash = sha256(
+            result.rendered_prompt.encode("utf-8")
+        ).hexdigest()
+        raw_response = dict(result.raw)
+        raw_decoded_text = raw_response.pop("raw_decoded_text", None)
+        if isinstance(raw_decoded_text, str):
+            raw_response.update(
+                logger.decode_artifact(
+                    record_id=record.record_id,
+                    strategy=strategy,
+                    step=step,
+                    sample_index=sample_index,
+                    attempt_index=attempt_index,
+                    raw_text=raw_decoded_text,
+                )
+            )
         attempt_payload = {
             "attempt_index": attempt_index,
             "generation_options": asdict(attempt_options),
-            "rendered_prompt": result.rendered_prompt,
+            **prompt_reference,
+            "attempt_prompt_sha256": current_prompt_hash,
+            "is_repair_prompt": attempt_index > 1,
             "raw_output_text": result.text,
             **response_sections,
+            "model_parsed_output": model_parsed,
             "parsed_output": parsed,
+            "canonical_corrections": canonical_corrections,
             "parse_status": parse_status,
             "validation_errors": validation_errors,
             "validation_warnings": validation_warnings,
-            "raw_response": result.raw,
+            "raw_response": raw_response,
             "elapsed_seconds": result.elapsed_seconds,
         }
         attempts.append(attempt_payload)
@@ -301,6 +359,7 @@ def _generate_validated_sample(
 
         final_output = result.text
         final_parsed = parsed
+        final_corrections = canonical_corrections
         final_errors = validation_errors
         final_warnings = validation_warnings
         final_sections = response_sections
@@ -309,6 +368,7 @@ def _generate_validated_sample(
         current_prompt = build_json_repair_prompt(
             original_prompt=prompt,
             invalid_output=result.text,
+            parsed_output=parsed,
             errors=validation_errors,
         )
 
@@ -326,6 +386,7 @@ def _generate_validated_sample(
         "final_parse_status": "valid" if not final_errors else "invalid",
         "validation_errors": final_errors,
         "validation_warnings": final_warnings,
+        "canonical_corrections": final_corrections,
         "output_text": final_output,
         **final_sections,
         "parsed_output": final_parsed,

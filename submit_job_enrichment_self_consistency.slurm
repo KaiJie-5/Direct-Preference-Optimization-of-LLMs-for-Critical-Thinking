@@ -29,6 +29,7 @@ PROMPT_PATH="${PROJECT_DIR}/prompts/enrichment/self_consistency_placeholder.txt"
 STRATEGY="self_consistency"
 CONTEXT_SCOPE="full_interview"
 TEACHER_BACKEND="transformers"
+# Smoke-run setting. Restore to 5 together with clearing LIMIT for the full run.
 SELF_CONSISTENCY_SAMPLES=5
 JSON_RETRY_ATTEMPTS=2
 TEMPERATURE=0.6
@@ -45,7 +46,7 @@ RESEARCH_QUESTIONS=(
     "What barriers or challenges do people face when interacting with energy services or energy management systems?"
 )
 
-# Set LIMIT=1 for a quick smoke run. Leave empty for the full enrichment run.
+# Keep LIMIT=1 for the next smoke run. Clear it only after inspecting that output.
 LIMIT=""
 
 require_file() {
@@ -122,6 +123,8 @@ conda activate "${CONDA_ENV}"
 cd "${PROJECT_DIR}"
 export PYTHONPATH="${PROJECT_DIR}/src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
+export PYTHONIOENCODING=utf-8
+export PYTHONUTF8=1
 
 echo "Python: $(which python)"
 python --version

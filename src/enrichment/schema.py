@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any
 
@@ -182,11 +183,111 @@ REFLEXIVE_DIMENSIONS = {
     "technological",
 }
 
+NARRATIVE_FIELD_NAMES = {
+    "segment_relevance_summary",
+    "why_or_why_not",
+    "evidence_quote",
+    "rationale",
+    "definition",
+    "why_candidate_codes_do_not_fully_cover_it",
+    "actual_segment_quote",
+    "why_plausible_for_wider_dataset",
+    "why_unsupported_by_this_segment",
+    "relation_to_research_questions",
+    "category_boundary",
+    "surface_description",
+    "why_true_of_segment",
+    "why_not_useful_for_research_questions",
+    "broad_relevance_to_research_questions",
+    "specific_meaning_lost",
+    "why_it_is_too_broad",
+    "specific_analytical_insight",
+    "why_it_is_useful",
+    "question",
+    "trigger_quote",
+    "why_this_question_is_useful",
+    "what_human_researcher_should_inspect",
+    "risk_if_ignored",
+    "review_reason",
+}
+
 
 @dataclass(frozen=True, slots=True)
 class ValidationResult:
     errors: list[str]
     warnings: list[str]
+
+
+def canonicalize_source_fields(
+    payload: dict[str, Any] | None,
+    record: DatasetRecord,
+    *,
+    expected_codebook_version: str | None,
+    expected_context_scope: str,
+    expected_schema_version: str = SAMPLE_SCHEMA_VERSION,
+) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+    """Inject fields owned by the runtime while retaining an audit trail."""
+    if payload is None:
+        return None, []
+
+    canonical = deepcopy(payload)
+    corrections: list[dict[str, Any]] = []
+    expected_top_level = {
+        "schema_version": expected_schema_version,
+        "record_id": record.record_id,
+        "codebook_version": expected_codebook_version,
+    }
+    for field, expected_value in expected_top_level.items():
+        _set_canonical_field(canonical, field, expected_value, corrections)
+
+    analysis_unit = canonical.get("analysis_unit")
+    if isinstance(analysis_unit, dict):
+        expected_analysis_unit = {
+            "interview_id": record.metadata.get("interview_id"),
+            "segment_id": record.metadata.get("segment_id"),
+            "speaker": record.metadata.get("speaker"),
+            "target_text": record.text,
+        }
+        if expected_schema_version == SAMPLE_SCHEMA_VERSION:
+            expected_analysis_unit.update(
+                {
+                    "analysis_context_used": True,
+                    "analysis_context_scope": expected_context_scope,
+                }
+            )
+        for field, expected_value in expected_analysis_unit.items():
+            _set_canonical_field(
+                analysis_unit,
+                f"analysis_unit.{field}",
+                expected_value,
+                corrections,
+                storage_key=field,
+            )
+
+    return canonical, corrections
+
+
+def _set_canonical_field(
+    container: dict[str, Any],
+    path: str,
+    expected_value: Any,
+    corrections: list[dict[str, Any]],
+    *,
+    storage_key: str | None = None,
+) -> None:
+    key = storage_key or path
+    was_present = key in container
+    model_value = container.get(key)
+    if not was_present or model_value != expected_value:
+        corrections.append(
+            {
+                "path": path,
+                "was_present": was_present,
+                "model_value": model_value,
+                "canonical_value": expected_value,
+            }
+        )
+        container[key] = expected_value
 
 
 def split_response_sections(text: str) -> dict[str, str]:
@@ -429,7 +530,41 @@ def validate_segment_enrichment_sample_result(
         if not isinstance(payload.get("quality_control"), dict):
             errors.append("quality_control must be an object.")
 
+    if is_v2:
+        collapsed_paths = _collapsed_narrative_paths(payload)
+        if len(collapsed_paths) >= 3:
+            errors.append(
+                "Generated analytical prose appears to have broadly collapsed "
+                "whitespace in fields: " + ", ".join(collapsed_paths[:8])
+            )
+
     return ValidationResult(errors=errors, warnings=warnings)
+
+
+def _collapsed_narrative_paths(payload: dict[str, Any]) -> list[str]:
+    collapsed: list[str] = []
+
+    def visit(value: Any, path: str = "") -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                item_path = f"{path}.{key}" if path else key
+                if key in NARRATIVE_FIELD_NAMES and _looks_whitespace_collapsed(item):
+                    collapsed.append(item_path)
+                visit(item, item_path)
+        elif isinstance(value, list):
+            for index, item in enumerate(value):
+                visit(item, f"{path}[{index}]")
+
+    visit(payload)
+    return collapsed
+
+
+def _looks_whitespace_collapsed(value: Any) -> bool:
+    if not isinstance(value, str) or len(value) < 24:
+        return False
+    if re.search(r"\s", value):
+        return False
+    return len(re.findall(r"[A-Za-z]", value)) >= 20
 
 
 def _validate_research_question_relevance(
@@ -859,8 +994,15 @@ def build_json_repair_prompt(
     *,
     original_prompt: str,
     invalid_output: str,
+    parsed_output: dict[str, Any] | None,
     errors: list[str],
 ) -> str:
+    if parsed_output is None:
+        previous_candidate = invalid_output
+        candidate_label = "Previous unparseable response"
+    else:
+        previous_candidate = json.dumps(parsed_output, ensure_ascii=False)
+        candidate_label = "Previous parsed JSON candidate"
     return (
         f"{original_prompt}\n\n"
         "Your previous response was not valid for the required response format.\n"
@@ -868,6 +1010,6 @@ def build_json_repair_prompt(
         "corrected JSON object. Do not add markdown fences or text after the JSON.\n\n"
         "Validation errors:\n"
         + "\n".join(f"- {error}" for error in errors)
-        + "\n\nPrevious invalid response:\n"
-        + invalid_output
+        + f"\n\n{candidate_label}:\n"
+        + previous_candidate
     )

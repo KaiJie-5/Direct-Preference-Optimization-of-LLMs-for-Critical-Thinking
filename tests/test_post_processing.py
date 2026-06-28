@@ -276,14 +276,18 @@ def test_repair_updates_one_invalid_sample_in_place(tmp_path: Path) -> None:
     repaired_sample = repaired_segment["samples"][2]
     assert repaired_sample["final_parse_status"] == "valid"
     assert repaired_sample["validation_errors"] == []
-    assert repaired_sample["validation_warnings"] == [
-        "analysis_unit.target_text differs from the segment text."
-    ]
+    assert repaired_sample["validation_warnings"] == []
     assert (
         repaired_sample["parsed_output"]["analysis_unit"]["target_text"]
-        == "Participant text corrected."
+        == "Participant text."
     )
-    assert repaired_sample["repair_metadata"]["method"] == "relaxed_target_text_validation"
+    assert (
+        repaired_sample["repair_metadata"]["method"]
+        == "canonical_source_field_injection"
+    )
+    assert repaired_sample["canonical_corrections"][0]["path"] == (
+        "analysis_unit.target_text"
+    )
 
 
 def test_repair_batches_multiple_samples_in_one_segment_file(tmp_path: Path) -> None:
