@@ -40,6 +40,7 @@ python -m preprocessing.cli html \
     --raw-html-dir "${OUTPUT_DIR}/raw_html" \
     --segments-dir "${OUTPUT_DIR}/segments_jsonl" \
     --manifest-path "${OUTPUT_DIR}/preprocessing_manifest.json" \
+    --interview-id-source heading \
     --dataset-id "transcripts-sexual_health" \
     --domain "sexual_health services" \
     --overwrite
