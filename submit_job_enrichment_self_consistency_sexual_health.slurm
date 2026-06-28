@@ -31,7 +31,6 @@ CONTEXT_SCOPE="full_interview"
 TEACHER_BACKEND="transformers"
 # Smoke-run setting. Restore to 5 together with clearing LIMIT for the full run.
 SELF_CONSISTENCY_SAMPLES=5
-JSON_RETRY_ATTEMPTS=2
 TEMPERATURE=0.6
 TOP_P=0.95
 MAX_NEW_TOKENS=32768
@@ -105,7 +104,6 @@ STRATEGY=${STRATEGY}
 CONTEXT_SCOPE=${CONTEXT_SCOPE}
 TEACHER_BACKEND=${TEACHER_BACKEND}
 SELF_CONSISTENCY_SAMPLES=${SELF_CONSISTENCY_SAMPLES}
-JSON_RETRY_ATTEMPTS=${JSON_RETRY_ATTEMPTS}
 TEMPERATURE=${TEMPERATURE}
 TOP_P=${TOP_P}
 MAX_NEW_TOKENS=${MAX_NEW_TOKENS}
@@ -155,7 +153,6 @@ ENRICH_ARGS=(
     --top-p "${TOP_P}"
     --max-new-tokens "${MAX_NEW_TOKENS}"
     --self-consistency-samples "${SELF_CONSISTENCY_SAMPLES}"
-    --json-retry-attempts "${JSON_RETRY_ATTEMPTS}"
     --force-think-prefix
     --torch-dtype "${TORCH_DTYPE}"
     --device-map "${DEVICE_MAP}"

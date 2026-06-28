@@ -73,7 +73,6 @@ dpo-enrich \
   --teacher-backend dry-run \
   --context-scope full_interview \
   --self-consistency-samples 5 \
-  --json-retry-attempts 2 \
   --limit 1
 ```
 
@@ -94,7 +93,6 @@ dpo-enrich \
   --temperature 0.6 \
   --max-new-tokens 32768 \
   --self-consistency-samples 5 \
-  --json-retry-attempts 2 \
   --force-think-prefix
 ```
 
@@ -108,10 +106,12 @@ also requires `{analysis_context}` in every prompt used by the selected
 strategy, and validates this before loading the teacher model.
 
 New Self-Consistency and Self-Refine generations use
-`segment_enrichment_sample_v2`. Historical v1 outputs remain readable. V2
-requires a closed `<think>...</think>` block and strict JSON validation. A
-production sample that remains invalid after all configured repair attempts
-fails its record and makes the final batch exit nonzero.
+`segment_enrichment_sample_v2`. Historical v1 outputs remain readable. Each
+sample is generated exactly once. Missing or malformed JSON, schema violations,
+and missing closed `<think>...</think>` blocks are retained with
+`final_parse_status: "warning"` and detailed `validation_warnings`; they do not
+fail the record. Teacher, filesystem, configuration, and other operational
+exceptions still fail the record and make the final batch exit nonzero.
 
 Outputs are grouped by interview:
 
@@ -126,7 +126,7 @@ outputs/enrichment/
     failures.jsonl
 ```
 
-Self-consistency currently validates and logs 5 samples per segment. Aggregation is intentionally marked as `not_implemented_yet`. Full rendered prompts, raw outputs, retries, backend payloads, and complete parsing details are retained in `events.jsonl`. Each per-segment JSON keeps the compact analysis-facing fields, including each sample's parsed JSON and `reasoning_text`.
+Self-consistency currently validates and logs 5 samples per segment. Aggregation is intentionally marked as `not_implemented_yet`. Full rendered prompts and backend payloads are retained in `events.jsonl`. Each per-segment JSON records every generated sample and its single attempt, including raw output text, extracted reasoning and JSON text, model-parsed JSON, canonicalized JSON, corrections, status, and validation warnings. Bulky backend payloads remain only in `events.jsonl`.
 
 ## Prompt Variables
 

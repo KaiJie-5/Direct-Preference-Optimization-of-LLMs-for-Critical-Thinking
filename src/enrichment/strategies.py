@@ -9,7 +9,6 @@ from .logging import RunLogger
 from .prompts import PromptTemplate
 from .schema import (
     SAMPLE_SCHEMA_VERSION,
-    build_json_repair_prompt,
     canonicalize_source_fields,
     parse_json_object,
     split_response_sections,
@@ -27,7 +26,6 @@ def run_self_consistency(
     generation_options: GenerationOptions,
     num_samples: int,
     aggregation: str,
-    json_retry_attempts: int,
     logger: RunLogger,
     codebook: dict[str, Any] | None = None,
     context_scope: str = "immediate",
@@ -56,7 +54,6 @@ def run_self_consistency(
             generation_options=sample_options,
             expected_codebook_version=expected_codebook_version,
             context_scope=context_scope,
-            json_retry_attempts=json_retry_attempts,
             logger=logger,
             strategy="self_consistency",
             sample_index=sample_index,
@@ -92,7 +89,6 @@ def run_self_refine(
     refine_rounds: int,
     stop_parser: str,
     history_format: str,
-    json_retry_attempts: int,
     logger: RunLogger,
     codebook: dict[str, Any] | None = None,
     context_scope: str = "immediate",
@@ -111,7 +107,6 @@ def run_self_refine(
         generation_options=generation_options,
         expected_codebook_version=expected_codebook_version,
         context_scope=context_scope,
-        json_retry_attempts=json_retry_attempts,
         logger=logger,
         strategy="self_refine",
         sample_index=0,
@@ -206,7 +201,6 @@ def run_self_refine(
             generation_options=generation_options,
             expected_codebook_version=expected_codebook_version,
             context_scope=context_scope,
-            json_retry_attempts=json_retry_attempts,
             logger=logger,
             strategy="self_refine",
             sample_index=round_index,
@@ -240,7 +234,6 @@ def run_self_refine(
         "selected_json": current_parsed,
         "stop_parser": stop_parser,
         "history_format": history_format,
-        "json_retry_attempts": json_retry_attempts,
         "max_refine_rounds": refine_rounds,
         "completed_refinement_rounds": sum(
             1 for item in trace if item["step"] == "revision"
@@ -258,139 +251,101 @@ def _generate_validated_sample(
     generation_options: GenerationOptions,
     expected_codebook_version: str | None,
     context_scope: str,
-    json_retry_attempts: int,
     logger: RunLogger,
     strategy: str,
     sample_index: int,
     step: str = "sample",
 ) -> dict[str, Any]:
-    attempts: list[dict[str, Any]] = []
-    current_prompt = prompt
-    final_output = ""
-    final_parsed: dict[str, Any] | None = None
-    final_corrections: list[dict[str, Any]] = []
-    final_errors: list[str] = []
-    final_warnings: list[str] = []
-    final_sections = split_response_sections("")
-    prompt_reference: dict[str, Any] = {}
-
-    for attempt_index in range(1, json_retry_attempts + 2):
-        attempt_options = _options_with_attempt_seed(generation_options, attempt_index)
-        result = teacher.generate(current_prompt, attempt_options)
-        response_sections = split_response_sections(result.text)
-        model_parsed, parse_error = parse_json_object(result.text)
-        parsed, canonical_corrections = canonicalize_source_fields(
-            model_parsed,
-            record,
-            expected_codebook_version=expected_codebook_version,
-            expected_context_scope=context_scope,
+    attempt_index = 1
+    result = teacher.generate(prompt, generation_options)
+    response_sections = split_response_sections(result.text)
+    model_parsed, parse_error = parse_json_object(result.text)
+    parsed, canonical_corrections = canonicalize_source_fields(
+        model_parsed,
+        record,
+        expected_codebook_version=expected_codebook_version,
+        expected_context_scope=context_scope,
+    )
+    validation_result = validate_segment_enrichment_sample_result(
+        parsed,
+        record,
+        expected_codebook_version=expected_codebook_version,
+        expected_schema_version=SAMPLE_SCHEMA_VERSION,
+        expected_context_scope=context_scope,
+        strict_prompt_schema=True,
+        allow_target_text_mismatch=False,
+    )
+    issues = list(validation_result.errors)
+    if response_sections["reasoning_parse_status"] != "found_closed_think_block":
+        issues.insert(
+            0,
+            "Response must contain a closed <think>...</think> reasoning block.",
         )
-        validation_result = validate_segment_enrichment_sample_result(
-            parsed,
-            record,
-            expected_codebook_version=expected_codebook_version,
-            expected_schema_version=SAMPLE_SCHEMA_VERSION,
-            expected_context_scope=context_scope,
-            strict_prompt_schema=True,
-            allow_target_text_mismatch=False,
-        )
-        validation_errors = list(validation_result.errors)
-        validation_warnings = validation_result.warnings
-        if response_sections["reasoning_parse_status"] != "found_closed_think_block":
-            validation_errors.insert(
-                0,
-                "Response must contain a closed <think>...</think> reasoning block.",
-            )
-        if parse_error and parsed is None:
-            validation_errors = [parse_error, *validation_errors]
-        parse_status = "valid" if not validation_errors else "invalid"
-        if attempt_index == 1:
-            prompt_reference = logger.prompt_snapshot(
+    if parse_error and parsed is None:
+        issues.insert(0, parse_error)
+    validation_warnings = [*issues, *validation_result.warnings]
+    parse_status = "warning" if validation_warnings else "valid"
+    prompt_reference = logger.prompt_snapshot(
+        record_id=record.record_id,
+        strategy=strategy,
+        step=step,
+        sample_index=sample_index,
+        rendered_prompt=result.rendered_prompt,
+    )
+    current_prompt_hash = sha256(result.rendered_prompt.encode("utf-8")).hexdigest()
+    raw_response = dict(result.raw)
+    raw_decoded_text = raw_response.pop("raw_decoded_text", None)
+    if isinstance(raw_decoded_text, str):
+        raw_response.update(
+            logger.decode_artifact(
                 record_id=record.record_id,
                 strategy=strategy,
                 step=step,
                 sample_index=sample_index,
-                rendered_prompt=result.rendered_prompt,
+                attempt_index=attempt_index,
+                raw_text=raw_decoded_text,
             )
-        current_prompt_hash = sha256(
-            result.rendered_prompt.encode("utf-8")
-        ).hexdigest()
-        raw_response = dict(result.raw)
-        raw_decoded_text = raw_response.pop("raw_decoded_text", None)
-        if isinstance(raw_decoded_text, str):
-            raw_response.update(
-                logger.decode_artifact(
-                    record_id=record.record_id,
-                    strategy=strategy,
-                    step=step,
-                    sample_index=sample_index,
-                    attempt_index=attempt_index,
-                    raw_text=raw_decoded_text,
-                )
-            )
-        attempt_payload = {
-            "attempt_index": attempt_index,
-            "generation_options": asdict(attempt_options),
-            **prompt_reference,
-            "attempt_prompt_sha256": current_prompt_hash,
-            "is_repair_prompt": attempt_index > 1,
-            "raw_output_text": result.text,
-            **response_sections,
-            "model_parsed_output": model_parsed,
-            "parsed_output": parsed,
-            "canonical_corrections": canonical_corrections,
-            "parse_status": parse_status,
-            "validation_errors": validation_errors,
-            "validation_warnings": validation_warnings,
-            "raw_response": raw_response,
-            "elapsed_seconds": result.elapsed_seconds,
+        )
+    attempt_payload = {
+        "attempt_index": attempt_index,
+        "generation_options": asdict(generation_options),
+        **prompt_reference,
+        "attempt_prompt_sha256": current_prompt_hash,
+        "is_repair_prompt": False,
+        "raw_output_text": result.text,
+        **response_sections,
+        "model_parsed_output": model_parsed,
+        "parsed_output": parsed,
+        "canonical_corrections": canonical_corrections,
+        "parse_status": parse_status,
+        "validation_errors": [],
+        "validation_warnings": validation_warnings,
+        "raw_response": raw_response,
+        "elapsed_seconds": result.elapsed_seconds,
+    }
+    logger.event(
+        {
+            "event": "teacher_generation",
+            "record_id": record.record_id,
+            "strategy": strategy,
+            "step": step,
+            "sample_index": sample_index,
+            **attempt_payload,
         }
-        attempts.append(attempt_payload)
-        logger.event(
-            {
-                "event": "teacher_generation",
-                "record_id": record.record_id,
-                "strategy": strategy,
-                "step": step,
-                "sample_index": sample_index,
-                **attempt_payload,
-            }
-        )
-
-        final_output = result.text
-        final_parsed = parsed
-        final_corrections = canonical_corrections
-        final_errors = validation_errors
-        final_warnings = validation_warnings
-        final_sections = response_sections
-        if not validation_errors:
-            break
-        current_prompt = build_json_repair_prompt(
-            original_prompt=prompt,
-            invalid_output=result.text,
-            parsed_output=parsed,
-            errors=validation_errors,
-        )
-
-    if final_errors and teacher.metadata().get("backend") != "dry-run":
-        joined_errors = "; ".join(final_errors)
-        raise ValueError(
-            f"Record {record.record_id} {strategy} {step} sample {sample_index} "
-            f"remained invalid after {len(attempts)} attempt(s): {joined_errors}"
-        )
+    )
 
     return {
         "sample_index": sample_index,
         "step": step,
-        "attempt_count": len(attempts),
-        "final_parse_status": "valid" if not final_errors else "invalid",
-        "validation_errors": final_errors,
-        "validation_warnings": final_warnings,
-        "canonical_corrections": final_corrections,
-        "output_text": final_output,
-        **final_sections,
-        "parsed_output": final_parsed,
-        "attempts": attempts,
+        "attempt_count": 1,
+        "final_parse_status": parse_status,
+        "validation_errors": [],
+        "validation_warnings": validation_warnings,
+        "canonical_corrections": canonical_corrections,
+        "output_text": result.text,
+        **response_sections,
+        "parsed_output": parsed,
+        "attempts": [attempt_payload],
     }
 
 
@@ -410,15 +365,6 @@ def _options_with_sample_seed(
     payload = asdict(options)
     if options.seed is not None:
         payload["seed"] = options.seed + sample_index - 1
-    return GenerationOptions(**payload)
-
-
-def _options_with_attempt_seed(
-    options: GenerationOptions, attempt_index: int
-) -> GenerationOptions:
-    payload = asdict(options)
-    if options.seed is not None:
-        payload["seed"] = options.seed + ((attempt_index - 1) * 1000)
     return GenerationOptions(**payload)
 
 

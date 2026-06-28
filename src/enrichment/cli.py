@@ -74,7 +74,6 @@ def build_parser() -> argparse.ArgumentParser:
             "May be repeated; the same questions apply to all records in this run."
         ),
     )
-    strategy_group.add_argument("--json-retry-attempts", type=int, default=2)
     strategy_group.add_argument("--self-consistency-samples", type=int, default=5)
     strategy_group.add_argument(
         "--self-consistency-aggregation",
@@ -350,7 +349,6 @@ def _run_strategy(
             generation_options=generation_options,
             num_samples=args.self_consistency_samples,
             aggregation=args.self_consistency_aggregation,
-            json_retry_attempts=args.json_retry_attempts,
             logger=logger,
             context_scope=args.context_scope,
         )
@@ -370,7 +368,6 @@ def _run_strategy(
             refine_rounds=args.refine_rounds,
             stop_parser=args.refine_stop_parser,
             history_format=args.refine_history_format,
-            json_retry_attempts=args.json_retry_attempts,
             logger=logger,
             context_scope=args.context_scope,
         )
@@ -462,15 +459,47 @@ def _focused_self_consistency_payload(enriched: dict[str, Any]) -> dict[str, Any
         "samples": [
             {
                 "sample_index": sample["sample_index"],
+                "attempt_count": sample["attempt_count"],
                 "final_parse_status": sample["final_parse_status"],
                 "validation_errors": sample["validation_errors"],
                 "validation_warnings": sample.get("validation_warnings", []),
                 "canonical_corrections": sample.get("canonical_corrections", []),
+                "output_text": sample["output_text"],
+                "reasoning_block": sample["reasoning_block"],
                 "reasoning_text": sample["reasoning_text"],
+                "json_text": sample["json_text"],
+                "reasoning_parse_status": sample["reasoning_parse_status"],
                 "parsed_output": sample["parsed_output"],
+                "attempts": [
+                    _focused_attempt_payload(attempt)
+                    for attempt in sample["attempts"]
+                ],
             }
             for sample in enriched["samples"]
         ],
+    }
+
+
+def _focused_attempt_payload(attempt: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "attempt_index": attempt["attempt_index"],
+        "generation_options": attempt["generation_options"],
+        "prompt_id": attempt["prompt_id"],
+        "prompt_sha256": attempt["prompt_sha256"],
+        "attempt_prompt_sha256": attempt["attempt_prompt_sha256"],
+        "is_repair_prompt": attempt["is_repair_prompt"],
+        "raw_output_text": attempt["raw_output_text"],
+        "reasoning_block": attempt["reasoning_block"],
+        "reasoning_text": attempt["reasoning_text"],
+        "json_text": attempt["json_text"],
+        "reasoning_parse_status": attempt["reasoning_parse_status"],
+        "model_parsed_output": attempt["model_parsed_output"],
+        "parsed_output": attempt["parsed_output"],
+        "canonical_corrections": attempt["canonical_corrections"],
+        "parse_status": attempt["parse_status"],
+        "validation_errors": attempt["validation_errors"],
+        "validation_warnings": attempt["validation_warnings"],
+        "elapsed_seconds": attempt["elapsed_seconds"],
     }
 
 

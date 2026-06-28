@@ -374,15 +374,16 @@ def test_transformers_prompt_rejects_duplicate_template_think_prefix() -> None:
         teacher._render_prompt("Prompt")
 
 
-def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> None:
+def test_self_consistency_keeps_invalid_json_as_warning_without_retry(
+    tmp_path: Path,
+) -> None:
     prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {candidate_example_codes_json}")
     record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
     codebook = _codebook_payload()
-    valid_json = json.dumps(_valid_v2_sample(record, codebook_version="v1"))
     teacher = QueueTeacher(
         [
             "<think>\nInvalid reasoning with {braces}.\n</think>\nnot json",
-            f"<think>\nGrounded reasoning.\n</think>\n{valid_json}",
+            "This response must not be consumed.",
         ]
     )
 
@@ -395,22 +396,24 @@ def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> 
         generation_options=GenerationOptions(seed=10),
         num_samples=1,
         aggregation="scaffold",
-        json_retry_attempts=1,
         logger=RunLogger(tmp_path / "logs"),
     )
 
     sample = enriched["samples"][0]
-    assert sample["attempt_count"] == 2
-    assert sample["final_parse_status"] == "valid"
-    assert sample["reasoning_text"] == "Grounded reasoning."
-    assert sample["reasoning_block"] == "<think>\nGrounded reasoning.\n</think>"
-    assert sample["json_text"] == valid_json
+    assert sample["attempt_count"] == 1
+    assert sample["final_parse_status"] == "warning"
+    assert sample["validation_errors"] == []
+    assert "No JSON object could be parsed." in sample["validation_warnings"]
+    assert sample["reasoning_text"] == "Invalid reasoning with {braces}."
+    assert sample["reasoning_block"] == (
+        "<think>\nInvalid reasoning with {braces}.\n</think>"
+    )
+    assert sample["parsed_output"] is None
     assert sample["reasoning_parse_status"] == "found_closed_think_block"
     assert sample["attempts"][0]["reasoning_text"] == "Invalid reasoning with {braces}."
     assert sample["attempts"][0]["reasoning_parse_status"] == "found_closed_think_block"
-    assert sample["attempts"][1]["reasoning_text"] == "Grounded reasoning."
-    assert sample["parsed_output"]["schema_version"] == "segment_enrichment_sample_v2"
-    assert "Regenerate a concise <think>...</think>" in teacher.prompts[1]
+    assert sample["attempts"][0]["raw_output_text"] == sample["output_text"]
+    assert len(teacher.prompts) == 1
     assert enriched["aggregation_status"] == "not_implemented_yet"
     events = [
         json.loads(line)
@@ -423,10 +426,77 @@ def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> 
         event for event in events if event["event"] == "teacher_generation"
     ]
     assert len(prompt_events) == 1
-    assert len(generation_events) == 2
+    assert len(generation_events) == 1
     assert all("rendered_prompt" not in event for event in generation_events)
-    assert generation_events[0]["prompt_id"] == generation_events[1]["prompt_id"]
-    assert generation_events[1]["is_repair_prompt"] is True
+    assert generation_events[0]["is_repair_prompt"] is False
+
+
+def test_self_consistency_keeps_all_samples_after_validation_warnings(
+    tmp_path: Path,
+) -> None:
+    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}")
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    codebook = _codebook_payload()
+
+    invalid_boolean = _valid_v2_sample(record, codebook_version="v1")
+    invalid_boolean["research_question_relevance"][
+        "is_segment_analytically_useful"
+    ] = "yes"
+    invalid_enum = _valid_v2_sample(record, codebook_version="v1")
+    invalid_enum["reflective_question_candidates"][1]["question_type"] = (
+        "devil's_advocate"
+    )
+    collapsed_text = _valid_v2_sample(record, codebook_version="v1")
+    collapsed_text["research_question_relevance"]["segment_relevance_summary"] = (
+        "Thisresponsehaslostallordinaryspaces"
+    )
+    collapsed_text["research_question_relevance"]["why_or_why_not"] = (
+        "Anotherlongsentencewithcollapsedspacing"
+    )
+    collapsed_text["quality_control"]["review_reason"] = (
+        "Humanreviewcannotreadthiscollapsedresponse"
+    )
+    clean = _valid_v2_sample(record, codebook_version="v1")
+    teacher = QueueTeacher(
+        [
+            f"<think>\nReasoning {index}.\n</think>\n{json.dumps(payload)}"
+            for index, payload in enumerate(
+                [invalid_boolean, invalid_enum, collapsed_text, clean], start=1
+            )
+        ]
+    )
+
+    enriched = run_self_consistency(
+        record=record,
+        teacher=teacher,
+        prompt=PromptTemplate(prompt_path),
+        prompt_vars={},
+        codebook=codebook,
+        generation_options=GenerationOptions(),
+        num_samples=4,
+        aggregation="scaffold",
+        logger=RunLogger(tmp_path / "logs"),
+    )
+
+    assert len(teacher.prompts) == 4
+    assert [sample["final_parse_status"] for sample in enriched["samples"]] == [
+        "warning",
+        "warning",
+        "warning",
+        "valid",
+    ]
+    assert all(sample["validation_errors"] == [] for sample in enriched["samples"])
+    assert "must be a boolean" in " ".join(
+        enriched["samples"][0]["validation_warnings"]
+    )
+    assert "question_type must be one of" in " ".join(
+        enriched["samples"][1]["validation_warnings"]
+    )
+    assert "collapsed whitespace" in " ".join(
+        enriched["samples"][2]["validation_warnings"]
+    )
 
 
 def test_self_consistency_canonicalizes_target_text_mismatch(
@@ -450,7 +520,6 @@ def test_self_consistency_canonicalizes_target_text_mismatch(
         generation_options=GenerationOptions(seed=10),
         num_samples=1,
         aggregation="scaffold",
-        json_retry_attempts=0,
         logger=RunLogger(tmp_path / "logs"),
     )
 
@@ -646,13 +715,12 @@ def test_self_consistency_does_not_retry_non_empty_quote_warning(
         generation_options=GenerationOptions(),
         num_samples=1,
         aggregation="scaffold",
-        json_retry_attempts=2,
         logger=RunLogger(tmp_path / "logs"),
     )
 
     sample = enriched["samples"][0]
     assert sample["attempt_count"] == 1
-    assert sample["final_parse_status"] == "valid"
+    assert sample["final_parse_status"] == "warning"
     assert sample["validation_errors"] == []
     assert any(
         "manual correction is required" in warning
@@ -686,7 +754,7 @@ def test_v2_schema_rejects_broadly_collapsed_narrative_text(tmp_path: Path) -> N
     assert any("collapsed whitespace" in error for error in errors)
 
 
-def test_self_consistency_rejects_missing_think_block(tmp_path: Path) -> None:
+def test_self_consistency_keeps_missing_think_block_as_warning(tmp_path: Path) -> None:
     prompt_path = _write_prompt(tmp_path, "Prompt {record_id}")
     record = load_segment_records(
         _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
@@ -694,19 +762,25 @@ def test_self_consistency_rejects_missing_think_block(tmp_path: Path) -> None:
     payload = _valid_v2_sample(record, codebook_version="v1")
     teacher = QueueTeacher([json.dumps(payload)])
 
-    with pytest.raises(ValueError, match="closed <think>"):
-        run_self_consistency(
-            record=record,
-            teacher=teacher,
-            prompt=PromptTemplate(prompt_path),
-            prompt_vars={},
-            codebook=_codebook_payload(),
-            generation_options=GenerationOptions(),
-            num_samples=1,
-            aggregation="scaffold",
-            json_retry_attempts=0,
-            logger=RunLogger(tmp_path / "logs"),
-        )
+    enriched = run_self_consistency(
+        record=record,
+        teacher=teacher,
+        prompt=PromptTemplate(prompt_path),
+        prompt_vars={},
+        codebook=_codebook_payload(),
+        generation_options=GenerationOptions(),
+        num_samples=1,
+        aggregation="scaffold",
+        logger=RunLogger(tmp_path / "logs"),
+    )
+
+    sample = enriched["samples"][0]
+    assert sample["final_parse_status"] == "warning"
+    assert sample["validation_errors"] == []
+    assert any(
+        "closed <think>" in warning for warning in sample["validation_warnings"]
+    )
+    assert sample["parsed_output"] is not None
 
 
 def test_self_consistency_receives_full_interview_context(tmp_path: Path) -> None:
@@ -735,7 +809,6 @@ def test_self_consistency_receives_full_interview_context(tmp_path: Path) -> Non
         generation_options=GenerationOptions(),
         num_samples=1,
         aggregation="scaffold",
-        json_retry_attempts=0,
         logger=RunLogger(tmp_path / "logs"),
         context_scope="full_interview",
     )
@@ -788,7 +861,6 @@ def test_self_refine_receives_full_context_in_every_prompt(tmp_path: Path) -> No
         refine_rounds=1,
         stop_parser="json",
         history_format="text",
-        json_retry_attempts=0,
         logger=RunLogger(tmp_path / "refine_logs"),
         context_scope="full_interview",
     )
@@ -796,6 +868,48 @@ def test_self_refine_receives_full_context_in_every_prompt(tmp_path: Path) -> No
     assert len(teacher.prompts) == 3
     assert all("[TARGET SEGMENT SEG001]" in prompt for prompt in teacher.prompts)
     assert enriched["context_scope"] == "full_interview"
+
+
+def test_self_refine_continues_from_unparseable_warning_output(tmp_path: Path) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    initial_prompt = _write_prompt(tmp_path, "Initial {record_id}")
+    critique_prompt = _write_prompt(tmp_path, "Critique {current_answer}")
+    revision_prompt = _write_prompt(
+        tmp_path, "Revision {current_answer} {current_answer_json} {feedback}"
+    )
+    valid_json = json.dumps(_valid_v2_sample(record, codebook_version="v1"))
+    teacher = QueueTeacher(
+        [
+            "<think>\nUseful raw reasoning.\n</think>\nnot json",
+            json.dumps({"needs_refinement": True, "feedback": "Revise it."}),
+            f"<think>\nRevised reasoning.\n</think>\n{valid_json}",
+        ]
+    )
+
+    enriched = run_self_refine(
+        record=record,
+        teacher=teacher,
+        initial_prompt=PromptTemplate(initial_prompt),
+        critique_prompt=PromptTemplate(critique_prompt),
+        revision_prompt=PromptTemplate(revision_prompt),
+        prompt_vars={},
+        codebook=_codebook_payload(),
+        generation_options=GenerationOptions(),
+        refine_rounds=1,
+        stop_parser="json",
+        history_format="text",
+        logger=RunLogger(tmp_path / "refine_logs"),
+    )
+
+    assert len(teacher.prompts) == 3
+    initial = enriched["trace"][0]
+    assert initial["final_parse_status"] == "warning"
+    assert initial["parsed_output"] is None
+    assert initial["validation_errors"] == []
+    assert "Useful raw reasoning" in teacher.prompts[1]
+    assert enriched["trace"][-1]["final_parse_status"] == "valid"
 
 
 def test_enrichment_cli_default_max_new_tokens_is_deepseek_budget() -> None:
@@ -813,6 +927,24 @@ def test_enrichment_cli_default_max_new_tokens_is_deepseek_budget() -> None:
     )
 
     assert args.max_new_tokens == 32768
+
+
+def test_enrichment_cli_rejects_removed_json_retry_option() -> None:
+    with pytest.raises(SystemExit):
+        build_parser().parse_args(
+            [
+                "--segments-path",
+                "segments",
+                "--output-dir",
+                "outputs",
+                "--strategy",
+                "self_consistency",
+                "--prompt-path",
+                "prompt.txt",
+                "--json-retry-attempts",
+                "0",
+            ]
+        )
 
 
 def test_enrichment_cli_accepts_repeated_research_questions() -> None:
@@ -940,8 +1072,6 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
             "dry-run",
             "--self-consistency-samples",
             "1",
-            "--json-retry-attempts",
-            "0",
         ]
     )
 
@@ -968,9 +1098,60 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
     assert manifest["output_schema_version"] == "segment_enrichment_sample_v2"
     sample = segment_payload["samples"][0]
     assert "reasoning_text" in sample
-    assert "attempts" not in sample
+    assert sample["attempt_count"] == 1
+    assert len(sample["attempts"]) == 1
+    assert sample["attempts"][0]["raw_output_text"] == sample["output_text"]
+    assert "model_parsed_output" in sample["attempts"][0]
+    assert "parsed_output" in sample["attempts"][0]
     assert "rendered_prompt" not in sample
-    assert "raw_output_text" not in sample
+    assert "raw_response" not in sample["attempts"][0]
+
+
+def test_enrichment_cli_still_records_teacher_failures(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailingTeacher:
+        @staticmethod
+        def generate(prompt: str, options: GenerationOptions) -> GenerationResult:
+            raise RuntimeError("teacher backend failed")
+
+        @staticmethod
+        def metadata() -> dict[str, Any]:
+            return {"backend": "failing-test"}
+
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    _write_jsonl(segments_dir / "INT01_segments.jsonl", [_segment("INT01", 1)])
+    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}")
+    codebook_path = _write_codebook(tmp_path)
+    output_dir = tmp_path / "outputs" / "enrichment"
+    monkeypatch.setattr("enrichment.cli.build_teacher", lambda args: FailingTeacher())
+
+    status = enrich_main(
+        [
+            "--segments-path",
+            str(segments_dir),
+            "--output-dir",
+            str(output_dir),
+            "--codebook-path",
+            str(codebook_path),
+            "--strategy",
+            "self_consistency",
+            "--prompt-path",
+            str(prompt_path),
+            "--self-consistency-samples",
+            "1",
+        ]
+    )
+
+    assert status == 1
+    interview_dir = output_dir / "INT01_self_consistency"
+    failures = _read_jsonl(interview_dir / "failures.jsonl")
+    assert failures[0]["record_id"] == "INT01_SEG001"
+    assert failures[0]["error_type"] == "RuntimeError"
+    assert failures[0]["error"] == "teacher backend failed"
+    assert not (interview_dir / "segments" / "INT01_SEG001.json").exists()
 
 
 def test_enrichment_prompt_vars_use_runtime_codebook(tmp_path: Path) -> None:
@@ -1263,8 +1444,6 @@ def test_enrichment_cli_accepts_legacy_embedded_codebook_without_runtime_path(
             "dry-run",
             "--self-consistency-samples",
             "1",
-            "--json-retry-attempts",
-            "0",
         ]
     )
 
