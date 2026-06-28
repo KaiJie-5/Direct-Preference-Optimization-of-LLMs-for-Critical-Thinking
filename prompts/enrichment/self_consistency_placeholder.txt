@@ -87,9 +87,6 @@ CAT-CoT structure:
 9. Reflective questions
 - Create exactly 3 reflective questions.
 - Each question must test the useful analytical code.
-- At least one question must check whether the interpretation over-reads the quote.
-- At least one question must check whether another interpretation is possible.
-- At least one question must check what context a human researcher would need before trusting the code.
 
 After the thinking block, close it with:
 
