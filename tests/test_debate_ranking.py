@@ -721,7 +721,6 @@ def _parsed_output(index: int) -> dict:
                 "specific_analytical_insight": "insight",
                 "why_it_is_useful": "useful",
                 "relation_to_research_questions": "relation",
-                "why_better_than_other_three": "better",
                 "category_boundary": "boundary",
             },
         },

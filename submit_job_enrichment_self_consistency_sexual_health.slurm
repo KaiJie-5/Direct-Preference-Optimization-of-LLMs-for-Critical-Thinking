@@ -13,6 +13,8 @@
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=kjl1a21@soton.ac.uk
 
+set -eo pipefail
+
 # =========================
 # Easy configuration block
 # =========================
@@ -27,7 +29,7 @@ OUTPUT_ROOT="${SCRATCH_DPO}/data/transcripts-sexual_health-enriched"
 PROMPT_PATH="${PROJECT_DIR}/prompts/enrichment/self_consistency_placeholder.txt"
 
 STRATEGY="self_consistency"
-CONTEXT_SCOPE="immediate"
+CONTEXT_SCOPE="full_interview"
 TEACHER_BACKEND="transformers"
 SELF_CONSISTENCY_SAMPLES=5
 JSON_RETRY_ATTEMPTS=2
@@ -45,6 +47,25 @@ RESEARCH_QUESTIONS=(
 
 # Set LIMIT=1 for a quick smoke run. Leave empty for the full enrichment run.
 LIMIT=""
+
+require_file() {
+    if [[ ! -f "$1" ]]; then
+        echo "Required file does not exist: $1" >&2
+        exit 2
+    fi
+}
+
+require_directory() {
+    if [[ ! -d "$1" ]]; then
+        echo "Required directory does not exist: $1" >&2
+        exit 2
+    fi
+}
+
+require_directory "${MODEL_PATH}"
+require_directory "${SEGMENTS_PATH}"
+require_file "${CODEBOOK_PATH}"
+require_file "${PROMPT_PATH}"
 
 # =========================
 # Run folder and logging

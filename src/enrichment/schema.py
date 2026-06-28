@@ -8,7 +8,12 @@ from typing import Any
 from .data import DatasetRecord
 
 
-SAMPLE_SCHEMA_VERSION = "segment_enrichment_sample_v1"
+LEGACY_SAMPLE_SCHEMA_VERSION = "segment_enrichment_sample_v1"
+SAMPLE_SCHEMA_VERSION = "segment_enrichment_sample_v2"
+SUPPORTED_SAMPLE_SCHEMA_VERSIONS = {
+    LEGACY_SAMPLE_SCHEMA_VERSION,
+    SAMPLE_SCHEMA_VERSION,
+}
 
 BASE_SAMPLE_REQUIRED_FIELDS = {
     "schema_version",
@@ -22,9 +27,13 @@ BASE_SAMPLE_REQUIRED_FIELDS = {
     "quality_control",
 }
 
-SAMPLE_REQUIRED_FIELDS = BASE_SAMPLE_REQUIRED_FIELDS | {
+V1_SAMPLE_REQUIRED_FIELDS = BASE_SAMPLE_REQUIRED_FIELDS | {
     "research_question_relevance",
     "contrastive_judgement",
+}
+
+V2_SAMPLE_REQUIRED_FIELDS = BASE_SAMPLE_REQUIRED_FIELDS | {
+    "research_question_relevance",
 }
 
 CODE_QUALITY_EXAMPLE_FIELDS = {
@@ -34,7 +43,7 @@ CODE_QUALITY_EXAMPLE_FIELDS = {
     "useful_analytical_code",
 }
 
-CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS = {
+V2_CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS = {
     "wrong_code": {
         "code_label",
         "actual_segment_quote",
@@ -67,10 +76,17 @@ CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS = {
         "specific_analytical_insight",
         "why_it_is_useful",
         "relation_to_research_questions",
-        "why_better_than_other_three",
         "category_boundary",
     },
 }
+
+V1_CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS = {
+    key: set(fields)
+    for key, fields in V2_CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS.items()
+}
+V1_CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS["useful_analytical_code"].add(
+    "why_better_than_other_three"
+)
 
 CONTRASTIVE_JUDGEMENT_REQUIRED_STRING_FIELDS = {
     "wrong_vs_descriptive",
@@ -87,6 +103,83 @@ REFLECTIVE_QUESTION_REQUIRED_STRING_FIELDS = {
     "why_this_question_is_useful",
     "what_human_researcher_should_inspect",
     "risk_if_ignored",
+}
+
+ANALYSIS_UNIT_V2_FIELDS = {
+    "interview_id",
+    "segment_id",
+    "speaker",
+    "target_text",
+    "analysis_context_used",
+    "analysis_context_scope",
+    "context_warning",
+}
+
+RESEARCH_QUESTION_RELEVANCE_FIELDS = {
+    "relevant_research_questions",
+    "segment_relevance_summary",
+    "is_segment_analytically_useful",
+    "why_or_why_not",
+}
+
+CANDIDATE_CODE_MATCH_FIELDS = {
+    "code_id",
+    "code_label",
+    "match_strength",
+    "evidence_quote",
+    "rationale",
+    "confidence",
+}
+
+POSSIBLE_NEW_CODE_FIELDS = {
+    "provisional_code_id",
+    "provisional_code_label",
+    "definition",
+    "evidence_quote",
+    "why_candidate_codes_do_not_fully_cover_it",
+    "confidence",
+}
+
+REFLECTIVE_QUESTION_FIELDS = {
+    "question_id",
+    "question",
+    "linked_code_ids",
+    "linked_provisional_code_ids",
+    "linked_code_quality_example",
+    "question_type",
+    "reflexive_dimension",
+    "trigger_quote",
+    "why_this_question_is_useful",
+    "what_human_researcher_should_inspect",
+    "risk_if_ignored",
+    "confidence",
+}
+
+QUALITY_CONTROL_FIELDS = {
+    "hallucination_risk",
+    "over_generalisation_risk",
+    "participant_voice_loss_risk",
+    "needs_human_review",
+    "review_reason",
+    "overall_confidence",
+}
+
+MATCH_STRENGTHS = {"strong", "partial", "weak"}
+RISK_LEVELS = {"low", "medium", "high"}
+QUESTION_TYPES = {
+    "automated_socrates",
+    "devils_advocate",
+    "participant_voice_check",
+    "context_check",
+    "methodological_check",
+    "technology_check",
+}
+REFLEXIVE_DIMENSIONS = {
+    "personal",
+    "interpersonal",
+    "methodological",
+    "contextual",
+    "technological",
 }
 
 
@@ -202,12 +295,16 @@ def validate_segment_enrichment_sample(
     record: DatasetRecord,
     *,
     expected_codebook_version: str | None = None,
+    expected_schema_version: str | None = None,
+    expected_context_scope: str | None = None,
     strict_prompt_schema: bool = True,
 ) -> list[str]:
     return validate_segment_enrichment_sample_result(
         payload,
         record,
         expected_codebook_version=expected_codebook_version,
+        expected_schema_version=expected_schema_version,
+        expected_context_scope=expected_context_scope,
         strict_prompt_schema=strict_prompt_schema,
         allow_target_text_mismatch=False,
     ).errors
@@ -218,6 +315,8 @@ def validate_segment_enrichment_sample_result(
     record: DatasetRecord,
     *,
     expected_codebook_version: str | None = None,
+    expected_schema_version: str | None = None,
+    expected_context_scope: str | None = None,
     strict_prompt_schema: bool = True,
     allow_target_text_mismatch: bool = False,
 ) -> ValidationResult:
@@ -226,18 +325,34 @@ def validate_segment_enrichment_sample_result(
 
     errors: list[str] = []
     warnings: list[str] = []
-    required_fields = (
-        SAMPLE_REQUIRED_FIELDS if strict_prompt_schema else BASE_SAMPLE_REQUIRED_FIELDS
-    )
+    actual_schema_version = payload.get("schema_version")
+    validation_schema_version = expected_schema_version or actual_schema_version
+    if validation_schema_version not in SUPPORTED_SAMPLE_SCHEMA_VERSIONS:
+        errors.append(
+            "schema_version must be one of "
+            f"{sorted(SUPPORTED_SAMPLE_SCHEMA_VERSIONS)}, "
+            f"got {actual_schema_version!r}"
+        )
+        validation_schema_version = expected_schema_version or SAMPLE_SCHEMA_VERSION
+
+    if expected_schema_version is not None and actual_schema_version != expected_schema_version:
+        errors.append(
+            "schema_version must be "
+            f"{expected_schema_version!r}, got {actual_schema_version!r}"
+        )
+
+    is_v2 = validation_schema_version == SAMPLE_SCHEMA_VERSION
+    if is_v2:
+        required_fields = V2_SAMPLE_REQUIRED_FIELDS
+    elif strict_prompt_schema:
+        required_fields = V1_SAMPLE_REQUIRED_FIELDS
+    else:
+        required_fields = BASE_SAMPLE_REQUIRED_FIELDS
     missing = sorted(required_fields - set(payload))
     if missing:
         errors.append(f"Missing required fields: {missing}")
-
-    if payload.get("schema_version") != SAMPLE_SCHEMA_VERSION:
-        errors.append(
-            "schema_version must be "
-            f"{SAMPLE_SCHEMA_VERSION!r}, got {payload.get('schema_version')!r}"
-        )
+    if is_v2:
+        _validate_exact_fields(payload, "sample", V2_SAMPLE_REQUIRED_FIELDS, errors)
 
     if payload.get("record_id") != record.record_id:
         errors.append(
@@ -272,38 +387,76 @@ def validate_segment_enrichment_sample_result(
                 warnings.append(message)
             else:
                 errors.append("analysis_unit.target_text must equal the segment text.")
+        if is_v2:
+            _validate_analysis_unit_v2(
+                analysis_unit,
+                expected_context_scope=expected_context_scope,
+                errors=errors,
+            )
 
-    for field in [
-        "candidate_code_matches",
-        "possible_new_codes",
-    ]:
-        if not isinstance(payload.get(field), list):
-            errors.append(f"{field} must be a list.")
-
-    if strict_prompt_schema:
-        _validate_research_question_relevance(payload, errors)
-    _validate_code_quality_examples(payload, errors, strict=strict_prompt_schema)
-    if strict_prompt_schema:
-        _validate_contrastive_judgement(payload, errors)
-        _validate_reflective_questions(payload, errors)
-
-    if not isinstance(payload.get("quality_control"), dict):
-        errors.append("quality_control must be an object.")
+    if is_v2:
+        _validate_research_question_relevance(payload, errors, exact=True)
+        candidate_ids = _validate_candidate_code_matches(payload, errors)
+        provisional_ids = _validate_possible_new_codes(payload, errors)
+        _validate_code_quality_examples(
+            payload,
+            errors,
+            strict=True,
+            schema_version=SAMPLE_SCHEMA_VERSION,
+        )
+        _validate_reflective_questions_v2(
+            payload,
+            errors,
+            candidate_ids=candidate_ids,
+            provisional_ids=provisional_ids,
+        )
+        _validate_quality_control_v2(payload, errors)
+    else:
+        for field in ["candidate_code_matches", "possible_new_codes"]:
+            if not isinstance(payload.get(field), list):
+                errors.append(f"{field} must be a list.")
+        if strict_prompt_schema:
+            _validate_research_question_relevance(payload, errors)
+        _validate_code_quality_examples(
+            payload,
+            errors,
+            strict=strict_prompt_schema,
+            schema_version=LEGACY_SAMPLE_SCHEMA_VERSION,
+        )
+        if strict_prompt_schema:
+            _validate_contrastive_judgement(payload, errors)
+            _validate_reflective_questions(payload, errors)
+        if not isinstance(payload.get("quality_control"), dict):
+            errors.append("quality_control must be an object.")
 
     return ValidationResult(errors=errors, warnings=warnings)
 
 
 def _validate_research_question_relevance(
-    payload: dict[str, Any], errors: list[str]
+    payload: dict[str, Any], errors: list[str], *, exact: bool = False
 ) -> None:
     relevance = payload.get("research_question_relevance")
     if not isinstance(relevance, dict):
         errors.append("research_question_relevance must be an object.")
         return
 
-    if not isinstance(relevance.get("relevant_research_questions"), list):
+    if exact:
+        _validate_exact_fields(
+            relevance,
+            "research_question_relevance",
+            RESEARCH_QUESTION_RELEVANCE_FIELDS,
+            errors,
+        )
+
+    questions = relevance.get("relevant_research_questions")
+    if not isinstance(questions, list):
         errors.append(
             "research_question_relevance.relevant_research_questions must be a list."
+        )
+    elif exact and any(not isinstance(question, str) for question in questions):
+        errors.append(
+            "research_question_relevance.relevant_research_questions "
+            "must contain only strings."
         )
     if not isinstance(relevance.get("is_segment_analytically_useful"), bool):
         errors.append(
@@ -318,7 +471,11 @@ def _validate_research_question_relevance(
 
 
 def _validate_code_quality_examples(
-    payload: dict[str, Any], errors: list[str], *, strict: bool
+    payload: dict[str, Any],
+    errors: list[str],
+    *,
+    strict: bool,
+    schema_version: str,
 ) -> None:
     code_quality_examples = payload.get("code_quality_examples")
     if not isinstance(code_quality_examples, dict):
@@ -345,12 +502,235 @@ def _validate_code_quality_examples(
             errors.append(f"code_quality_examples.{field} must be an object.")
             continue
         if strict:
+            expected_fields = (
+                V2_CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS[field]
+                if schema_version == SAMPLE_SCHEMA_VERSION
+                else V1_CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS[field]
+            )
+            if schema_version == SAMPLE_SCHEMA_VERSION:
+                _validate_exact_fields(
+                    example,
+                    f"code_quality_examples.{field}",
+                    expected_fields,
+                    errors,
+                )
             _validate_string_fields(
                 example,
                 f"code_quality_examples.{field}",
-                CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS[field],
+                expected_fields,
                 errors,
             )
+
+
+def _validate_analysis_unit_v2(
+    analysis_unit: dict[str, Any],
+    *,
+    expected_context_scope: str | None,
+    errors: list[str],
+) -> None:
+    _validate_exact_fields(
+        analysis_unit,
+        "analysis_unit",
+        ANALYSIS_UNIT_V2_FIELDS,
+        errors,
+    )
+    _validate_string_fields(
+        analysis_unit,
+        "analysis_unit",
+        {
+            "interview_id",
+            "segment_id",
+            "speaker",
+            "target_text",
+            "analysis_context_scope",
+            "context_warning",
+        },
+        errors,
+    )
+    if analysis_unit.get("analysis_context_used") is not True:
+        errors.append("analysis_unit.analysis_context_used must be true.")
+    if (
+        expected_context_scope is not None
+        and analysis_unit.get("analysis_context_scope") != expected_context_scope
+    ):
+        errors.append(
+            "analysis_unit.analysis_context_scope must match the runtime context "
+            f"scope {expected_context_scope!r}, got "
+            f"{analysis_unit.get('analysis_context_scope')!r}."
+        )
+
+
+def _validate_candidate_code_matches(
+    payload: dict[str, Any], errors: list[str]
+) -> set[str]:
+    matches = payload.get("candidate_code_matches")
+    if not isinstance(matches, list):
+        errors.append("candidate_code_matches must be a list.")
+        return set()
+
+    code_ids: set[str] = set()
+    for index, match in enumerate(matches):
+        path = f"candidate_code_matches[{index}]"
+        if not isinstance(match, dict):
+            errors.append(f"{path} must be an object.")
+            continue
+        _validate_exact_fields(match, path, CANDIDATE_CODE_MATCH_FIELDS, errors)
+        _validate_string_fields(
+            match,
+            path,
+            {"code_id", "code_label", "match_strength", "evidence_quote", "rationale"},
+            errors,
+        )
+        _validate_enum(
+            match.get("match_strength"),
+            path,
+            "match_strength",
+            MATCH_STRENGTHS,
+            errors,
+        )
+        _validate_confidence(match.get("confidence"), path, "confidence", errors)
+        code_id = match.get("code_id")
+        if isinstance(code_id, str):
+            if code_id in code_ids:
+                errors.append(f"{path}.code_id must be unique within candidate_code_matches.")
+            code_ids.add(code_id)
+    return code_ids
+
+
+def _validate_possible_new_codes(
+    payload: dict[str, Any], errors: list[str]
+) -> set[str]:
+    codes = payload.get("possible_new_codes")
+    if not isinstance(codes, list):
+        errors.append("possible_new_codes must be a list.")
+        return set()
+
+    provisional_ids: set[str] = set()
+    string_fields = POSSIBLE_NEW_CODE_FIELDS - {"confidence"}
+    for index, code in enumerate(codes):
+        path = f"possible_new_codes[{index}]"
+        if not isinstance(code, dict):
+            errors.append(f"{path} must be an object.")
+            continue
+        _validate_exact_fields(code, path, POSSIBLE_NEW_CODE_FIELDS, errors)
+        _validate_string_fields(code, path, string_fields, errors)
+        _validate_confidence(code.get("confidence"), path, "confidence", errors)
+        provisional_id = code.get("provisional_code_id")
+        if isinstance(provisional_id, str):
+            if provisional_id in provisional_ids:
+                errors.append(
+                    f"{path}.provisional_code_id must be unique within possible_new_codes."
+                )
+            provisional_ids.add(provisional_id)
+    return provisional_ids
+
+
+def _validate_reflective_questions_v2(
+    payload: dict[str, Any],
+    errors: list[str],
+    *,
+    candidate_ids: set[str],
+    provisional_ids: set[str],
+) -> None:
+    questions = payload.get("reflective_question_candidates")
+    if not isinstance(questions, list):
+        errors.append("reflective_question_candidates must be a list.")
+        return
+    if len(questions) != 3:
+        errors.append("reflective_question_candidates must contain exactly 3 questions.")
+
+    for index, question in enumerate(questions, start=1):
+        path = f"reflective_question_candidates[{index - 1}]"
+        if not isinstance(question, dict):
+            errors.append(f"{path} must be an object.")
+            continue
+        _validate_exact_fields(question, path, REFLECTIVE_QUESTION_FIELDS, errors)
+        _validate_string_fields(
+            question,
+            path,
+            REFLECTIVE_QUESTION_REQUIRED_STRING_FIELDS
+            | {"question_id", "linked_code_quality_example"},
+            errors,
+        )
+        expected_id = f"Q{index}"
+        if question.get("question_id") != expected_id:
+            errors.append(
+                f"{path}.question_id must be {expected_id!r}, "
+                f"got {question.get('question_id')!r}"
+            )
+        if question.get("linked_code_quality_example") != "useful_analytical_code":
+            errors.append(
+                f"{path}.linked_code_quality_example must be "
+                "'useful_analytical_code'."
+            )
+        linked_code_ids = _validate_string_list(
+            question.get("linked_code_ids"), path, "linked_code_ids", errors
+        )
+        linked_provisional_ids = _validate_string_list(
+            question.get("linked_provisional_code_ids"),
+            path,
+            "linked_provisional_code_ids",
+            errors,
+        )
+        unknown_codes = sorted(set(linked_code_ids) - candidate_ids)
+        if unknown_codes:
+            errors.append(f"{path}.linked_code_ids contains unknown ids: {unknown_codes}.")
+        unknown_provisional = sorted(set(linked_provisional_ids) - provisional_ids)
+        if unknown_provisional:
+            errors.append(
+                f"{path}.linked_provisional_code_ids contains unknown ids: "
+                f"{unknown_provisional}."
+            )
+        _validate_enum(
+            question.get("question_type"),
+            path,
+            "question_type",
+            QUESTION_TYPES,
+            errors,
+        )
+        _validate_enum(
+            question.get("reflexive_dimension"),
+            path,
+            "reflexive_dimension",
+            REFLEXIVE_DIMENSIONS,
+            errors,
+        )
+        _validate_confidence(question.get("confidence"), path, "confidence", errors)
+
+
+def _validate_quality_control_v2(
+    payload: dict[str, Any], errors: list[str]
+) -> None:
+    quality = payload.get("quality_control")
+    if not isinstance(quality, dict):
+        errors.append("quality_control must be an object.")
+        return
+    _validate_exact_fields(quality, "quality_control", QUALITY_CONTROL_FIELDS, errors)
+    _validate_string_fields(
+        quality,
+        "quality_control",
+        {
+            "hallucination_risk",
+            "over_generalisation_risk",
+            "participant_voice_loss_risk",
+            "review_reason",
+        },
+        errors,
+    )
+    for field in [
+        "hallucination_risk",
+        "over_generalisation_risk",
+        "participant_voice_loss_risk",
+    ]:
+        _validate_enum(quality.get(field), "quality_control", field, RISK_LEVELS, errors)
+    if quality.get("needs_human_review") is not True:
+        errors.append("quality_control.needs_human_review must be true.")
+    _validate_confidence(
+        quality.get("overall_confidence"),
+        "quality_control",
+        "overall_confidence",
+        errors,
+    )
 
 
 def _validate_contrastive_judgement(
@@ -422,6 +802,59 @@ def _validate_string_fields(
             errors.append(f"{path}.{field} must be a string.")
 
 
+def _validate_exact_fields(
+    payload: dict[str, Any],
+    path: str,
+    expected_fields: set[str],
+    errors: list[str],
+) -> None:
+    actual_fields = set(payload)
+    missing = sorted(expected_fields - actual_fields)
+    extra = sorted(actual_fields - expected_fields)
+    if missing:
+        errors.append(f"{path} is missing required fields: {missing}.")
+    if extra:
+        errors.append(f"{path} has unexpected fields: {extra}.")
+
+
+def _validate_enum(
+    value: Any,
+    path: str,
+    field: str,
+    allowed: set[str],
+    errors: list[str],
+) -> None:
+    if not isinstance(value, str) or value not in allowed:
+        errors.append(
+            f"{path}.{field} must be one of {sorted(allowed)}, got {value!r}."
+        )
+
+
+def _validate_confidence(
+    value: Any,
+    path: str,
+    field: str,
+    errors: list[str],
+) -> None:
+    if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 10:
+        errors.append(f"{path}.{field} must be an integer from 1 to 10.")
+
+
+def _validate_string_list(
+    value: Any,
+    path: str,
+    field: str,
+    errors: list[str],
+) -> list[str]:
+    if not isinstance(value, list):
+        errors.append(f"{path}.{field} must be a list.")
+        return []
+    if any(not isinstance(item, str) for item in value):
+        errors.append(f"{path}.{field} must contain only strings.")
+        return []
+    return value
+
+
 def build_json_repair_prompt(
     *,
     original_prompt: str,
@@ -430,8 +863,9 @@ def build_json_repair_prompt(
 ) -> str:
     return (
         f"{original_prompt}\n\n"
-        "Your previous response was not valid for the required JSON schema.\n"
-        "Return only one corrected JSON object. Do not add markdown fences.\n\n"
+        "Your previous response was not valid for the required response format.\n"
+        "Regenerate a concise <think>...</think> reasoning block followed by one "
+        "corrected JSON object. Do not add markdown fences or text after the JSON.\n\n"
         "Validation errors:\n"
         + "\n".join(f"- {error}" for error in errors)
         + "\n\nPrevious invalid response:\n"

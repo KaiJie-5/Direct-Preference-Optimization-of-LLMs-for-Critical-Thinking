@@ -2,8 +2,9 @@ You are helping revise one segment-enrichment JSON sample.
 
 This is a placeholder revision prompt for self-refine round {round_index}. Replace it after the prompt-design phase is fixed.
 
-Return only one JSON object matching schema_version "segment_enrichment_sample_v1".
-Do not add markdown fences.
+Return a concise closed <think>...</think> block followed by one JSON object
+matching schema_version "segment_enrichment_sample_v2". Preserve the exact v2
+field contract from the current answer. Do not add markdown fences.
 
 Segment identifiers:
 - record_id: {record_id}
@@ -13,14 +14,14 @@ Segment identifiers:
 - codebook_id: {codebook_id}
 - codebook_version: {codebook_version}
 
-Previous context:
-{previous_context}
+Research questions:
+{research_questions}
+
+Interview context:
+{analysis_context}
 
 Target segment text:
 {input_text}
-
-Next context:
-{next_context}
 
 Candidate example codes:
 {candidate_example_codes_json}

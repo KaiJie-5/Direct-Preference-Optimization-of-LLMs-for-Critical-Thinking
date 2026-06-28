@@ -7,6 +7,7 @@ from .data import DatasetRecord
 from .logging import RunLogger
 from .prompts import PromptTemplate
 from .schema import (
+    SAMPLE_SCHEMA_VERSION,
     build_json_repair_prompt,
     parse_json_object,
     split_response_sections,
@@ -52,6 +53,7 @@ def run_self_consistency(
             prompt=rendered_prompt,
             generation_options=sample_options,
             expected_codebook_version=expected_codebook_version,
+            context_scope=context_scope,
             json_retry_attempts=json_retry_attempts,
             logger=logger,
             strategy="self_consistency",
@@ -106,6 +108,7 @@ def run_self_refine(
         prompt=initial_rendered,
         generation_options=generation_options,
         expected_codebook_version=expected_codebook_version,
+        context_scope=context_scope,
         json_retry_attempts=json_retry_attempts,
         logger=logger,
         strategy="self_refine",
@@ -180,6 +183,7 @@ def run_self_refine(
             prompt=revision_rendered,
             generation_options=generation_options,
             expected_codebook_version=expected_codebook_version,
+            context_scope=context_scope,
             json_retry_attempts=json_retry_attempts,
             logger=logger,
             strategy="self_refine",
@@ -231,6 +235,7 @@ def _generate_validated_sample(
     prompt: str,
     generation_options: GenerationOptions,
     expected_codebook_version: str | None,
+    context_scope: str,
     json_retry_attempts: int,
     logger: RunLogger,
     strategy: str,
@@ -254,11 +259,18 @@ def _generate_validated_sample(
             parsed,
             record,
             expected_codebook_version=expected_codebook_version,
-            strict_prompt_schema=strategy == "self_consistency",
-            allow_target_text_mismatch=True,
+            expected_schema_version=SAMPLE_SCHEMA_VERSION,
+            expected_context_scope=context_scope,
+            strict_prompt_schema=True,
+            allow_target_text_mismatch=False,
         )
-        validation_errors = validation_result.errors
+        validation_errors = list(validation_result.errors)
         validation_warnings = validation_result.warnings
+        if response_sections["reasoning_parse_status"] != "found_closed_think_block":
+            validation_errors.insert(
+                0,
+                "Response must contain a closed <think>...</think> reasoning block.",
+            )
         if parse_error and parsed is None:
             validation_errors = [parse_error, *validation_errors]
         parse_status = "valid" if not validation_errors else "invalid"
@@ -298,6 +310,13 @@ def _generate_validated_sample(
             original_prompt=prompt,
             invalid_output=result.text,
             errors=validation_errors,
+        )
+
+    if final_errors and teacher.metadata().get("backend") != "dry-run":
+        joined_errors = "; ".join(final_errors)
+        raise ValueError(
+            f"Record {record.record_id} {strategy} {step} sample {sample_index} "
+            f"remained invalid after {len(attempts)} attempt(s): {joined_errors}"
         )
 
     return {

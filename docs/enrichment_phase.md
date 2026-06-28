@@ -71,7 +71,7 @@ dpo-enrich \
   --research-question "How do participants discuss energy efficiency?" \
   --research-question "How do participants describe smart technology use?" \
   --teacher-backend dry-run \
-  --context-scope immediate \
+  --context-scope full_interview \
   --self-consistency-samples 5 \
   --json-retry-attempts 2 \
   --limit 1
@@ -89,7 +89,7 @@ dpo-enrich \
   --research-question "How do participants discuss energy efficiency?" \
   --research-question "How do participants describe smart technology use?" \
   --teacher-backend transformers \
-  --context-scope immediate \
+  --context-scope full_interview \
   --model-path /path/to/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B \
   --temperature 0.6 \
   --max-new-tokens 32768 \
@@ -106,6 +106,12 @@ existing previous/next context into `{analysis_context}`. The
 turn, and marks the current participant turn as the target. Full-interview mode
 also requires `{analysis_context}` in every prompt used by the selected
 strategy, and validates this before loading the teacher model.
+
+New Self-Consistency and Self-Refine generations use
+`segment_enrichment_sample_v2`. Historical v1 outputs remain readable. V2
+requires a closed `<think>...</think>` block and strict JSON validation. A
+production sample that remains invalid after all configured repair attempts
+fails its record and makes the final batch exit nonzero.
 
 Outputs are grouped by interview:
 

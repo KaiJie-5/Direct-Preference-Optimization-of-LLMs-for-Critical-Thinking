@@ -336,7 +336,7 @@ def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> 
     prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {candidate_example_codes_json}")
     record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
     codebook = _codebook_payload()
-    valid_json = json.dumps(_valid_sample(record, codebook_version="v1"))
+    valid_json = json.dumps(_valid_v2_sample(record, codebook_version="v1"))
     teacher = QueueTeacher(
         [
             "<think>\nInvalid reasoning with {braces}.\n</think>\nnot json",
@@ -367,45 +367,59 @@ def test_self_consistency_retries_until_sample_json_is_valid(tmp_path: Path) -> 
     assert sample["attempts"][0]["reasoning_text"] == "Invalid reasoning with {braces}."
     assert sample["attempts"][0]["reasoning_parse_status"] == "found_closed_think_block"
     assert sample["attempts"][1]["reasoning_text"] == "Grounded reasoning."
-    assert sample["parsed_output"]["schema_version"] == "segment_enrichment_sample_v1"
+    assert sample["parsed_output"]["schema_version"] == "segment_enrichment_sample_v2"
+    assert "Regenerate a concise <think>...</think>" in teacher.prompts[1]
     assert enriched["aggregation_status"] == "not_implemented_yet"
 
 
-def test_self_consistency_treats_target_text_mismatch_as_warning(
+def test_self_consistency_rejects_target_text_mismatch(
     tmp_path: Path,
 ) -> None:
     prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {candidate_example_codes_json}")
     record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
     codebook = _codebook_payload()
-    payload = _valid_sample(record, codebook_version="v1")
+    payload = _valid_v2_sample(record, codebook_version="v1")
     payload["analysis_unit"]["target_text"] = (
         "AI can help, but someone still needs to check the corrected result."
     )
     teacher = QueueTeacher([f"<think>\nReasoning.\n</think>\n{json.dumps(payload)}"])
 
-    enriched = run_self_consistency(
-        record=record,
-        teacher=teacher,
-        prompt=PromptTemplate(prompt_path),
-        prompt_vars={},
-        codebook=codebook,
-        generation_options=GenerationOptions(seed=10),
-        num_samples=1,
-        aggregation="scaffold",
-        json_retry_attempts=0,
-        logger=RunLogger(tmp_path / "logs"),
-    )
+    with pytest.raises(ValueError, match="target_text"):
+        run_self_consistency(
+            record=record,
+            teacher=teacher,
+            prompt=PromptTemplate(prompt_path),
+            prompt_vars={},
+            codebook=codebook,
+            generation_options=GenerationOptions(seed=10),
+            num_samples=1,
+            aggregation="scaffold",
+            json_retry_attempts=0,
+            logger=RunLogger(tmp_path / "logs"),
+        )
 
-    sample = enriched["samples"][0]
-    assert sample["final_parse_status"] == "valid"
-    assert sample["validation_errors"] == []
-    assert sample["validation_warnings"] == [
-        "analysis_unit.target_text differs from the segment text."
-    ]
-    assert (
-        sample["parsed_output"]["analysis_unit"]["target_text"]
-        == "AI can help, but someone still needs to check the corrected result."
-    )
+
+def test_self_consistency_rejects_missing_think_block(tmp_path: Path) -> None:
+    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}")
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v2_sample(record, codebook_version="v1")
+    teacher = QueueTeacher([json.dumps(payload)])
+
+    with pytest.raises(ValueError, match="closed <think>"):
+        run_self_consistency(
+            record=record,
+            teacher=teacher,
+            prompt=PromptTemplate(prompt_path),
+            prompt_vars={},
+            codebook=_codebook_payload(),
+            generation_options=GenerationOptions(),
+            num_samples=1,
+            aggregation="scaffold",
+            json_retry_attempts=0,
+            logger=RunLogger(tmp_path / "logs"),
+        )
 
 
 def test_self_consistency_receives_full_interview_context(tmp_path: Path) -> None:
@@ -416,9 +430,14 @@ def test_self_consistency_receives_full_interview_context(tmp_path: Path) -> Non
         )
     )[0]
     prompt_path = _write_prompt(tmp_path, "Context:\n{analysis_context}")
-    teacher = QueueTeacher(
-        [json.dumps(_valid_sample(record, codebook_version="v1"))]
+    valid_output = json.dumps(
+        _valid_v2_sample(
+            record,
+            codebook_version="v1",
+            context_scope="full_interview",
+        )
     )
+    teacher = QueueTeacher([f"<think>\nReasoning.\n</think>\n{valid_output}"])
 
     enriched = run_self_consistency(
         record=record,
@@ -454,7 +473,14 @@ def test_self_refine_receives_full_context_in_every_prompt(tmp_path: Path) -> No
         tmp_path,
         "Revision:\n{analysis_context}\n{current_answer}\n{feedback}",
     )
-    valid_output = json.dumps(_valid_sample(record, codebook_version="v1"))
+    valid_json = json.dumps(
+        _valid_v2_sample(
+            record,
+            codebook_version="v1",
+            context_scope="full_interview",
+        )
+    )
+    valid_output = f"<think>\nReasoning.\n</think>\n{valid_json}"
     teacher = QueueTeacher(
         [
             valid_output,
@@ -652,6 +678,7 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
         (interview_dir / "run_manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["args"]["context_scope"] == "immediate"
+    assert manifest["output_schema_version"] == "segment_enrichment_sample_v2"
     sample = segment_payload["samples"][0]
     assert "reasoning_text" in sample
     assert "attempts" not in sample
@@ -677,8 +704,9 @@ def test_self_consistency_prompt_has_single_codebook_and_target_copy(
     rendered = prompt.render(record.to_prompt_vars(_codebook_payload()))
 
     assert rendered.count('"code_id": "human_oversight"') == 1
-    assert rendered.count(record.text) == 2
-    assert "Copy the Target segment text exactly." in rendered
+    assert rendered.count(record.text) == 1
+    assert "Copy the Target segment text exactly into analysis_unit.target_text." in rendered
+    assert '"schema_version": "segment_enrichment_sample_v2"' in rendered
 
 
 def test_self_consistency_prompt_includes_research_questions(tmp_path: Path) -> None:
@@ -717,6 +745,59 @@ def test_segment_enrichment_schema_requires_code_quality_examples(
 
     assert any("useful_analytical_code" in error for error in errors)
 
+
+def test_v2_schema_accepts_redesigned_output_and_irrelevant_segment(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload["research_question_relevance"] = {
+        "relevant_research_questions": [],
+        "segment_relevance_summary": "The segment does not answer the supplied questions.",
+        "is_segment_analytically_useful": False,
+        "why_or_why_not": "All four contrasts are retained without inventing relevance.",
+    }
+
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+        expected_schema_version="segment_enrichment_sample_v2",
+        expected_context_scope="immediate",
+    )
+
+    assert errors == []
+
+
+def test_v2_schema_rejects_old_fields_invalid_values_and_unknown_links(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload["contrastive_judgement"] = {}
+    payload["code_quality_examples"]["useful_analytical_code"][
+        "why_better_than_other_three"
+    ] = "Legacy field."
+    payload["reflective_question_candidates"][0]["confidence"] = 0
+    payload["reflective_question_candidates"][0]["linked_code_ids"] = ["missing"]
+    payload["quality_control"]["hallucination_risk"] = "unknown"
+
+    errors = validate_segment_enrichment_sample(
+        payload,
+        record,
+        expected_codebook_version="v1",
+        expected_schema_version="segment_enrichment_sample_v2",
+        expected_context_scope="immediate",
+    )
+
+    assert any("unexpected fields" in error for error in errors)
+    assert any("integer from 1 to 10" in error for error in errors)
+    assert any("unknown ids" in error for error in errors)
+    assert any("hallucination_risk" in error for error in errors)
 
 def test_segment_enrichment_result_warns_for_target_text_mismatch(
     tmp_path: Path,
@@ -924,8 +1005,12 @@ def test_sexual_health_slurm_uses_separate_dataset_paths() -> None:
 def test_enrichment_slurm_exposes_context_scope(script_name: str) -> None:
     text = Path(script_name).read_text(encoding="utf-8")
 
-    assert 'CONTEXT_SCOPE="immediate"' in text
+    assert 'CONTEXT_SCOPE="full_interview"' in text
     assert '--context-scope "${CONTEXT_SCOPE}"' in text
+    assert "set -eo pipefail" in text
+    assert "set -euo pipefail" not in text
+    assert 'require_directory "${SEGMENTS_PATH}"' in text
+    assert 'require_file "${PROMPT_PATH}"' in text
 
 
 def _write_example_workbook(path: Path) -> None:
@@ -1186,6 +1271,32 @@ def _valid_sample(record: Any, *, codebook_version: str) -> dict[str, Any]:
             "overall_confidence": 8,
         },
     }
+
+
+def _valid_v2_sample(
+    record: Any,
+    *,
+    codebook_version: str,
+    context_scope: str = "immediate",
+) -> dict[str, Any]:
+    payload = _valid_sample(record, codebook_version=codebook_version)
+    payload["schema_version"] = "segment_enrichment_sample_v2"
+    payload["analysis_unit"] = {
+        "interview_id": record.metadata["interview_id"],
+        "segment_id": record.metadata["segment_id"],
+        "speaker": "participant",
+        "target_text": record.text,
+        "analysis_context_used": True,
+        "analysis_context_scope": context_scope,
+        "context_warning": "",
+    }
+    del payload["contrastive_judgement"]
+    del payload["code_quality_examples"]["useful_analytical_code"][
+        "why_better_than_other_three"
+    ]
+    payload["quality_control"]["needs_human_review"] = True
+    payload["quality_control"]["review_reason"] = "Manual review is required."
+    return payload
 
 
 def _write_prompt(tmp_path: Path, text: str) -> Path:

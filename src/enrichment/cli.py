@@ -14,6 +14,7 @@ from preprocessing.codebook import load_codebook
 from .data import DatasetRecord, group_records_by_interview, load_segment_records
 from .logging import RunLogger
 from .prompts import PromptTemplate, parse_prompt_vars
+from .schema import SAMPLE_SCHEMA_VERSION
 from .strategies import run_self_consistency, run_self_refine
 from .teachers import DEFAULT_MAX_NEW_TOKENS, GenerationOptions, Teacher, build_teacher
 
@@ -181,6 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         "segments_path": str(args.segments_path),
         "output_dir": str(args.output_dir),
         "strategy": args.strategy,
+        "output_schema_version": SAMPLE_SCHEMA_VERSION,
         "codebook": _codebook_summary(codebook),
         "interview_count": len(grouped_records),
         "record_count": len(records),
@@ -401,6 +403,7 @@ def _manifest(
         "teacher": teacher_metadata,
         "codebook": _codebook_summary(codebook),
         "generation_options": asdict(generation_options),
+        "output_schema_version": SAMPLE_SCHEMA_VERSION,
     }
 
 

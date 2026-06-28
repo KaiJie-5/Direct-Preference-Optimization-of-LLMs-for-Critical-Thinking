@@ -759,8 +759,9 @@ def _validate_failed_sample_payload(
         parsed,
         record,
         expected_codebook_version=parsed.get("codebook_version"),
+        expected_context_scope=failed_sample.get("context_scope"),
         strict_prompt_schema=failed_sample.get("strategy") == "self_consistency",
-        allow_target_text_mismatch=True,
+        allow_target_text_mismatch=False,
     )
 
 

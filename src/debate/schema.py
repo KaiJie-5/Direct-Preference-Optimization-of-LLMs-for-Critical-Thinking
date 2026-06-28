@@ -73,7 +73,6 @@ REVIEW_BLOCKS: tuple[ReviewBlock, ...] = (
             "specific_analytical_insight",
             "why_it_is_useful",
             "relation_to_research_questions",
-            "why_better_than_other_three",
             "category_boundary",
         ),
     ),
@@ -187,4 +186,3 @@ def validate_ranking_payload(
 
 def ranking_from_payload(payload: dict[str, Any]) -> list[str]:
     return [str(label) for label in payload["ranking"]]
-

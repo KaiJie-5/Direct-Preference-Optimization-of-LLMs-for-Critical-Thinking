@@ -64,6 +64,9 @@ CAT-CoT structure:
 - It must fail because it hides the specific experience, interaction, barrier, tension, motivation, or mechanism in the participant's words.
 - This category is on-aim but too vague.
 - State what specific meaning is lost by using this broad label.
+- If no supplied research question is clearly answered, still create the best
+  grounded broad code available, explicitly state that its research-question
+  relevance is limited or absent, and do not invent relevance.
 
 7. Category D: useful analytical code
 - Create exactly one useful analytical code.
@@ -73,6 +76,11 @@ CAT-CoT structure:
 - It should capture an experience, interaction, barrier, challenge, tension, motivation, mechanism, or service/design implication.
 - The label must be an insight-like phrase or short sentence.
 - Do not use a single noun, vague topic, or whole research question as the label.
+- If no supplied research question is clearly answered, still create the most
+  specific grounded analytical interpretation available. Explain that it best
+  preserves the participant's meaning while remaining not analytically useful
+  for the current research questions, and set is_segment_analytically_useful to
+  false.
 
 8. Reflective questions
 - Create exactly 3 reflective questions.
@@ -98,6 +106,9 @@ Use the Interview context only to clarify the Target segment.
 Do not invent details that are not present in the target segment or clearly clarified by the interview context.
 Every code-quality example must be grounded in the target segment.
 For the wrong code, the quote is not evidence for the wrong code; it is evidence showing what the participant actually said.
+Always return all four code-quality examples and all three reflective questions,
+including when the target segment does not answer a supplied research question.
+In that case, record the limitation explicitly rather than inventing relevance.
 
 Code label rules:
 Avoid single nouns, vague topics, empty categories, and generic labels such as "motivation", "fear", "services", or "challenges".
@@ -117,7 +128,7 @@ Valid values:
 
 Required JSON schema:
 {{
-"schema_version": "segment_enrichment_sample_v1",
+"schema_version": "segment_enrichment_sample_v2",
 "record_id": "{record_id}",
 "codebook_version": "{codebook_version}",
 "analysis_unit": {{
@@ -186,7 +197,7 @@ Required JSON schema:
 "code_label": "<specific analytical code label>",
 "evidence_quote": "<short exact quote from the target segment>",
 "specific_analytical_insight": "<specific insight captured by this code>",
-"why_it_is_useful": "<why this code helps answer at least one supplied research question>",
+"why_it_is_useful": "<why this is the best grounded analytical interpretation; if no research question is answered, explain its value for preserving participant meaning and its analytical limitation>",
 "relation_to_research_questions": "<which research question(s) this code helps answer and how>",
 "category_boundary": "<why this specific code belongs in useful_analytical_code for this specific segment>"
 }}
@@ -250,6 +261,11 @@ Replace every placeholder in angle brackets with a real value in the final JSON.
 
 Field rules:
 If no research question is clearly answered, return "relevant_research_questions": []. If no candidate example code fits, return "candidate_code_matches": []. If no provisional new code is needed, return "possible_new_codes": []. Only include linked_code_ids or linked_provisional_code_ids that are actually present in candidate_code_matches or possible_new_codes. Otherwise return empty lists. Return exactly four code_quality_examples keys: wrong_code, descriptive_not_answering_research_question, too_broad_code, useful_analytical_code. Each category_boundary must explain why this specific generated code belongs in that category for this specific segment. Return exactly three reflective questions: Q1, Q2, and Q3. Q1, Q2, and Q3 are identifiers only; they do not have fixed meanings. Each reflective question must test the useful analytical code from a different angle. Choose question_type and reflexive_dimension based on the actual content of each question. Do not force a question into a predefined type if it does not fit. Choose hallucination_risk, over_generalisation_risk, and participant_voice_loss_risk based on the generated output. Do not default to "low". Use "medium" or "high" risk when the target segment is short, ambiguous, weakly linked to the research questions, or when the useful analytical code depends strongly on wider interview context. Keep "needs_human_review": true. Do not use a generic review_reason. Explain the specific issue, such as ambiguity, weak research-question relevance, possible over-interpretation, or dependence on wider context.
+When relevant_research_questions is empty, still return all four code-quality
+examples and all three reflective questions. Set is_segment_analytically_useful
+to false, make Categories C and D the best grounded broad and specific
+interpretations available, and state clearly that they do not answer the
+current research questions.
 
 Evidence rules:
 Use short exact quotes from the target segment whenever possible. Do not quote from the wider interview context as the main evidence unless the target segment is too short or ambiguous. If the segment is too short or ambiguous, explain this in "context_warning" and "review_reason". Copy the Target segment text exactly into analysis_unit.target_text.
