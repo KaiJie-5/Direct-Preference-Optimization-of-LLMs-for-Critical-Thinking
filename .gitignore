@@ -26,3 +26,8 @@ checkpoints/
 
 *.ps1
 reviewer_preference_pack.md
+
+# Reviewer preference-pack source and regression coverage are versioned.
+tools/build_reviewer_preference_pack.ps1
+tests/build_reviewer_preference_pack.Tests.ps1
+docs/reviewer_preference_pack.md

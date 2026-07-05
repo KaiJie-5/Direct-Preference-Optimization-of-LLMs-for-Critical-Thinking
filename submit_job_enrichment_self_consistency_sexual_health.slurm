@@ -29,7 +29,7 @@ PROMPT_PATH="${PROJECT_DIR}/prompts/enrichment/self_consistency_placeholder.txt"
 STRATEGY="self_consistency"
 CONTEXT_SCOPE="full_interview"
 TEACHER_BACKEND="transformers"
-# Smoke-run setting. Restore to 5 together with clearing LIMIT for the full run.
+
 SELF_CONSISTENCY_SAMPLES=5
 TEMPERATURE=0.6
 TOP_P=0.95
