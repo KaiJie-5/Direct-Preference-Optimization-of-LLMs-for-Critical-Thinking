@@ -102,7 +102,10 @@ def validate_ranking_payload(
 
     assessments = payload.get("candidate_assessments")
     if not isinstance(assessments, dict):
-        errors.append("candidate_assessments must be an object keyed by Candidate A-E.")
+        errors.append(
+            "candidate_assessments must be an object keyed by the available "
+            f"candidates {list(candidate_labels)}."
+        )
     else:
         assessment_labels = set(assessments)
         expected_labels = set(candidate_labels)

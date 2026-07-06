@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from debate.agents import DebateGenerationResult
 from debate.aggregation import borda_aggregate
 from debate.compare import compare_rankings
@@ -15,7 +17,12 @@ from debate.config import (
     debate_config_from_mapping,
 )
 from debate.loaders import build_block_inputs
-from debate.ranking import _generate_valid_ranking, _rank_block, run_debate_ranking
+from debate.ranking import (
+    _generate_valid_ranking,
+    _long_row,
+    _rank_block,
+    run_debate_ranking,
+)
 from debate.schema import (
     REVIEW_BLOCKS,
     configured_review_blocks,
@@ -57,9 +64,49 @@ def test_review_pack_loader_reconstructs_only_code_candidates(
     assert useful_code.candidate_table[-1]["fields"]["code_label"] == "useful 5"
 
 
-def test_reflective_question_blocks_are_rejected() -> None:
-    import pytest
+@pytest.mark.parametrize("candidate_count", [2, 3, 4, 5])
+def test_review_pack_loader_supports_two_to_five_candidates(
+    tmp_path: Path,
+    candidate_count: int,
+) -> None:
+    review_pack, enriched_parent = _write_review_pack_fixture(
+        tmp_path,
+        candidate_count=candidate_count,
+    )
+    block_inputs = build_block_inputs(
+        review_pack_path=review_pack,
+        dataset_configs=(_dataset_config("energy", enriched_parent),),
+        review_blocks=configured_review_blocks(None),
+    )
+    expected_labels = ("A", "B", "C", "D", "E")[:candidate_count]
 
+    assert len(block_inputs) == 4
+    assert all(item.candidate_count == candidate_count for item in block_inputs)
+    assert all(item.candidate_labels == expected_labels for item in block_inputs)
+    assert all(len(item.candidate_table) == candidate_count for item in block_inputs)
+
+
+def test_review_pack_loader_rejects_non_contiguous_labels(tmp_path: Path) -> None:
+    review_pack, enriched_parent = _write_review_pack_fixture(
+        tmp_path,
+        candidate_count=3,
+    )
+    mapping_path = review_pack / "internal_candidate_mapping.csv"
+    rows = _read_csv(mapping_path)
+    for row in rows:
+        if row["candidate_label"] == "C":
+            row["candidate_label"] = "D"
+    _write_csv(mapping_path, rows)
+
+    with pytest.raises(ValueError, match="contiguous prefix"):
+        build_block_inputs(
+            review_pack_path=review_pack,
+            dataset_configs=(_dataset_config("energy", enriched_parent),),
+            review_blocks=configured_review_blocks(None),
+        )
+
+
+def test_reflective_question_blocks_are_rejected() -> None:
     with pytest.raises(ValueError, match="Unknown review block ids"):
         configured_review_blocks(["reflective_question_q1"])
 
@@ -119,7 +166,7 @@ def test_prose_only_output_is_corrected_with_structured_json_retry() -> None:
         "llama_70b",
         [
             "Candidate A is strongest, followed by B, C, D, and E.",
-            _ranking_text(["A", "B", "C", "D", "E"], "corrected"),
+            _ranking_text(["A", "B", "C", "D"], "corrected"),
         ],
     )
     result = _generate_valid_ranking(
@@ -131,6 +178,7 @@ def test_prose_only_output_is_corrected_with_structured_json_retry() -> None:
         generation=GenerationConfig(json_retry_attempts=1),
         record_id="INT01_SEG001",
         review_block="wrong_code",
+        candidate_labels=("A", "B", "C", "D"),
     )
 
     assert result["parse_status"] == "valid"
@@ -140,6 +188,8 @@ def test_prose_only_output_is_corrected_with_structured_json_retry() -> None:
     assert "candidate_assessments" in retry_instruction
     assert "debate_response" in retry_instruction
     assert "uncertainty" in retry_instruction
+    assert "['A', 'B', 'C', 'D']" in retry_instruction
+    assert "'E'" not in retry_instruction
 
 
 def test_borda_aggregation_uses_qwen_72b_tiebreak_and_records_it() -> None:
@@ -196,6 +246,10 @@ def test_llama_qwen_debate_prompt_templates_have_distinct_contracts() -> None:
         "next_context",
         "candidate_table_json",
         "previous_agent_trace_json",
+        "candidate_count",
+        "candidate_labels",
+        "candidate_labels_json",
+        "required_output_shape_json",
     )
     for template in (llama70, qwen72):
         assert not template.startswith("You are {agent_name}. Act as")
@@ -204,6 +258,7 @@ def test_llama_qwen_debate_prompt_templates_have_distinct_contracts() -> None:
         assert "debate_response" in template
         assert "uncertainty" in template
         assert "reflective_question" not in template
+        assert "Candidate A-E" not in template
         for name in placeholder_names:
             assert "{" + name + "}" in template
         rendered = template.format_map({name: f"VALUE_{name}" for name in placeholder_names})
@@ -458,6 +513,109 @@ def test_four_turn_debate_aggregates_only_turn_3_and_turn_4(tmp_path: Path) -> N
     assert "terminal 72b" not in turn4_user_prompt
 
 
+def test_four_candidate_debate_uses_only_a_through_d(tmp_path: Path) -> None:
+    review_pack, enriched_parent = _write_review_pack_fixture(
+        tmp_path,
+        candidate_count=4,
+    )
+    block_input = build_block_inputs(
+        review_pack_path=review_pack,
+        dataset_configs=(_dataset_config("energy", enriched_parent),),
+        review_blocks=configured_review_blocks(["wrong_code"]),
+    )[0]
+    prompt_paths = _write_turn_prompts(tmp_path)
+    turns = _turns(prompt_paths)
+    llama70 = QueueDebateAgent(
+        "llama_70b",
+        [
+            _ranking_text(["A", "B", "C", "D"], "early llama"),
+            _ranking_text(["D", "C", "B", "A"], "terminal llama"),
+        ],
+    )
+    qwen72 = QueueDebateAgent(
+        "qwen_72b",
+        [
+            _ranking_text(["B", "A", "C", "D"], "early qwen"),
+            _ranking_text(["C", "D", "B", "A"], "terminal qwen"),
+        ],
+    )
+
+    result = _rank_block(
+        block_input=block_input,
+        turns=turns,
+        agent_by_id={"llama_70b": llama70, "qwen_72b": qwen72},
+        agent_config_by_id=_agent_config_by_id(prompt_paths),
+        prompt_by_agent_id=_prompt_templates(prompt_paths),
+        config=_dummy_config(tmp_path, review_pack, enriched_parent, turns),
+    )
+
+    assert block_input.candidate_count == 4
+    assert block_input.candidate_labels == ("A", "B", "C", "D")
+    assert result["status"] == "success"
+    assert result["candidate_labels"] == ["A", "B", "C", "D"]
+    assert set(result["borda_scores"]) == {"A", "B", "C", "D"}
+    assert result["borda_scores"] == {"A": 2, "B": 4, "C": 7, "D": 7}
+    assert result["final_ranking"][:2] == ["C", "D"]
+    assert all(
+        "Candidate E" not in call[1]["content"]
+        for call in [*llama70.calls, *qwen72.calls]
+    )
+    row = _long_row(block_input, result, "multi_agent_fine_grained_ranking")
+    assert row["candidate_count"] == 4
+    assert row["final_rank_5"] == ""
+    assert row["score_E"] == ""
+    assert row["candidate_E_sample_index"] == ""
+
+
+@pytest.mark.parametrize("candidate_count", [2, 3])
+def test_complete_four_turn_debate_supports_two_and_three_candidates(
+    tmp_path: Path,
+    candidate_count: int,
+) -> None:
+    review_pack, enriched_parent = _write_review_pack_fixture(
+        tmp_path,
+        candidate_count=candidate_count,
+    )
+    block_input = build_block_inputs(
+        review_pack_path=review_pack,
+        dataset_configs=(_dataset_config("energy", enriched_parent),),
+        review_blocks=configured_review_blocks(["wrong_code"]),
+    )[0]
+    labels = list(block_input.candidate_labels)
+    reverse_labels = list(reversed(labels))
+    prompt_paths = _write_turn_prompts(tmp_path)
+    turns = _turns(prompt_paths)
+    llama70 = QueueDebateAgent(
+        "llama_70b",
+        [
+            _ranking_text(labels, "early llama"),
+            _ranking_text(reverse_labels, "terminal llama"),
+        ],
+    )
+    qwen72 = QueueDebateAgent(
+        "qwen_72b",
+        [
+            _ranking_text(reverse_labels, "early qwen"),
+            _ranking_text(labels, "terminal qwen"),
+        ],
+    )
+
+    result = _rank_block(
+        block_input=block_input,
+        turns=turns,
+        agent_by_id={"llama_70b": llama70, "qwen_72b": qwen72},
+        agent_config_by_id=_agent_config_by_id(prompt_paths),
+        prompt_by_agent_id=_prompt_templates(prompt_paths),
+        config=_dummy_config(tmp_path, review_pack, enriched_parent, turns),
+    )
+
+    assert result["status"] == "success"
+    assert result["candidate_count"] == candidate_count
+    assert result["candidate_labels"] == labels
+    assert len(result["final_ranking"]) == candidate_count
+    assert set(result["borda_scores"]) == set(labels)
+
+
 def test_failed_terminal_turn_marks_block_failed(tmp_path: Path) -> None:
     review_pack, enriched_parent = _write_review_pack_fixture(tmp_path)
     block_input = build_block_inputs(
@@ -561,6 +719,111 @@ def test_compare_rankings_outputs_descriptive_alignment_only(tmp_path: Path) -> 
     assert summary[0]["review_block"] == "wrong_code"
 
 
+def test_compare_rankings_ignores_blank_padding_for_four_candidates(
+    tmp_path: Path,
+) -> None:
+    model_csv = tmp_path / "model_four.csv"
+    reviewer_csv = tmp_path / "reviewer_four.csv"
+    _write_csv(
+        model_csv,
+        [
+            {
+                "dataset": "energy",
+                "record_id": "INT01_SEG001",
+                "review_block": "wrong_code",
+                "status": "success",
+                "final_rank_1": "A",
+                "final_rank_2": "C",
+                "final_rank_3": "B",
+                "final_rank_4": "D",
+                "final_rank_5": "",
+            }
+        ],
+    )
+    _write_csv(
+        reviewer_csv,
+        [
+            {
+                "reviewer_name": "Dr Richard",
+                "dataset": "energy",
+                "record_id": "INT01_SEG001",
+                "review_block": "wrong_code",
+                "rank_1_most_preferable": "A",
+                "rank_2": "B",
+                "rank_3": "C",
+                "rank_4": "D",
+                "rank_5_least_preferable": "",
+            }
+        ],
+    )
+
+    outputs = compare_rankings(
+        model_csv=model_csv,
+        reviewer_csvs=[reviewer_csv],
+        output_dir=tmp_path / "alignment_four",
+    )
+    row = _read_csv(outputs["alignment_rows"])[0]
+    summary = _read_csv(outputs["summary"])[0]
+
+    assert row["candidate_count"] == "4"
+    assert row["alignment_valid"] == "True"
+    assert row["human_ranking"] == "A > B > C > D"
+    assert row["model_ranking"] == "A > C > B > D"
+    assert summary["valid_comparison_count"] == "1"
+    assert summary["invalid_comparison_count"] == "0"
+
+
+def test_compare_rankings_records_candidate_set_mismatch(tmp_path: Path) -> None:
+    model_csv = tmp_path / "model_mismatch.csv"
+    reviewer_csv = tmp_path / "reviewer_mismatch.csv"
+    _write_csv(
+        model_csv,
+        [
+            {
+                "dataset": "energy",
+                "record_id": "INT01_SEG001",
+                "review_block": "wrong_code",
+                "status": "success",
+                "final_rank_1": "A",
+                "final_rank_2": "B",
+                "final_rank_3": "C",
+                "final_rank_4": "D",
+                "final_rank_5": "",
+            }
+        ],
+    )
+    _write_csv(
+        reviewer_csv,
+        [
+            {
+                "reviewer_name": "Dr Richard",
+                "dataset": "energy",
+                "record_id": "INT01_SEG001",
+                "review_block": "wrong_code",
+                "rank_1_most_preferable": "A",
+                "rank_2": "B",
+                "rank_3": "C",
+                "rank_4": "E",
+                "rank_5_least_preferable": "",
+            }
+        ],
+    )
+
+    outputs = compare_rankings(
+        model_csv=model_csv,
+        reviewer_csvs=[reviewer_csv],
+        output_dir=tmp_path / "alignment_mismatch",
+    )
+    row = _read_csv(outputs["alignment_rows"])[0]
+    summary = _read_csv(outputs["summary"])[0]
+
+    assert row["alignment_valid"] == "False"
+    assert "do not match" in row["comparison_error"]
+    assert row["spearman"] == ""
+    assert summary["valid_comparison_count"] == "0"
+    assert summary["invalid_comparison_count"] == "1"
+
+
 def _dataset_config(
     dataset: str,
     enriched_parent: Path,
@@ -609,7 +872,7 @@ def _ranking_payload(ranking: list[str], rationale: str) -> dict[str, Any]:
         "review_block": "wrong_code",
         "candidate_assessments": {
             label: f"{rationale} assessment for Candidate {label}."
-            for label in ("A", "B", "C", "D", "E")
+            for label in sorted(ranking)
         },
         "debate_response": f"{rationale} debate response.",
         "uncertainty": f"{rationale} uncertainty.",
@@ -627,6 +890,9 @@ def _write_turn_prompts(tmp_path: Path) -> dict[str, Path]:
         path.write_text(
             f"{agent_id} {{agent_role}} {{turn_id}}\n"
             "Record ID: {record_id}\nReview block: {review_block}\n"
+            "Candidate count: {candidate_count}\n"
+            "Candidate labels JSON: {candidate_labels_json}\n"
+            "Required output: {required_output_shape_json}\n"
             "Previous debate trace JSON: "
             "{previous_agent_trace_json}",
             encoding="utf-8",
@@ -734,6 +1000,7 @@ def _write_review_pack_fixture(
     tmp_path: Path,
     *,
     include_context: bool = True,
+    candidate_count: int = 5,
 ) -> tuple[Path, Path]:
     review_pack = tmp_path / "review_pack"
     review_pack.mkdir()
@@ -756,15 +1023,18 @@ def _write_review_pack_fixture(
                 "segment_id": "SEG001",
                 "record_id": "INT01_SEG001",
                 "whole_interview_file": "INT01.html",
+                "candidate_count": candidate_count,
                 "run_name": "run1",
                 "segment_json_relative_to_run": relative,
             }
         ],
     )
     mapping_rows = []
-    sample_indexes = {"A": 2, "B": 1, "C": 3, "D": 4, "E": 5}
+    sample_indexes = list({"A": 2, "B": 1, "C": 3, "D": 4, "E": 5}.items())[
+        :candidate_count
+    ]
     for block in REVIEW_BLOCKS:
-        for label, sample_index in sample_indexes.items():
+        for label, sample_index in sample_indexes:
             mapping_rows.append(
                 {
                     "dataset": "energy",
@@ -772,6 +1042,7 @@ def _write_review_pack_fixture(
                     "segment_id": "SEG001",
                     "record_id": "INT01_SEG001",
                     "review_block": block.id,
+                    "candidate_count": candidate_count,
                     "candidate_label": label,
                     "original_sample_index": sample_index,
                     "run_name": "run1",

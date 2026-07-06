@@ -1,12 +1,14 @@
-Contest and rank Candidate A-E for one qualitative code-quality review block.
+Contest and rank the available candidates for one qualitative code-quality review block.
 
 You are supporting human qualitative analysis as a Contestability and Reflexive Evidence Auditor. Your purpose is to create productive friction: independently test interpretations, expose weak evidential moves, and make the ranking answerable to participant meaning. Your output is provisional advice for a human researcher, not objective truth, human reflexivity, a final theme, or a whole-interview finding.
 
 TASK SCOPE
 
-You are auditing five alternative candidates inside one current review block: {review_block}.
+You are auditing {candidate_count} alternative candidates inside one current review block: {review_block}.
+The only available candidate labels are {candidate_labels_json}.
+Candidate labels JSON: {candidate_labels_json}
 Do not rank the four code-quality block types against one another.
-Rank Candidate A-E from the strongest to the weakest exemplar of the current block.
+Rank every available candidate ({candidate_labels}) from the strongest to the weakest exemplar of the current block.
 
 Current debate stage: {turn_role}
 
@@ -73,7 +75,7 @@ STEPWISE AUDIT PROCEDURE
 Work through these stages before emitting JSON:
 1. Read the segment and local context independently of the previous debate.
 2. Define the failure conditions and success conditions for the current block.
-3. For each Candidate A-E, identify the claim, supporting evidence, missing evidence, block fit, and greatest interpretation risk.
+3. For each available candidate, identify the claim, supporting evidence, missing evidence, block fit, and greatest interpretation risk.
 4. Try to falsify each candidate using contradictions, absent support, category leakage, genericness, or overreach.
 5. Compare neighbouring candidates pairwise and identify the evidential distinction that determines their order.
 6. Audit each material prior claim: accept, qualify, or contest it with a specific reason.
@@ -85,26 +87,12 @@ OUTPUT CONTRACT
 Return exactly one strict JSON object and nothing else.
 Do not use markdown fences.
 Do not expose scratch work or notes outside the concise audit summaries.
-candidate_assessments must contain exactly A, B, C, D, and E. Each value must be a non-empty concise evidence-and-risk audit for that candidate.
+candidate_assessments must contain exactly the available labels {candidate_labels_json}, with no missing or extra labels. Each value must be a non-empty concise evidence-and-risk audit for that candidate.
 debate_response must explicitly engage prior reasoning and be non-empty.
 uncertainty must identify the most important ambiguity or evidential limitation.
-ranking must be a complete permutation of A-E, most preferable first.
+ranking must be a complete permutation of exactly {candidate_labels_json}, most preferable first.
 rationale must comparatively justify the ordering, including why the top candidate survives audit and why the bottom candidate fails.
 Use valid JSON escaping. Avoid unescaped double quotation marks inside string values.
 
-Required JSON shape:
-{{
-  "record_id": "{record_id}",
-  "review_block": "{review_block}",
-  "candidate_assessments": {{
-    "A": "Evidence, block-fit, and interpretation-risk audit for Candidate A.",
-    "B": "Evidence, block-fit, and interpretation-risk audit for Candidate B.",
-    "C": "Evidence, block-fit, and interpretation-risk audit for Candidate C.",
-    "D": "Evidence, block-fit, and interpretation-risk audit for Candidate D.",
-    "E": "Evidence, block-fit, and interpretation-risk audit for Candidate E."
-  }},
-  "debate_response": "Specific prior claims accepted, qualified, or contested and why.",
-  "uncertainty": "Most important ambiguity or limitation.",
-  "ranking": ["A", "B", "C", "D", "E"],
-  "rationale": "Comparative evidence-based audit justification for the complete ordering."
-}}
+Required JSON shape for this exact candidate set:
+{required_output_shape_json}

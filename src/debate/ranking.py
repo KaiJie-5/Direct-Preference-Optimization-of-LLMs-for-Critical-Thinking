@@ -118,7 +118,8 @@ def run_debate_ranking(config: DebateConfig) -> Path:
                 "transcript_id": block_input.segment.transcript_id,
                 "segment_id": block_input.segment.segment_id,
                 "ranking_method": config.ranking_method,
-                "num_candidates": len(CANDIDATE_LABELS),
+                "num_candidates": block_input.candidate_count,
+                "candidate_labels": list(block_input.candidate_labels),
                 "rankings": {},
                 "block_status": {},
             },
@@ -181,6 +182,7 @@ def _rank_block(
             generation=config.generation,
             record_id=block_input.segment.record_id,
             review_block=block_input.review_block.id,
+            candidate_labels=block_input.candidate_labels,
         )
         trace_id = (
             f"{block_input.segment.dataset}:"
@@ -212,6 +214,8 @@ def _rank_block(
                 "dataset": block_input.segment.dataset,
                 "record_id": block_input.segment.record_id,
                 "review_block": block_input.review_block.id,
+                "candidate_count": block_input.candidate_count,
+                "candidate_labels": list(block_input.candidate_labels),
                 "failed_turn_id": turn_config.id,
                 "failed_turn_role": turn_config.role,
                 "failed_agent_id": agent.agent_id,
@@ -246,12 +250,15 @@ def _rank_block(
     aggregation = borda_aggregate(
         aggregation_rankings,
         tiebreak_agent_id=aggregation_rankings[-1]["agent_id"],
+        candidate_labels=block_input.candidate_labels,
     )
     return {
         "status": "success",
         "dataset": block_input.segment.dataset,
         "record_id": block_input.segment.record_id,
         "review_block": block_input.review_block.id,
+        "candidate_count": block_input.candidate_count,
+        "candidate_labels": list(block_input.candidate_labels),
         "trace_ids": trace_ids,
         "turns": turns_trace,
         "agent_rankings": agent_rankings,
@@ -271,6 +278,7 @@ def _generate_valid_ranking(
     generation: Any,
     record_id: str,
     review_block: str,
+    candidate_labels: tuple[str, ...] = CANDIDATE_LABELS,
 ) -> dict[str, Any]:
     attempts: list[dict[str, Any]] = []
     current_messages = list(messages)
@@ -288,6 +296,7 @@ def _generate_valid_ranking(
             parsed,
             record_id=record_id,
             review_block=review_block,
+            candidate_labels=candidate_labels,
         )
         if parse_error and parsed is None:
             errors = [parse_error, *errors]
@@ -319,9 +328,11 @@ def _generate_valid_ranking(
                 "content": (
                     "Your previous answer was invalid for this debate ranking task. "
                     "Return only one strict JSON object with record_id, review_block, "
-                    "candidate_assessments containing exactly non-empty A-E strings, "
+                    "candidate_assessments containing exactly non-empty strings for "
+                    f"{list(candidate_labels)}, "
                     "non-empty debate_response, non-empty uncertainty, a complete "
-                    "Candidate A-E ranking, and a non-empty rationale. "
+                    f"ranking of exactly {list(candidate_labels)}, and a non-empty "
+                    "rationale. "
                     f"Validation errors: {errors}"
                 ),
             },
@@ -349,6 +360,20 @@ def _prompt_variables(
     turn: TurnConfig,
     turn_index: int,
 ) -> dict[str, Any]:
+    required_output_shape = {
+        "record_id": block_input.segment.record_id,
+        "review_block": block_input.review_block.id,
+        "candidate_assessments": {
+            label: f"Concise evidence and block-fit assessment for Candidate {label}."
+            for label in block_input.candidate_labels
+        },
+        "debate_response": (
+            "Stage-appropriate acceptance, challenge, or revision of prior reasoning."
+        ),
+        "uncertainty": "Most important ambiguity or evidential limitation.",
+        "ranking": list(block_input.candidate_labels),
+        "rationale": "Comparative justification for the complete ordering.",
+    }
     return {
         "agent_id": agent.agent_id,
         "agent_name": agent.name,
@@ -363,6 +388,9 @@ def _prompt_variables(
         "segment_id": block_input.segment.segment_id,
         "review_block": block_input.review_block.id,
         "review_block_title": block_input.review_block.title,
+        "candidate_count": block_input.candidate_count,
+        "candidate_labels": ", ".join(block_input.candidate_labels),
+        "candidate_labels_json": json.dumps(list(block_input.candidate_labels)),
         "participant_segment_text": block_input.participant_segment_text,
         "previous_context": block_input.previous_context,
         "next_context": block_input.next_context,
@@ -380,6 +408,9 @@ def _prompt_variables(
         ),
         "previous_agent_trace_json": json.dumps(
             previous_agent_trace, ensure_ascii=False, indent=2
+        ),
+        "required_output_shape_json": json.dumps(
+            required_output_shape, ensure_ascii=False, indent=2
         ),
     }
 
@@ -416,6 +447,10 @@ def _long_row(
         "segment_id": block_input.segment.segment_id,
         "record_id": block_input.segment.record_id,
         "review_block": block_input.review_block.id,
+        "candidate_count": block_input.candidate_count,
+        "candidate_labels_json": json.dumps(
+            list(block_input.candidate_labels), ensure_ascii=False
+        ),
         "ranking_method": ranking_method,
         "status": result["status"],
         "failure_reason": result.get("failure_reason", ""),
@@ -435,11 +470,16 @@ def _long_row(
     for label in CANDIDATE_LABELS:
         row[f"score_{label}"] = scores.get(label, "")
         mapping = next(
-            item
-            for item in block_input.candidate_mapping
-            if item["candidate_label"] == label
+            (
+                item
+                for item in block_input.candidate_mapping
+                if item["candidate_label"] == label
+            ),
+            None,
         )
-        row[f"candidate_{label}_sample_index"] = mapping["original_sample_index"]
+        row[f"candidate_{label}_sample_index"] = (
+            mapping["original_sample_index"] if mapping else ""
+        )
     return row
 
 
@@ -455,7 +495,8 @@ def _new_segment_trace_payload(
         "transcript_id": block_input.segment.transcript_id,
         "segment_id": block_input.segment.segment_id,
         "ranking_method": ranking_method,
-        "num_candidates": len(CANDIDATE_LABELS),
+        "num_candidates": block_input.candidate_count,
+        "candidate_labels": list(block_input.candidate_labels),
         "participant_segment_text": block_input.participant_segment_text,
         "previous_context": block_input.previous_context,
         "next_context": block_input.next_context,
@@ -469,6 +510,8 @@ def _block_trace_payload(result: dict[str, Any]) -> dict[str, Any]:
     payload = {
         "status": result["status"],
         "review_block": result.get("review_block", ""),
+        "candidate_count": result.get("candidate_count", 0),
+        "candidate_labels": result.get("candidate_labels", []),
         "trace_ids": result.get("trace_ids", []),
         "turns": result.get("turns", []),
         "agent_rankings": result.get("agent_rankings", []),

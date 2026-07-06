@@ -16,6 +16,7 @@ class ReviewSegment:
     transcript_id: str
     segment_id: str
     record_id: str
+    candidate_count: int | None
     run_name: str
     segment_json_relative_to_run: str
 
@@ -29,6 +30,7 @@ class CandidateMapping:
     review_block: str
     candidate_label: str
     original_sample_index: int
+    candidate_count: int | None
     run_name: str
     segment_json_relative_to_run: str
 
@@ -41,6 +43,8 @@ class DebateBlockInput:
     previous_context: str
     next_context: str
     research_questions: tuple[str, ...]
+    candidate_count: int
+    candidate_labels: tuple[str, ...]
     candidate_table: list[dict[str, Any]]
     candidate_mapping: list[dict[str, Any]]
     segment_json_path: Path
@@ -54,6 +58,7 @@ def load_review_segments(review_pack_path: Path) -> list[ReviewSegment]:
             transcript_id=row["transcript_id"],
             segment_id=row["segment_id"],
             record_id=row["record_id"],
+            candidate_count=_optional_int(row.get("candidate_count")),
             run_name=row["run_name"],
             segment_json_relative_to_run=row["segment_json_relative_to_run"],
         )
@@ -72,6 +77,7 @@ def load_candidate_mappings(review_pack_path: Path) -> list[CandidateMapping]:
             review_block=row["review_block"],
             candidate_label=row["candidate_label"],
             original_sample_index=int(row["original_sample_index"]),
+            candidate_count=_optional_int(row.get("candidate_count")),
             run_name=row["run_name"],
             segment_json_relative_to_run=row["segment_json_relative_to_run"],
         )
@@ -117,17 +123,82 @@ def build_block_inputs(
             payload = json.loads(segment_json_path.read_text(encoding="utf-8"))
             segment_cache[segment_json_path] = payload
 
+        segment_candidate_labels: tuple[str, ...] | None = None
         for block in review_blocks:
             key = (segment.dataset, segment.record_id, block.id)
+            raw_mappings = mappings_by_key.get(key, [])
+            unknown_labels = sorted(
+                {
+                    mapping.candidate_label
+                    for mapping in raw_mappings
+                    if mapping.candidate_label not in CANDIDATE_LABELS
+                }
+            )
+            if unknown_labels:
+                raise ValueError(
+                    f"Unknown candidate labels {unknown_labels} for "
+                    f"{segment.dataset} {segment.record_id} {block.id}."
+                )
             block_mappings = sorted(
-                mappings_by_key.get(key, []),
+                raw_mappings,
                 key=lambda item: CANDIDATE_LABELS.index(item.candidate_label),
             )
-            if len(block_mappings) != len(CANDIDATE_LABELS):
+            candidate_count = len(block_mappings)
+            if candidate_count < 2 or candidate_count > len(CANDIDATE_LABELS):
                 raise ValueError(
-                    "Expected five candidate mappings for "
+                    "Expected between two and five candidate mappings for "
                     f"{segment.dataset} {segment.record_id} {block.id}, "
-                    f"got {len(block_mappings)}."
+                    f"got {candidate_count}."
+                )
+            candidate_labels = tuple(
+                mapping.candidate_label for mapping in block_mappings
+            )
+            expected_labels = CANDIDATE_LABELS[:candidate_count]
+            if candidate_labels != expected_labels:
+                raise ValueError(
+                    f"Candidate labels for {segment.dataset} {segment.record_id} "
+                    f"{block.id} must be the contiguous prefix {list(expected_labels)}, "
+                    f"got {list(candidate_labels)}."
+                )
+            if segment_candidate_labels is None:
+                segment_candidate_labels = candidate_labels
+            elif candidate_labels != segment_candidate_labels:
+                raise ValueError(
+                    f"Candidate labels must be segment-wide for {segment.dataset} "
+                    f"{segment.record_id}: expected {list(segment_candidate_labels)}, "
+                    f"got {list(candidate_labels)} for {block.id}."
+                )
+            if (
+                segment.candidate_count is not None
+                and segment.candidate_count != candidate_count
+            ):
+                raise ValueError(
+                    f"review_segments.csv declares candidate_count="
+                    f"{segment.candidate_count} for {segment.dataset} "
+                    f"{segment.record_id}, but {block.id} has {candidate_count} mappings."
+                )
+            declared_mapping_counts = {
+                mapping.candidate_count
+                for mapping in block_mappings
+                if mapping.candidate_count is not None
+            }
+            if declared_mapping_counts and declared_mapping_counts != {candidate_count}:
+                raise ValueError(
+                    f"internal_candidate_mapping.csv candidate_count values "
+                    f"{sorted(declared_mapping_counts)} do not match {candidate_count} "
+                    f"for {segment.dataset} {segment.record_id} {block.id}."
+                )
+            inconsistent_paths = [
+                mapping.candidate_label
+                for mapping in block_mappings
+                if mapping.run_name != segment.run_name
+                or mapping.segment_json_relative_to_run
+                != segment.segment_json_relative_to_run
+            ]
+            if inconsistent_paths:
+                raise ValueError(
+                    f"Candidate mappings {inconsistent_paths} disagree with the review "
+                    f"segment path for {segment.dataset} {segment.record_id} {block.id}."
                 )
             inputs.append(
                 DebateBlockInput(
@@ -137,6 +208,8 @@ def build_block_inputs(
                     previous_context=_metadata_text(payload, "previous_context"),
                     next_context=_metadata_text(payload, "next_context"),
                     research_questions=dataset_config.research_questions,
+                    candidate_count=candidate_count,
+                    candidate_labels=candidate_labels,
                     candidate_table=[
                         _candidate_payload(payload, mapping, block)
                         for mapping in block_mappings
@@ -224,3 +297,7 @@ def _read_csv_dicts(path: Path) -> list[dict[str, str]]:
         raise FileNotFoundError(f"Required CSV does not exist: {path}")
     with path.open("r", encoding="utf-8-sig", newline="") as handle:
         return list(csv.DictReader(handle))
+
+
+def _optional_int(value: str | None) -> int | None:
+    return int(value) if value is not None and value.strip() else None

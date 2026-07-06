@@ -41,24 +41,41 @@ def compare_rankings(
             model_row = model_by_key.get(_key(human_row))
             if model_row is None:
                 continue
-            human_ranking = [human_row[column] for column in HUMAN_RANK_COLUMNS]
-            model_ranking = [model_row[column] for column in MODEL_RANK_COLUMNS]
+            human_ranking = _non_empty_ranking(human_row, HUMAN_RANK_COLUMNS)
+            model_ranking = _non_empty_ranking(model_row, MODEL_RANK_COLUMNS)
+            comparison_error = _comparison_error(human_ranking, model_ranking)
+            alignment_valid = comparison_error == ""
             alignment_rows.append(
                 {
                     "reviewer_name": human_row.get("reviewer_name", ""),
                     "dataset": human_row["dataset"],
                     "record_id": human_row["record_id"],
                     "review_block": human_row["review_block"],
+                    "candidate_count": len(model_ranking),
+                    "alignment_valid": alignment_valid,
+                    "comparison_error": comparison_error,
                     "human_ranking": " > ".join(human_ranking),
                     "model_ranking": " > ".join(model_ranking),
-                    "human_top1": human_ranking[0],
-                    "model_top1": model_ranking[0],
-                    "top1_match": human_ranking[0] == model_ranking[0],
-                    "full_rank_match": human_ranking == model_ranking,
-                    "rank_distance_sum": _rank_distance_sum(
-                        human_ranking, model_ranking
+                    "human_top1": human_ranking[0] if human_ranking else "",
+                    "model_top1": model_ranking[0] if model_ranking else "",
+                    "top1_match": (
+                        human_ranking[0] == model_ranking[0]
+                        if alignment_valid
+                        else ""
                     ),
-                    "spearman": _spearman(human_ranking, model_ranking),
+                    "full_rank_match": (
+                        human_ranking == model_ranking if alignment_valid else ""
+                    ),
+                    "rank_distance_sum": (
+                        _rank_distance_sum(human_ranking, model_ranking)
+                        if alignment_valid
+                        else ""
+                    ),
+                    "spearman": (
+                        _spearman(human_ranking, model_ranking)
+                        if alignment_valid
+                        else ""
+                    ),
                 }
             )
 
@@ -71,6 +88,28 @@ def compare_rankings(
 
 def _key(row: dict[str, str]) -> tuple[str, str, str]:
     return (row["dataset"], row["record_id"], row["review_block"])
+
+
+def _non_empty_ranking(
+    row: dict[str, str],
+    columns: tuple[str, ...],
+) -> list[str]:
+    return [value for column in columns if (value := row.get(column, "").strip())]
+
+
+def _comparison_error(human: list[str], model: list[str]) -> str:
+    if len(human) < 2 or len(model) < 2:
+        return "Both rankings must contain at least two candidates."
+    if len(set(human)) != len(human):
+        return "Human ranking contains duplicate candidate labels."
+    if len(set(model)) != len(model):
+        return "Model ranking contains duplicate candidate labels."
+    if set(human) != set(model):
+        return (
+            f"Human candidate labels {sorted(human)} do not match model "
+            f"candidate labels {sorted(model)}."
+        )
+    return ""
 
 
 def _rank_distance_sum(human: list[str], model: list[str]) -> int:
@@ -97,21 +136,37 @@ def _summary_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
         groups[(row["dataset"], row["review_block"])].append(row)
     summary: list[dict[str, Any]] = []
     for (dataset, review_block), group in sorted(groups.items()):
+        valid_group = [row for row in group if row["alignment_valid"]]
         summary.append(
             {
                 "dataset": dataset,
                 "review_block": review_block,
                 "comparison_count": len(group),
-                "top1_match_rate": mean(
-                    1.0 if row["top1_match"] else 0.0 for row in group
+                "valid_comparison_count": len(valid_group),
+                "invalid_comparison_count": len(group) - len(valid_group),
+                "top1_match_rate": (
+                    mean(1.0 if row["top1_match"] else 0.0 for row in valid_group)
+                    if valid_group
+                    else ""
                 ),
-                "full_rank_match_rate": mean(
-                    1.0 if row["full_rank_match"] else 0.0 for row in group
+                "full_rank_match_rate": (
+                    mean(
+                        1.0 if row["full_rank_match"] else 0.0
+                        for row in valid_group
+                    )
+                    if valid_group
+                    else ""
                 ),
-                "mean_rank_distance_sum": mean(
-                    float(row["rank_distance_sum"]) for row in group
+                "mean_rank_distance_sum": (
+                    mean(float(row["rank_distance_sum"]) for row in valid_group)
+                    if valid_group
+                    else ""
                 ),
-                "mean_spearman": mean(float(row["spearman"]) for row in group),
+                "mean_spearman": (
+                    mean(float(row["spearman"]) for row in valid_group)
+                    if valid_group
+                    else ""
+                ),
             }
         )
     return summary
@@ -130,4 +185,3 @@ def _write_csv(path: Path, rows: list[dict[str, Any]]) -> None:
         writer = csv.DictWriter(handle, fieldnames=list(rows[0].keys()))
         writer.writeheader()
         writer.writerows(rows)
-

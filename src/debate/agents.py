@@ -44,17 +44,19 @@ class DryRunDebateAgent:
         generation: GenerationConfig,
     ) -> DebateGenerationResult:
         started = time.perf_counter()
+        candidate_labels = _message_json_list(messages, "Candidate labels JSON")
+        ranking = candidate_labels or self.ranking
         text = json.dumps(
             {
                 "record_id": _message_value(messages, "Record ID"),
                 "review_block": _message_value(messages, "Review block"),
                 "candidate_assessments": {
                     label: f"Dry-run assessment for Candidate {label}."
-                    for label in self.ranking
+                    for label in ranking
                 },
                 "debate_response": "Dry-run debate response for smoke testing.",
                 "uncertainty": "Dry-run uncertainty for smoke testing.",
-                "ranking": self.ranking,
+                "ranking": ranking,
                 "rationale": "Dry-run ranking for smoke testing.",
             }
         )
@@ -208,3 +210,16 @@ def _message_value(messages: list[dict[str, str]], label: str) -> str:
             if line.startswith(prefix):
                 return line.removeprefix(prefix).strip()
     return ""
+
+
+def _message_json_list(messages: list[dict[str, str]], label: str) -> list[str]:
+    value = _message_value(messages, label)
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list) or not all(isinstance(item, str) for item in parsed):
+        return []
+    return parsed
