@@ -212,18 +212,11 @@ def _sample_by_index(segment_payload: dict[str, Any], sample_index: int) -> dict
 
 
 def _review_block_payload(parsed_output: dict[str, Any], block: ReviewBlock) -> dict[str, Any]:
-    if block.kind == "code":
-        examples = parsed_output.get("code_quality_examples") or {}
-        value = examples.get(block.source_name or "")
-        return value if isinstance(value, dict) else {}
-    if block.kind == "reflective_question":
-        questions = parsed_output.get("reflective_question_candidates") or []
-        index = block.question_index
-        if index is None or index >= len(questions):
-            return {}
-        value = questions[index]
-        return value if isinstance(value, dict) else {}
-    raise ValueError(f"Unsupported review block kind: {block.kind}")
+    if block.kind != "code":
+        raise ValueError(f"Unsupported review block kind: {block.kind}")
+    examples = parsed_output.get("code_quality_examples") or {}
+    value = examples.get(block.source_name or "")
+    return value if isinstance(value, dict) else {}
 
 
 def _read_csv_dicts(path: Path) -> list[dict[str, str]]:

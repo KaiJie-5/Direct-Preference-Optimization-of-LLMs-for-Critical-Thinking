@@ -11,7 +11,7 @@ dependencies = ["beautifulsoup4>=4.12", "openpyxl>=3.1"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
-transformers = ["torch", "transformers>=4.40", "accelerate"]
+transformers = ["torch", "transformers>=4.45", "accelerate"]
 
 [project.scripts]
 dpo-enrich = "enrichment.cli:main"

@@ -3,7 +3,10 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TypeAlias
+
+
+DeviceMapValue: TypeAlias = str | int | dict[str, str | int]
 
 
 @dataclass(frozen=True, slots=True)
@@ -23,7 +26,7 @@ class AgentConfig:
     model_path: str | None
     prompt_path: Path
     torch_dtype: str = "auto"
-    device_map: str = "auto"
+    device_map: DeviceMapValue = "auto"
     trust_remote_code: bool = False
 
 
@@ -56,7 +59,7 @@ class DebateConfig:
     review_blocks: tuple[str, ...] = ()
     ranking_method: str = "multi_agent_fine_grained_ranking"
     limit: int | None = None
-    run_name: str = "qwen_32b_72b_multi_agent_debate"
+    run_name: str = "llama_70b_qwen_72b_multi_agent_debate"
 
 
 def load_debate_config(path: Path) -> DebateConfig:
@@ -88,7 +91,7 @@ def debate_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> De
             model_path=item.get("model_path"),
             prompt_path=_required_path(item["prompt_path"], base_dir),
             torch_dtype=str(item.get("torch_dtype", "auto")),
-            device_map=str(item.get("device_map", "auto")),
+            device_map=_device_map(item.get("device_map", "auto")),
             trust_remote_code=bool(item.get("trust_remote_code", False)),
         )
         for item in payload.get("agents", [])
@@ -142,7 +145,9 @@ def debate_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> De
             payload.get("ranking_method", "multi_agent_fine_grained_ranking")
         ),
         limit=(int(payload["limit"]) if payload.get("limit") is not None else None),
-        run_name=str(payload.get("run_name", "qwen_32b_72b_multi_agent_debate")),
+        run_name=str(
+            payload.get("run_name", "llama_70b_qwen_72b_multi_agent_debate")
+        ),
     )
 
 
@@ -208,3 +213,18 @@ def _required_path(value: str, base_dir: Path) -> Path:
 
 def _optional_path(value: str | None, base_dir: Path) -> Path | None:
     return _required_path(value, base_dir) if value else None
+
+
+def _device_map(value: Any) -> DeviceMapValue:
+    if isinstance(value, bool):
+        raise ValueError("device_map must be a device string, GPU index, or mapping.")
+    if isinstance(value, (str, int)):
+        return value
+    if isinstance(value, dict) and all(
+        isinstance(key, str)
+        and not isinstance(device, bool)
+        and isinstance(device, (str, int))
+        for key, device in value.items()
+    ):
+        return dict(value)
+    raise ValueError("device_map must be a device string, GPU index, or mapping.")

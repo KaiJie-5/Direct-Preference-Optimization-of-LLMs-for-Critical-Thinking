@@ -13,7 +13,6 @@ class ReviewBlock:
     title: str
     kind: str
     source_name: str | None = None
-    question_index: int | None = None
     fields: tuple[str, ...] = ()
 
 
@@ -74,54 +73,6 @@ REVIEW_BLOCKS: tuple[ReviewBlock, ...] = (
             "why_it_is_useful",
             "relation_to_research_questions",
             "category_boundary",
-        ),
-    ),
-    ReviewBlock(
-        id="reflective_question_q1",
-        title="Reflective question Q1",
-        kind="reflective_question",
-        question_index=0,
-        fields=(
-            "question",
-            "question_type",
-            "reflexive_dimension",
-            "trigger_quote",
-            "why_this_question_is_useful",
-            "what_human_researcher_should_inspect",
-            "risk_if_ignored",
-            "confidence",
-        ),
-    ),
-    ReviewBlock(
-        id="reflective_question_q2",
-        title="Reflective question Q2",
-        kind="reflective_question",
-        question_index=1,
-        fields=(
-            "question",
-            "question_type",
-            "reflexive_dimension",
-            "trigger_quote",
-            "why_this_question_is_useful",
-            "what_human_researcher_should_inspect",
-            "risk_if_ignored",
-            "confidence",
-        ),
-    ),
-    ReviewBlock(
-        id="reflective_question_q3",
-        title="Reflective question Q3",
-        kind="reflective_question",
-        question_index=2,
-        fields=(
-            "question",
-            "question_type",
-            "reflexive_dimension",
-            "trigger_quote",
-            "why_this_question_is_useful",
-            "what_human_researcher_should_inspect",
-            "risk_if_ignored",
-            "confidence",
         ),
     ),
 )

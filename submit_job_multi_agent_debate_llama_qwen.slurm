@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=dpo_debate_qwen
+#SBATCH --job-name=dpo_debate_llama_qwen
 #SBATCH --partition=quad_h200
 #SBATCH --account=ecs
 #SBATCH --nodes=1
@@ -8,8 +8,8 @@
 #SBATCH --cpus-per-task=12
 #SBATCH --mem=300G
 #SBATCH --time=2-12:00:00
-#SBATCH --output=dpo_debate_qwen_%j.out
-#SBATCH --error=dpo_debate_qwen_%j.err
+#SBATCH --output=dpo_debate_llama_qwen_%j.out
+#SBATCH --error=dpo_debate_llama_qwen_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=kjl1a21@soton.ac.uk
 #SBATCH --exclude=blossom04
@@ -19,7 +19,7 @@
 # =========================
 CONDA_ENV="dpo"
 PROJECT_DIR="/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking"
-CONFIG_PATH="${PROJECT_DIR}/configs/multi_agent_debate_qwen.json"
+CONFIG_PATH="${PROJECT_DIR}/configs/multi_agent_debate_llama_qwen.json"
 
 source ~/.bashrc
 conda activate "${CONDA_ENV}"

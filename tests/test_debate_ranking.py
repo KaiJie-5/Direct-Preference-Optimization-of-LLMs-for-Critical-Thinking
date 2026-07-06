@@ -23,7 +23,7 @@ from debate.schema import (
 )
 
 
-def test_review_pack_loader_reconstructs_candidates_and_reflective_questions(
+def test_review_pack_loader_reconstructs_only_code_candidates(
     tmp_path: Path,
 ) -> None:
     review_pack, enriched_parent = _write_review_pack_fixture(tmp_path)
@@ -40,7 +40,7 @@ def test_review_pack_loader_reconstructs_candidates_and_reflective_questions(
         review_blocks=configured_review_blocks(None),
     )
 
-    assert len(block_inputs) == 7
+    assert len(block_inputs) == 4
     wrong_code = block_inputs[0]
     assert wrong_code.review_block.id == "wrong_code"
     assert wrong_code.participant_segment_text == "Participant text."
@@ -51,10 +51,17 @@ def test_review_pack_loader_reconstructs_candidates_and_reflective_questions(
     assert wrong_code.candidate_table[0]["original_sample_index"] == 2
     assert wrong_code.candidate_table[0]["fields"]["code_label"] == "wrong 2"
 
-    q3 = block_inputs[-1]
-    assert q3.review_block.id == "reflective_question_q3"
-    assert q3.candidate_table[-1]["candidate_label"] == "E"
-    assert q3.candidate_table[-1]["fields"]["question"] == "q3 sample 5"
+    useful_code = block_inputs[-1]
+    assert useful_code.review_block.id == "useful_analytical_code"
+    assert useful_code.candidate_table[-1]["candidate_label"] == "E"
+    assert useful_code.candidate_table[-1]["fields"]["code_label"] == "useful 5"
+
+
+def test_reflective_question_blocks_are_rejected() -> None:
+    import pytest
+
+    with pytest.raises(ValueError, match="Unknown review block ids"):
+        configured_review_blocks(["reflective_question_q1"])
 
 
 def test_validate_ranking_payload_rejects_incomplete_duplicate_and_unknown_labels() -> None:
@@ -90,7 +97,7 @@ def test_borda_aggregation_uses_qwen_72b_tiebreak_and_records_it() -> None:
     result = borda_aggregate(
         [
             {
-                "agent_id": "qwen_32b",
+                "agent_id": "llama_70b",
                 "ranking": ["A", "B", "C", "D", "E"],
             },
             {
@@ -108,34 +115,50 @@ def test_borda_aggregation_uses_qwen_72b_tiebreak_and_records_it() -> None:
     assert result["tiebreaks"][0]["applied_order"] == ["B", "A"]
 
 
-def test_qwen_debate_prompt_templates_start_with_task_body() -> None:
+def test_llama_qwen_debate_prompt_templates_start_with_task_body() -> None:
     repo_root = Path(__file__).parents[1]
-    qwen32 = (
-        repo_root / "prompts" / "debate" / "qwen_32b_debate_placeholder.txt"
+    llama70 = (
+        repo_root / "prompts" / "debate" / "llama_70b_debate_placeholder.txt"
     ).read_text(encoding="utf-8")
     qwen72 = (
         repo_root / "prompts" / "debate" / "qwen_72b_debate_placeholder.txt"
     ).read_text(encoding="utf-8")
 
-    assert qwen32.splitlines()[0] == "Rank Candidate A-E for one qualitative review block."
+    assert llama70.splitlines()[0] == "Rank Candidate A-E for one qualitative review block."
     assert (
         qwen72.splitlines()[0]
         == "Audit and rank Candidate A-E for one qualitative review block."
     )
-    for template in (qwen32, qwen72):
+    for template in (llama70, qwen72):
         assert not template.startswith("You are {agent_name}. Act as")
         assert "Previous rankings and rationales JSON:" in template
         assert "Previous agent trace JSON:" not in template
+        for placeholder in (
+            "{turn_role}",
+            "{dataset}",
+            "{record_id}",
+            "{transcript_id}",
+            "{segment_id}",
+            "{review_block}",
+            "{review_block_title}",
+            "{research_questions}",
+            "{previous_context}",
+            "{participant_segment_text}",
+            "{next_context}",
+            "{candidate_table_json}",
+            "{previous_agent_trace_json}",
+        ):
+            assert placeholder in template
 
 
 def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
     tmp_path: Path,
 ) -> None:
     review_pack, enriched_parent = _write_review_pack_fixture(tmp_path)
-    qwen32_prompt = tmp_path / "qwen32.txt"
+    llama70_prompt = tmp_path / "llama70.txt"
     qwen72_prompt = tmp_path / "qwen72.txt"
-    qwen32_prompt.write_text(
-        "QWEN32 {agent_role} {turn_id} {record_id} {review_block} "
+    llama70_prompt.write_text(
+        "LLAMA70 {agent_role} {turn_id} {record_id} {review_block} "
         "{research_questions} {previous_context} {participant_segment_text} "
         "{next_context} {candidate_table_json} "
         "Previous rankings and rationales JSON: {previous_agent_trace_json}",
@@ -160,11 +183,11 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
             ],
             "agents": [
                 {
-                    "id": "qwen_32b",
-                    "name": "Qwen 32B",
+                    "id": "llama_70b",
+                    "name": "Llama 70B",
                     "role": "Interpretive QDA Methodologist",
                     "backend": "dry-run",
-                    "prompt_path": str(qwen32_prompt),
+                    "prompt_path": str(llama70_prompt),
                 },
                 {
                     "id": "qwen_72b",
@@ -176,8 +199,8 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
             ],
             "turns": [
                 {
-                    "id": "turn1_initial_32b",
-                    "agent_id": "qwen_32b",
+                    "id": "turn1_initial_llama_70b",
+                    "agent_id": "llama_70b",
                     "role": "initial_ranking",
                     "contributes_to_aggregation": False,
                 },
@@ -188,8 +211,8 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
                     "contributes_to_aggregation": False,
                 },
                 {
-                    "id": "turn3_revision_32b",
-                    "agent_id": "qwen_32b",
+                    "id": "turn3_revision_llama_70b",
+                    "agent_id": "llama_70b",
                     "role": "revised_ranking",
                     "contributes_to_aggregation": True,
                 },
@@ -236,7 +259,11 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
     assert segment_trace["previous_context"] == "Interviewer: Previous question?"
     assert segment_trace["next_context"] == "Interviewer: Next question?"
     assert segment_trace["research_questions"] == ["What interactions happen?"]
-    assert len(segment_trace["review_blocks"]) == 7
+    assert len(segment_trace["review_blocks"]) == 4
+    assert not any(
+        block_id.startswith("reflective_question")
+        for block_id in segment_trace["review_blocks"]
+    )
     assert segment_trace["review_blocks"]["wrong_code"]["status"] == "success"
     assert len(segment_trace["review_blocks"]["wrong_code"]["turns"]) == 4
     assert segment_trace["review_blocks"]["wrong_code"]["final_ranking"] == [
@@ -248,9 +275,9 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
     ]
     assert segment_trace["review_blocks"]["wrong_code"]["borda_scores"]["A"] == 10
     assert "tiebreaks" in segment_trace["review_blocks"]["wrong_code"]
-    assert len(trace_rows) == 28
+    assert len(trace_rows) == 16
     assert len(final_rows) == 1
-    assert len(long_rows) == 7
+    assert len(long_rows) == 4
     assert final_rows[0]["rankings"]["wrong_code"] == ["A", "B", "C", "D", "E"]
     assert long_rows[0]["review_block"] == "wrong_code"
     assert long_rows[0]["segment_trace_file"] == str(
@@ -258,7 +285,7 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
     )
     assert long_rows[0]["candidate_A_sample_index"] == "2"
     assert trace_rows[0]["rendered_prompt"].startswith(
-        "You are Qwen 32B. Act as the Interpretive QDA Methodologist.\n\nQWEN32"
+        "You are Llama 70B. Act as the Interpretive QDA Methodologist.\n\nLLAMA70"
     )
     assert trace_rows[1]["rendered_prompt"].startswith(
         "You are Qwen 72B. Act as the Reflexive Evidence and Interpretation "
@@ -267,9 +294,9 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
     assert "What interactions happen?" in trace_rows[0]["rendered_prompt"]
     assert "Interviewer: Previous question?" in trace_rows[0]["rendered_prompt"]
     assert "Interviewer: Next question?" in trace_rows[0]["rendered_prompt"]
-    assert "QWEN32" in trace_rows[0]["rendered_prompt"]
+    assert "LLAMA70" in trace_rows[0]["rendered_prompt"]
     assert "QWEN72" in trace_rows[1]["rendered_prompt"]
-    assert "QWEN32" in trace_rows[2]["rendered_prompt"]
+    assert "LLAMA70" in trace_rows[2]["rendered_prompt"]
     assert "QWEN72" in trace_rows[3]["rendered_prompt"]
     assert "Interpretive QDA Methodologist" in trace_rows[0]["rendered_prompt"]
     assert (
@@ -277,10 +304,14 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
         in trace_rows[1]["rendered_prompt"]
     )
     assert trace_rows[1]["turn_id"] == "turn2_response_72b"
-    assert '"turn_id": "turn1_initial_32b"' in trace_rows[1]["rendered_prompt"]
+    assert '"turn_id": "turn1_initial_llama_70b"' in trace_rows[1]["rendered_prompt"]
     assert '"turn_id": "turn2_response_72b"' in trace_rows[2]["rendered_prompt"]
-    assert '"turn_id": "turn3_revision_32b"' in trace_rows[3]["rendered_prompt"]
+    assert '"turn_id": "turn3_revision_llama_70b"' in trace_rows[3]["rendered_prompt"]
     assert "Dry-run ranking for smoke testing." in trace_rows[1]["rendered_prompt"]
+    assert all(
+        "reflective_question_candidates" not in row["rendered_prompt"]
+        for row in trace_rows
+    )
 
 
 def test_four_turn_debate_aggregates_only_turn_3_and_turn_4(tmp_path: Path) -> None:
@@ -292,11 +323,11 @@ def test_four_turn_debate_aggregates_only_turn_3_and_turn_4(tmp_path: Path) -> N
     )[0]
     prompt_paths = _write_turn_prompts(tmp_path)
     turns = _turns(prompt_paths)
-    qwen32 = QueueDebateAgent(
-        "qwen_32b",
+    llama70 = QueueDebateAgent(
+        "llama_70b",
         [
-            _ranking_text(["A", "B", "C", "D", "E"], "early 32b"),
-            _ranking_text(["E", "D", "C", "B", "A"], "terminal 32b"),
+            _ranking_text(["A", "B", "C", "D", "E"], "early llama"),
+            _ranking_text(["E", "D", "C", "B", "A"], "terminal llama"),
         ],
     )
     qwen72 = QueueDebateAgent(
@@ -310,7 +341,7 @@ def test_four_turn_debate_aggregates_only_turn_3_and_turn_4(tmp_path: Path) -> N
     result = _rank_block(
         block_input=block_input,
         turns=turns,
-        agent_by_id={"qwen_32b": qwen32, "qwen_72b": qwen72},
+        agent_by_id={"llama_70b": llama70, "qwen_72b": qwen72},
         agent_config_by_id=_agent_config_by_id(prompt_paths),
         prompt_by_agent_id=_prompt_templates(prompt_paths),
         config=_dummy_config(tmp_path, review_pack, enriched_parent, turns),
@@ -322,38 +353,38 @@ def test_four_turn_debate_aggregates_only_turn_3_and_turn_4(tmp_path: Path) -> N
     assert result["borda_scores"]["D"] == 9
     assert result["borda_scores"]["E"] == 9
     assert [item["turn_id"] for item in result["aggregation_rankings"]] == [
-        "turn3_revision_32b",
+        "turn3_revision_llama_70b",
         "turn4_final_72b",
     ]
     assert result["tiebreak_agent_id"] == "qwen_72b"
-    for call in [*qwen32.calls, *qwen72.calls]:
+    for call in [*llama70.calls, *qwen72.calls]:
         assert [message["role"] for message in call] == ["system", "user"]
 
-    assert qwen32.calls[0][0]["content"] == (
-        "You are qwen_32b. Act as the Interpretive QDA Methodologist."
+    assert llama70.calls[0][0]["content"] == (
+        "You are llama_70b. Act as the Interpretive QDA Methodologist."
     )
     assert qwen72.calls[0][0]["content"] == (
         "You are qwen_72b. Act as the Reflexive Evidence and Interpretation Auditor."
     )
-    assert not qwen32.calls[0][1]["content"].startswith("You are qwen_32b. Act as")
+    assert not llama70.calls[0][1]["content"].startswith("You are llama_70b. Act as")
     assert "Previous rankings and rationales JSON:" in qwen72.calls[0][1]["content"]
 
     turn2_user_prompt = qwen72.calls[0][1]["content"]
-    assert '"turn_id": "turn1_initial_32b"' in turn2_user_prompt
-    assert "early 32b" in turn2_user_prompt
+    assert '"turn_id": "turn1_initial_llama_70b"' in turn2_user_prompt
+    assert "early llama" in turn2_user_prompt
     assert "early 72b" not in turn2_user_prompt
 
-    turn3_user_prompt = qwen32.calls[1][1]["content"]
-    assert '"turn_id": "turn1_initial_32b"' in turn3_user_prompt
+    turn3_user_prompt = llama70.calls[1][1]["content"]
+    assert '"turn_id": "turn1_initial_llama_70b"' in turn3_user_prompt
     assert '"turn_id": "turn2_response_72b"' in turn3_user_prompt
-    assert "early 32b" in turn3_user_prompt
+    assert "early llama" in turn3_user_prompt
     assert "early 72b" in turn3_user_prompt
 
     turn4_user_prompt = qwen72.calls[1][1]["content"]
-    assert '"turn_id": "turn1_initial_32b"' in turn4_user_prompt
+    assert '"turn_id": "turn1_initial_llama_70b"' in turn4_user_prompt
     assert '"turn_id": "turn2_response_72b"' in turn4_user_prompt
-    assert '"turn_id": "turn3_revision_32b"' in turn4_user_prompt
-    assert "terminal 32b" in turn4_user_prompt
+    assert '"turn_id": "turn3_revision_llama_70b"' in turn4_user_prompt
+    assert "terminal llama" in turn4_user_prompt
     assert "terminal 72b" not in turn4_user_prompt
 
 
@@ -366,10 +397,10 @@ def test_failed_terminal_turn_marks_block_failed(tmp_path: Path) -> None:
     )[0]
     prompt_paths = _write_turn_prompts(tmp_path)
     turns = _turns(prompt_paths)
-    qwen32 = QueueDebateAgent(
-        "qwen_32b",
+    llama70 = QueueDebateAgent(
+        "llama_70b",
         [
-            _ranking_text(["A", "B", "C", "D", "E"], "early 32b"),
+            _ranking_text(["A", "B", "C", "D", "E"], "early llama"),
             '{"ranking": ["A", "A"], "rationale": "bad"}',
         ],
     )
@@ -381,15 +412,15 @@ def test_failed_terminal_turn_marks_block_failed(tmp_path: Path) -> None:
     result = _rank_block(
         block_input=block_input,
         turns=turns,
-        agent_by_id={"qwen_32b": qwen32, "qwen_72b": qwen72},
+        agent_by_id={"llama_70b": llama70, "qwen_72b": qwen72},
         agent_config_by_id=_agent_config_by_id(prompt_paths),
         prompt_by_agent_id=_prompt_templates(prompt_paths),
         config=_dummy_config(tmp_path, review_pack, enriched_parent, turns),
     )
 
     assert result["status"] == "failed"
-    assert result["failed_turn_id"] == "turn3_revision_32b"
-    assert result["failed_agent_id"] == "qwen_32b"
+    assert result["failed_turn_id"] == "turn3_revision_llama_70b"
+    assert result["failed_agent_id"] == "llama_70b"
     assert len(result["turns"]) == 3
     assert result["turns"][-1]["parse_status"] == "invalid"
 
@@ -504,7 +535,7 @@ def _ranking_text(ranking: list[str], rationale: str) -> str:
 
 def _write_turn_prompts(tmp_path: Path) -> dict[str, Path]:
     paths = {
-        "qwen_32b": tmp_path / "qwen32.txt",
+        "llama_70b": tmp_path / "llama70.txt",
         "qwen_72b": tmp_path / "qwen72.txt",
     }
     for agent_id, path in paths.items():
@@ -520,8 +551,8 @@ def _write_turn_prompts(tmp_path: Path) -> dict[str, Path]:
 def _turns(prompt_paths: dict[str, Path]) -> list[TurnConfig]:
     return [
         TurnConfig(
-            id="turn1_initial_32b",
-            agent_id="qwen_32b",
+            id="turn1_initial_llama_70b",
+            agent_id="llama_70b",
             role="initial_ranking",
             contributes_to_aggregation=False,
         ),
@@ -532,8 +563,8 @@ def _turns(prompt_paths: dict[str, Path]) -> list[TurnConfig]:
             contributes_to_aggregation=False,
         ),
         TurnConfig(
-            id="turn3_revision_32b",
-            agent_id="qwen_32b",
+            id="turn3_revision_llama_70b",
+            agent_id="llama_70b",
             role="revised_ranking",
             contributes_to_aggregation=True,
         ),
@@ -559,13 +590,13 @@ def _agent_config_by_id(prompt_paths: dict[str, Path]):
     from debate.config import AgentConfig
 
     return {
-        "qwen_32b": AgentConfig(
-            id="qwen_32b",
-            name="Qwen 32B",
+        "llama_70b": AgentConfig(
+            id="llama_70b",
+            name="Llama 70B",
             role="Interpretive QDA Methodologist",
             backend="dry-run",
             model_path=None,
-            prompt_path=prompt_paths["qwen_32b"],
+            prompt_path=prompt_paths["llama_70b"],
         ),
         "qwen_72b": AgentConfig(
             id="qwen_72b",
@@ -592,12 +623,12 @@ def _dummy_config(
         datasets=(DatasetConfig(dataset="energy", enriched_parent_path=enriched_parent),),
         agents=(
             AgentConfig(
-                id="qwen_32b",
-                name="Qwen 32B",
+                id="llama_70b",
+                name="Llama 70B",
                 role="Interpretive QDA Methodologist",
                 backend="dry-run",
                 model_path=None,
-                prompt_path=tmp_path / "qwen32.txt",
+                prompt_path=tmp_path / "llama70.txt",
             ),
             AgentConfig(
                 id="qwen_72b",

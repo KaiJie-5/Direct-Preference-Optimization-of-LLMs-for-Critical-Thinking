@@ -1,7 +1,7 @@
 {
   "review_pack_path": "/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking/outputs/researchers_preference_review/",
   "output_root": "/iridisfs/scratch/kjl1a21/DPO/data/multi_agent_debate_rankings",
-  "run_name": "qwen_32b_72b_four_turn_debate",
+  "run_name": "llama_70b_qwen_72b_four_turn_debate",
   "ranking_method": "multi_agent_fine_grained_ranking",
   "limit": null,
   "datasets": [
@@ -26,14 +26,14 @@
   ],
   "agents": [
     {
-      "id": "qwen_32b",
-      "name": "Qwen2.5-32B-Instruct",
+      "id": "llama_70b",
+      "name": "Llama-3.3-70B-Instruct",
       "role": "Interpretive QDA Methodologist",
       "backend": "transformers",
-      "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Qwen__Qwen2.5-32B-Instruct/",
-      "prompt_path": "../prompts/debate/qwen_32b_debate_placeholder.txt",
-      "torch_dtype": "auto",
-      "device_map": "auto",
+      "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Llama-3.3-70B-Instruct",
+      "prompt_path": "../prompts/debate/llama_70b_debate_placeholder.txt",
+      "torch_dtype": "bfloat16",
+      "device_map": 0,
       "trust_remote_code": false
     },
     {
@@ -43,15 +43,15 @@
       "backend": "transformers",
       "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Qwen__Qwen2.5-72B-Instruct",
       "prompt_path": "../prompts/debate/qwen_72b_debate_placeholder.txt",
-      "torch_dtype": "auto",
-      "device_map": "auto",
+      "torch_dtype": "bfloat16",
+      "device_map": 1,
       "trust_remote_code": false
     }
   ],
   "turns": [
     {
-      "id": "turn1_initial_32b",
-      "agent_id": "qwen_32b",
+      "id": "turn1_initial_llama_70b",
+      "agent_id": "llama_70b",
       "role": "initial_ranking",
       "contributes_to_aggregation": false
     },
@@ -62,8 +62,8 @@
       "contributes_to_aggregation": false
     },
     {
-      "id": "turn3_revision_32b",
-      "agent_id": "qwen_32b",
+      "id": "turn3_revision_llama_70b",
+      "agent_id": "llama_70b",
       "role": "revised_ranking",
       "contributes_to_aggregation": true
     },
@@ -86,9 +86,6 @@
     "wrong_code",
     "descriptive_not_answering_research_question",
     "too_broad_code",
-    "useful_analytical_code",
-    "reflective_question_q1",
-    "reflective_question_q2",
-    "reflective_question_q3"
+    "useful_analytical_code"
   ]
 }

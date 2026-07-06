@@ -118,8 +118,18 @@ class TransformersChatAgent:
         generation_kwargs: dict[str, Any] = {
             "max_new_tokens": generation.max_new_tokens,
             "do_sample": generation.do_sample,
-            "pad_token_id": self.tokenizer.eos_token_id,
         }
+        native_generation = self.model.generation_config
+        eos_token_id = native_generation.eos_token_id
+        if eos_token_id is not None:
+            generation_kwargs["eos_token_id"] = eos_token_id
+        pad_token_id = native_generation.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.pad_token_id
+        if pad_token_id is None:
+            pad_token_id = self.tokenizer.eos_token_id
+        if pad_token_id is not None:
+            generation_kwargs["pad_token_id"] = pad_token_id
         if generation.do_sample:
             generation_kwargs["temperature"] = generation.temperature
             generation_kwargs["top_p"] = generation.top_p
