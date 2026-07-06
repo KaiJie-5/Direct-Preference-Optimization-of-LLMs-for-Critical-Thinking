@@ -15,7 +15,7 @@ from debate.config import (
     debate_config_from_mapping,
 )
 from debate.loaders import build_block_inputs
-from debate.ranking import _rank_block, run_debate_ranking
+from debate.ranking import _generate_valid_ranking, _rank_block, run_debate_ranking
 from debate.schema import (
     REVIEW_BLOCKS,
     configured_review_blocks,
@@ -65,32 +65,81 @@ def test_reflective_question_blocks_are_rejected() -> None:
 
 
 def test_validate_ranking_payload_rejects_incomplete_duplicate_and_unknown_labels() -> None:
+    valid_payload = _ranking_payload(
+        ["A", "B", "C", "D", "E"],
+        "valid",
+    )
     assert validate_ranking_payload(
-        {"ranking": ["A", "B", "C", "D", "E"], "rationale": "ok"},
+        valid_payload,
         record_id="INT01_SEG001",
         review_block="wrong_code",
     ) == []
 
+    duplicate_payload = dict(valid_payload)
+    duplicate_payload["ranking"] = ["A", "A", "C", "D", "E"]
     duplicate_errors = validate_ranking_payload(
-        {"ranking": ["A", "A", "C", "D", "E"], "rationale": "ok"},
+        duplicate_payload,
         record_id="INT01_SEG001",
         review_block="wrong_code",
     )
     assert any("complete permutation" in error for error in duplicate_errors)
 
+    incomplete_payload = dict(valid_payload)
+    incomplete_payload["ranking"] = ["A", "B"]
     incomplete_errors = validate_ranking_payload(
-        {"ranking": ["A", "B"], "rationale": "ok"},
+        incomplete_payload,
         record_id="INT01_SEG001",
         review_block="wrong_code",
     )
     assert any("exactly 5" in error for error in incomplete_errors)
 
+    unknown_payload = dict(valid_payload)
+    unknown_payload["ranking"] = ["A", "B", "C", "D", "Z"]
     unknown_errors = validate_ranking_payload(
-        {"ranking": ["A", "B", "C", "D", "Z"], "rationale": "ok"},
+        unknown_payload,
         record_id="INT01_SEG001",
         review_block="wrong_code",
     )
     assert any("complete permutation" in error for error in unknown_errors)
+
+    missing_assessment_payload = dict(valid_payload)
+    missing_assessment_payload["candidate_assessments"] = {
+        label: f"assessment {label}" for label in ("A", "B", "C", "D")
+    }
+    assessment_errors = validate_ranking_payload(
+        missing_assessment_payload,
+        record_id="INT01_SEG001",
+        review_block="wrong_code",
+    )
+    assert any("exactly the keys" in error for error in assessment_errors)
+
+
+def test_prose_only_output_is_corrected_with_structured_json_retry() -> None:
+    agent = QueueDebateAgent(
+        "llama_70b",
+        [
+            "Candidate A is strongest, followed by B, C, D, and E.",
+            _ranking_text(["A", "B", "C", "D", "E"], "corrected"),
+        ],
+    )
+    result = _generate_valid_ranking(
+        agent=agent,
+        messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "user"},
+        ],
+        generation=GenerationConfig(json_retry_attempts=1),
+        record_id="INT01_SEG001",
+        review_block="wrong_code",
+    )
+
+    assert result["parse_status"] == "valid"
+    assert result["attempt_count"] == 2
+    assert len(agent.calls[1]) == 4
+    retry_instruction = agent.calls[1][-1]["content"]
+    assert "candidate_assessments" in retry_instruction
+    assert "debate_response" in retry_instruction
+    assert "uncertainty" in retry_instruction
 
 
 def test_borda_aggregation_uses_qwen_72b_tiebreak_and_records_it() -> None:
@@ -115,7 +164,7 @@ def test_borda_aggregation_uses_qwen_72b_tiebreak_and_records_it() -> None:
     assert result["tiebreaks"][0]["applied_order"] == ["B", "A"]
 
 
-def test_llama_qwen_debate_prompt_templates_start_with_task_body() -> None:
+def test_llama_qwen_debate_prompt_templates_have_distinct_contracts() -> None:
     repo_root = Path(__file__).parents[1]
     llama70 = (
         repo_root / "prompts" / "debate" / "llama_70b_debate_placeholder.txt"
@@ -124,31 +173,42 @@ def test_llama_qwen_debate_prompt_templates_start_with_task_body() -> None:
         repo_root / "prompts" / "debate" / "qwen_72b_debate_placeholder.txt"
     ).read_text(encoding="utf-8")
 
-    assert llama70.splitlines()[0] == "Rank Candidate A-E for one qualitative review block."
-    assert (
-        qwen72.splitlines()[0]
-        == "Audit and rank Candidate A-E for one qualitative review block."
+    assert llama70.strip()
+    assert qwen72.strip()
+    assert llama70 != qwen72
+    assert "constructive Interpretive QDA Methodologist" in llama70
+    assert "Contestability and Reflexive Evidence Auditor" in qwen72
+    assert "initial_ranking" in llama70
+    assert "revised_ranking" in llama70
+    assert "response_agreement_disagreement" in qwen72
+    assert "final_ranking" in qwen72
+    placeholder_names = (
+        "turn_role",
+        "dataset",
+        "record_id",
+        "transcript_id",
+        "segment_id",
+        "review_block",
+        "review_block_title",
+        "research_questions",
+        "previous_context",
+        "participant_segment_text",
+        "next_context",
+        "candidate_table_json",
+        "previous_agent_trace_json",
     )
     for template in (llama70, qwen72):
         assert not template.startswith("You are {agent_name}. Act as")
-        assert "Previous rankings and rationales JSON:" in template
-        assert "Previous agent trace JSON:" not in template
-        for placeholder in (
-            "{turn_role}",
-            "{dataset}",
-            "{record_id}",
-            "{transcript_id}",
-            "{segment_id}",
-            "{review_block}",
-            "{review_block_title}",
-            "{research_questions}",
-            "{previous_context}",
-            "{participant_segment_text}",
-            "{next_context}",
-            "{candidate_table_json}",
-            "{previous_agent_trace_json}",
-        ):
-            assert placeholder in template
+        assert "Previous debate trace JSON:" in template
+        assert "candidate_assessments" in template
+        assert "debate_response" in template
+        assert "uncertainty" in template
+        assert "reflective_question" not in template
+        for name in placeholder_names:
+            assert "{" + name + "}" in template
+        rendered = template.format_map({name: f"VALUE_{name}" for name in placeholder_names})
+        for name in placeholder_names:
+            assert "{" + name + "}" not in rendered
 
 
 def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
@@ -158,15 +218,17 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
     llama70_prompt = tmp_path / "llama70.txt"
     qwen72_prompt = tmp_path / "qwen72.txt"
     llama70_prompt.write_text(
-        "LLAMA70 {agent_role} {turn_id} {record_id} {review_block} "
+        "LLAMA70 {agent_role} {turn_id}\nRecord ID: {record_id}\n"
+        "Review block: {review_block}\n"
         "{research_questions} {previous_context} {participant_segment_text} "
         "{next_context} {candidate_table_json} "
-        "Previous rankings and rationales JSON: {previous_agent_trace_json}",
+        "Previous debate trace JSON: {previous_agent_trace_json}",
         encoding="utf-8",
     )
     qwen72_prompt.write_text(
-        "QWEN72 {agent_role} {turn_id} {record_id} {review_block} "
-        "Previous rankings and rationales JSON: {previous_agent_trace_json}",
+        "QWEN72 {agent_role} {turn_id}\nRecord ID: {record_id}\n"
+        "Review block: {review_block}\n"
+        "Previous debate trace JSON: {previous_agent_trace_json}",
         encoding="utf-8",
     )
     config = debate_config_from_mapping(
@@ -192,7 +254,7 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
                 {
                     "id": "qwen_72b",
                     "name": "Qwen 72B",
-                    "role": "Reflexive Evidence and Interpretation Auditor",
+                    "role": "Contestability and Reflexive Evidence Auditor",
                     "backend": "dry-run",
                     "prompt_path": str(qwen72_prompt),
                 },
@@ -288,7 +350,7 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
         "You are Llama 70B. Act as the Interpretive QDA Methodologist.\n\nLLAMA70"
     )
     assert trace_rows[1]["rendered_prompt"].startswith(
-        "You are Qwen 72B. Act as the Reflexive Evidence and Interpretation "
+        "You are Qwen 72B. Act as the Contestability and Reflexive Evidence "
         "Auditor.\n\nQWEN72"
     )
     assert "What interactions happen?" in trace_rows[0]["rendered_prompt"]
@@ -300,7 +362,7 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
     assert "QWEN72" in trace_rows[3]["rendered_prompt"]
     assert "Interpretive QDA Methodologist" in trace_rows[0]["rendered_prompt"]
     assert (
-        "Reflexive Evidence and Interpretation Auditor"
+        "Contestability and Reflexive Evidence Auditor"
         in trace_rows[1]["rendered_prompt"]
     )
     assert trace_rows[1]["turn_id"] == "turn2_response_72b"
@@ -308,6 +370,11 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
     assert '"turn_id": "turn2_response_72b"' in trace_rows[2]["rendered_prompt"]
     assert '"turn_id": "turn3_revision_llama_70b"' in trace_rows[3]["rendered_prompt"]
     assert "Dry-run ranking for smoke testing." in trace_rows[1]["rendered_prompt"]
+    assert '"candidate_assessments"' in trace_rows[1]["rendered_prompt"]
+    assert '"debate_response"' in trace_rows[1]["rendered_prompt"]
+    assert trace_rows[0]["parsed_output"]["candidate_assessments"]["A"]
+    assert trace_rows[0]["parsed_output"]["debate_response"]
+    assert trace_rows[0]["parsed_output"]["uncertainty"]
     assert all(
         "reflective_question_candidates" not in row["rendered_prompt"]
         for row in trace_rows
@@ -364,14 +431,17 @@ def test_four_turn_debate_aggregates_only_turn_3_and_turn_4(tmp_path: Path) -> N
         "You are llama_70b. Act as the Interpretive QDA Methodologist."
     )
     assert qwen72.calls[0][0]["content"] == (
-        "You are qwen_72b. Act as the Reflexive Evidence and Interpretation Auditor."
+        "You are qwen_72b. Act as the Contestability and Reflexive Evidence Auditor."
     )
     assert not llama70.calls[0][1]["content"].startswith("You are llama_70b. Act as")
-    assert "Previous rankings and rationales JSON:" in qwen72.calls[0][1]["content"]
+    assert "Previous debate trace JSON:" in qwen72.calls[0][1]["content"]
 
     turn2_user_prompt = qwen72.calls[0][1]["content"]
     assert '"turn_id": "turn1_initial_llama_70b"' in turn2_user_prompt
     assert "early llama" in turn2_user_prompt
+    assert '"candidate_assessments"' in turn2_user_prompt
+    assert '"debate_response": "early llama debate response."' in turn2_user_prompt
+    assert '"uncertainty": "early llama uncertainty."' in turn2_user_prompt
     assert "early 72b" not in turn2_user_prompt
 
     turn3_user_prompt = llama70.calls[1][1]["content"]
@@ -530,7 +600,22 @@ class QueueDebateAgent:
 
 
 def _ranking_text(ranking: list[str], rationale: str) -> str:
-    return json.dumps({"ranking": ranking, "rationale": rationale})
+    return json.dumps(_ranking_payload(ranking, rationale))
+
+
+def _ranking_payload(ranking: list[str], rationale: str) -> dict[str, Any]:
+    return {
+        "record_id": "INT01_SEG001",
+        "review_block": "wrong_code",
+        "candidate_assessments": {
+            label: f"{rationale} assessment for Candidate {label}."
+            for label in ("A", "B", "C", "D", "E")
+        },
+        "debate_response": f"{rationale} debate response.",
+        "uncertainty": f"{rationale} uncertainty.",
+        "ranking": ranking,
+        "rationale": rationale,
+    }
 
 
 def _write_turn_prompts(tmp_path: Path) -> dict[str, Path]:
@@ -540,8 +625,9 @@ def _write_turn_prompts(tmp_path: Path) -> dict[str, Path]:
     }
     for agent_id, path in paths.items():
         path.write_text(
-            f"{agent_id} {{agent_role}} {{turn_id}} {{record_id}} "
-            "{review_block} Previous rankings and rationales JSON: "
+            f"{agent_id} {{agent_role}} {{turn_id}}\n"
+            "Record ID: {record_id}\nReview block: {review_block}\n"
+            "Previous debate trace JSON: "
             "{previous_agent_trace_json}",
             encoding="utf-8",
         )
@@ -601,7 +687,7 @@ def _agent_config_by_id(prompt_paths: dict[str, Path]):
         "qwen_72b": AgentConfig(
             id="qwen_72b",
             name="Qwen 72B",
-            role="Reflexive Evidence and Interpretation Auditor",
+            role="Contestability and Reflexive Evidence Auditor",
             backend="dry-run",
             model_path=None,
             prompt_path=prompt_paths["qwen_72b"],
@@ -633,7 +719,7 @@ def _dummy_config(
             AgentConfig(
                 id="qwen_72b",
                 name="Qwen 72B",
-                role="Reflexive Evidence and Interpretation Auditor",
+                role="Contestability and Reflexive Evidence Auditor",
                 backend="dry-run",
                 model_path=None,
                 prompt_path=tmp_path / "qwen72.txt",

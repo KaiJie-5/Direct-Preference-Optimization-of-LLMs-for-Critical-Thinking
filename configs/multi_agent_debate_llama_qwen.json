@@ -39,7 +39,7 @@
     {
       "id": "qwen_72b",
       "name": "Qwen2.5-72B-Instruct",
-      "role": "Reflexive Evidence and Interpretation Auditor",
+      "role": "Contestability and Reflexive Evidence Auditor",
       "backend": "transformers",
       "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Qwen__Qwen2.5-72B-Instruct",
       "prompt_path": "../prompts/debate/qwen_72b_debate_placeholder.txt",
@@ -75,7 +75,7 @@
     }
   ],
   "generation": {
-    "max_new_tokens": 2048,
+    "max_new_tokens": 8192,
     "temperature": 0.0,
     "top_p": 1.0,
     "do_sample": false,

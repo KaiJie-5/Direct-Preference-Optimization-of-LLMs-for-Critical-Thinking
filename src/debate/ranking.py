@@ -230,6 +230,11 @@ def _rank_block(
             "contributes_to_aggregation": turn_config.contributes_to_aggregation,
             "agent_id": agent.agent_id,
             "agent_name": agent.name,
+            "candidate_assessments": turn["parsed_output"][
+                "candidate_assessments"
+            ],
+            "debate_response": turn["parsed_output"]["debate_response"],
+            "uncertainty": turn["parsed_output"]["uncertainty"],
             "ranking": ranking,
             "rationale": turn["parsed_output"]["rationale"],
         }
@@ -312,9 +317,12 @@ def _generate_valid_ranking(
             {
                 "role": "user",
                 "content": (
-                    "Your previous answer was invalid for this ranking task. "
-                    "Return only one JSON object with a complete Candidate A-E "
-                    f"ranking and rationale. Validation errors: {errors}"
+                    "Your previous answer was invalid for this debate ranking task. "
+                    "Return only one strict JSON object with record_id, review_block, "
+                    "candidate_assessments containing exactly non-empty A-E strings, "
+                    "non-empty debate_response, non-empty uncertainty, a complete "
+                    "Candidate A-E ranking, and a non-empty rationale. "
+                    f"Validation errors: {errors}"
                 ),
             },
         ]
@@ -386,7 +394,11 @@ def _long_row(
     agent_rankings = {
         item["turn_id"]: {
             "agent_id": item["agent_id"],
+            "candidate_assessments": item["candidate_assessments"],
+            "debate_response": item["debate_response"],
+            "uncertainty": item["uncertainty"],
             "ranking": item["ranking"],
+            "rationale": item["rationale"],
             "contributes_to_aggregation": item["contributes_to_aggregation"],
         }
         for item in result.get("agent_rankings", [])

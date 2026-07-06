@@ -46,6 +46,14 @@ class DryRunDebateAgent:
         started = time.perf_counter()
         text = json.dumps(
             {
+                "record_id": _message_value(messages, "Record ID"),
+                "review_block": _message_value(messages, "Review block"),
+                "candidate_assessments": {
+                    label: f"Dry-run assessment for Candidate {label}."
+                    for label in self.ranking
+                },
+                "debate_response": "Dry-run debate response for smoke testing.",
+                "uncertainty": "Dry-run uncertainty for smoke testing.",
                 "ranking": self.ranking,
                 "rationale": "Dry-run ranking for smoke testing.",
             }
@@ -115,8 +123,19 @@ class TransformersChatAgent:
         inputs = self.tokenizer(rendered_prompt, return_tensors="pt")
         inputs = {key: value.to(self.model.device) for key, value in inputs.items()}
         prompt_token_count = int(inputs["input_ids"].shape[-1])
+        max_new_tokens = generation.max_new_tokens
+        model_config = getattr(self.model, "config", None)
+        context_window = getattr(model_config, "max_position_embeddings", None)
+        if isinstance(context_window, int):
+            remaining_tokens = context_window - prompt_token_count
+            if remaining_tokens <= 0:
+                raise ValueError(
+                    f"Prompt has {prompt_token_count} tokens, which reaches or exceeds "
+                    f"the model context window of {context_window}."
+                )
+            max_new_tokens = min(max_new_tokens, remaining_tokens)
         generation_kwargs: dict[str, Any] = {
-            "max_new_tokens": generation.max_new_tokens,
+            "max_new_tokens": max_new_tokens,
             "do_sample": generation.do_sample,
         }
         native_generation = self.model.generation_config
@@ -145,6 +164,8 @@ class TransformersChatAgent:
                 "backend": "transformers",
                 "model_path": self.model_path,
                 "generation_kwargs": generation_kwargs,
+                "configured_max_new_tokens": generation.max_new_tokens,
+                "model_context_window": context_window,
                 "prompt_token_count": prompt_token_count,
                 "new_token_count": int(new_tokens.shape[-1]),
             },
@@ -178,3 +199,12 @@ def _resolve_torch_dtype(torch: Any, torch_dtype: str) -> Any:
     if not hasattr(torch, torch_dtype):
         raise ValueError(f"Unknown torch dtype: {torch_dtype}")
     return getattr(torch, torch_dtype)
+
+
+def _message_value(messages: list[dict[str, str]], label: str) -> str:
+    prefix = f"{label}:"
+    for message in reversed(messages):
+        for line in message["content"].splitlines():
+            if line.startswith(prefix):
+                return line.removeprefix(prefix).strip()
+    return ""

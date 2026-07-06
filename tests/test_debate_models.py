@@ -26,6 +26,7 @@ def test_llama_qwen_config_uses_separate_gpus_and_four_code_blocks() -> None:
     assert config.agents[0].prompt_path.name == "llama_70b_debate_placeholder.txt"
     assert config.generation.do_sample is False
     assert config.generation.temperature == 0.0
+    assert config.generation.max_new_tokens == 8192
     assert config.review_blocks == (
         "wrong_code",
         "descriptive_not_answering_research_question",
@@ -153,6 +154,7 @@ def test_generation_uses_native_chat_template_eos_and_padding(
 
     class FakeModel:
         device = "cuda:0"
+        config = SimpleNamespace(max_position_embeddings=131072)
         generation_config = SimpleNamespace(
             eos_token_id=[128001, 128008, 128009],
             pad_token_id=native_pad_token_id,
@@ -193,6 +195,7 @@ def test_generation_uses_native_chat_template_eos_and_padding(
     assert generation_kwargs["eos_token_id"] == [128001, 128008, 128009]
     assert generation_kwargs["pad_token_id"] == expected_pad_token_id
     assert generation_kwargs["do_sample"] is False
+    assert generation_kwargs["max_new_tokens"] == 8192
 
 
 def _minimal_config_payload(tmp_path: Path) -> dict:

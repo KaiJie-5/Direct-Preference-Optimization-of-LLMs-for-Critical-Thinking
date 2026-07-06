@@ -100,6 +100,29 @@ def validate_ranking_payload(
     if payload is None:
         return ["No JSON object could be parsed."]
 
+    assessments = payload.get("candidate_assessments")
+    if not isinstance(assessments, dict):
+        errors.append("candidate_assessments must be an object keyed by Candidate A-E.")
+    else:
+        assessment_labels = set(assessments)
+        expected_labels = set(candidate_labels)
+        if assessment_labels != expected_labels:
+            errors.append(
+                "candidate_assessments must contain exactly the keys "
+                f"{list(candidate_labels)}."
+            )
+        for label in candidate_labels:
+            assessment = assessments.get(label)
+            if not isinstance(assessment, str) or not assessment.strip():
+                errors.append(
+                    f"candidate_assessments.{label} must be a non-empty string."
+                )
+
+    for field_name in ("debate_response", "uncertainty"):
+        value = payload.get(field_name)
+        if not isinstance(value, str) or not value.strip():
+            errors.append(f"{field_name} must be a non-empty string.")
+
     ranking = payload.get("ranking")
     if not isinstance(ranking, list):
         errors.append("ranking must be a list.")
@@ -121,15 +144,15 @@ def validate_ranking_payload(
         errors.append("rationale must be a non-empty string.")
 
     output_record_id = payload.get("record_id")
-    if output_record_id is not None and output_record_id != record_id:
+    if output_record_id != record_id:
         errors.append(
-            f"record_id must be {record_id!r} when supplied, got {output_record_id!r}."
+            f"record_id must be {record_id!r}, got {output_record_id!r}."
         )
 
     output_block = payload.get("review_block")
-    if output_block is not None and output_block != review_block:
+    if output_block != review_block:
         errors.append(
-            f"review_block must be {review_block!r} when supplied, got {output_block!r}."
+            f"review_block must be {review_block!r}, got {output_block!r}."
         )
 
     return errors

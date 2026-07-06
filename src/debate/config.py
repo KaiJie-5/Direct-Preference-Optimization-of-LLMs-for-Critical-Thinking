@@ -40,7 +40,7 @@ class TurnConfig:
 
 @dataclass(frozen=True, slots=True)
 class GenerationConfig:
-    max_new_tokens: int = 2048
+    max_new_tokens: int = 8192
     temperature: float = 0.0
     top_p: float = 1.0
     do_sample: bool = False
@@ -121,7 +121,7 @@ def debate_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> De
 
     generation_payload = payload.get("generation", {})
     generation = GenerationConfig(
-        max_new_tokens=int(generation_payload.get("max_new_tokens", 2048)),
+        max_new_tokens=int(generation_payload.get("max_new_tokens", 8192)),
         temperature=float(generation_payload.get("temperature", 0.0)),
         top_p=float(generation_payload.get("top_p", 1.0)),
         do_sample=bool(generation_payload.get("do_sample", False)),
