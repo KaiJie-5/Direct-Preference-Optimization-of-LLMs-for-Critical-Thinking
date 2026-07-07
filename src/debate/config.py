@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, TypeAlias
 
 
 DeviceMapValue: TypeAlias = str | int | dict[str, str | int]
+MaxMemoryValue: TypeAlias = dict[int, str]
+_MEMORY_VALUE_PATTERN = re.compile(r"^[1-9][0-9]*(?:\.[0-9]+)?\s*(?:GiB|MiB|GB|MB)$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,6 +30,7 @@ class AgentConfig:
     prompt_path: Path
     torch_dtype: str = "auto"
     device_map: DeviceMapValue = "auto"
+    max_memory: MaxMemoryValue | None = None
     trust_remote_code: bool = False
 
 
@@ -92,6 +96,7 @@ def debate_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> De
             prompt_path=_required_path(item["prompt_path"], base_dir),
             torch_dtype=str(item.get("torch_dtype", "auto")),
             device_map=_device_map(item.get("device_map", "auto")),
+            max_memory=_max_memory(item.get("max_memory")),
             trust_remote_code=bool(item.get("trust_remote_code", False)),
         )
         for item in payload.get("agents", [])
@@ -178,6 +183,7 @@ def config_to_jsonable(config: DebateConfig) -> dict[str, Any]:
                 "prompt_path": str(item.prompt_path),
                 "torch_dtype": item.torch_dtype,
                 "device_map": item.device_map,
+                "max_memory": item.max_memory,
                 "trust_remote_code": item.trust_remote_code,
             }
             for item in config.agents
@@ -228,3 +234,30 @@ def _device_map(value: Any) -> DeviceMapValue:
     ):
         return dict(value)
     raise ValueError("device_map must be a device string, GPU index, or mapping.")
+
+
+def _max_memory(value: Any) -> MaxMemoryValue | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or not value:
+        raise ValueError("max_memory must be a non-empty mapping of GPU index to memory.")
+
+    parsed: MaxMemoryValue = {}
+    for raw_key, raw_memory in value.items():
+        if isinstance(raw_key, bool):
+            raise ValueError("max_memory keys must be GPU indexes.")
+        if isinstance(raw_key, int):
+            gpu_index = raw_key
+        elif isinstance(raw_key, str) and raw_key.isdecimal():
+            gpu_index = int(raw_key)
+        else:
+            raise ValueError("max_memory keys must be GPU indexes.")
+        if gpu_index < 0:
+            raise ValueError("max_memory keys must be non-negative GPU indexes.")
+        if not isinstance(raw_memory, str) or not _MEMORY_VALUE_PATTERN.match(raw_memory):
+            raise ValueError(
+                "max_memory values must be strings like '76GiB', '76000MiB', or '76GB'."
+            )
+        parsed[gpu_index] = raw_memory
+
+    return parsed

@@ -11,14 +11,18 @@ from debate.agents import TransformersChatAgent
 from debate.config import AgentConfig, GenerationConfig, debate_config_from_mapping, load_debate_config
 
 
-def test_llama_qwen_config_uses_separate_gpus_and_four_code_blocks() -> None:
+def test_llama_qwen_config_uses_controlled_five_gpu_sharding_and_four_code_blocks() -> None:
     repo_root = Path(__file__).parents[1]
     config = load_debate_config(
         repo_root / "configs" / "multi_agent_debate_llama_qwen.json"
     )
 
     assert [agent.id for agent in config.agents] == ["llama_70b", "qwen_72b"]
-    assert [agent.device_map for agent in config.agents] == [0, 1]
+    assert [agent.device_map for agent in config.agents] == ["auto", "auto"]
+    assert [agent.max_memory for agent in config.agents] == [
+        {0: "76GiB", 1: "76GiB"},
+        {2: "76GiB", 3: "76GiB", 4: "76GiB"},
+    ]
     assert [agent.torch_dtype for agent in config.agents] == ["bfloat16", "bfloat16"]
     assert config.agents[0].model_path == (
         "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Llama-3.3-70B-Instruct"
@@ -52,6 +56,28 @@ def test_device_map_accepts_gpu_indexes_and_rejects_booleans(tmp_path: Path) -> 
 
     payload["agents"][0]["device_map"] = True
     with pytest.raises(ValueError, match="device_map"):
+        debate_config_from_mapping(payload, base_dir=tmp_path)
+
+
+def test_max_memory_accepts_gpu_indexes_and_rejects_offload_keys(
+    tmp_path: Path,
+) -> None:
+    payload = _minimal_config_payload(tmp_path)
+    payload["agents"][0]["device_map"] = "auto"
+    payload["agents"][0]["max_memory"] = {"0": "76GiB", "1": "76GiB"}
+    config = debate_config_from_mapping(payload, base_dir=tmp_path)
+    assert config.agents[0].max_memory == {0: "76GiB", 1: "76GiB"}
+
+    payload["agents"][0]["max_memory"] = {"cpu": "300GiB"}
+    with pytest.raises(ValueError, match="max_memory"):
+        debate_config_from_mapping(payload, base_dir=tmp_path)
+
+    payload["agents"][0]["max_memory"] = {}
+    with pytest.raises(ValueError, match="max_memory"):
+        debate_config_from_mapping(payload, base_dir=tmp_path)
+
+    payload["agents"][0]["max_memory"] = {"0": "lots"}
+    with pytest.raises(ValueError, match="max_memory"):
         debate_config_from_mapping(payload, base_dir=tmp_path)
 
 
@@ -107,6 +133,124 @@ def test_transformers_agent_loads_bfloat16_on_explicit_gpu(
         "trust_remote_code": False,
     }
     assert calls["eval"] is True
+
+
+def test_transformers_agent_loads_bfloat16_with_bounded_auto_device_map(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: dict[str, object] = {}
+    fake_torch = ModuleType("torch")
+    fake_torch.bfloat16 = object()
+
+    class FakeTokenizerLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> object:
+            calls["tokenizer"] = (model_path, kwargs)
+            return SimpleNamespace()
+
+    class FakeLoadedModel:
+        hf_device_map = {"model.embed_tokens": 0, "model.layers.0": "cuda:1"}
+
+        def eval(self) -> None:
+            calls["eval"] = True
+
+    class FakeModelLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> FakeLoadedModel:
+            calls["model"] = (model_path, kwargs)
+            return FakeLoadedModel()
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.AutoTokenizer = FakeTokenizerLoader
+    fake_transformers.AutoModelForCausalLM = FakeModelLoader
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    agent = TransformersChatAgent(
+        AgentConfig(
+            id="llama_70b",
+            name="Llama 70B",
+            role="Methodologist",
+            backend="transformers",
+            model_path="/models/llama",
+            prompt_path=tmp_path / "prompt.txt",
+            torch_dtype="bfloat16",
+            device_map="auto",
+            max_memory={0: "76GiB", 1: "76GiB"},
+        )
+    )
+
+    model_path, model_kwargs = calls["model"]
+    assert model_path == "/models/llama"
+    assert model_kwargs == {
+        "torch_dtype": fake_torch.bfloat16,
+        "device_map": "auto",
+        "trust_remote_code": False,
+        "max_memory": {0: "76GiB", 1: "76GiB"},
+    }
+    assert agent.metadata()["max_memory"] == {0: "76GiB", 1: "76GiB"}
+    assert agent.metadata()["hf_device_map"] == {
+        "model.embed_tokens": 0,
+        "model.layers.0": "cuda:1",
+    }
+    assert calls["eval"] is True
+
+
+@pytest.mark.parametrize(
+    "hf_device_map",
+    [
+        {"model.layers.0": "cpu"},
+        {"model.layers.0": "disk"},
+        {"model.layers.0": "cuda:4"},
+        None,
+    ],
+)
+def test_transformers_agent_rejects_unverified_or_unsafe_auto_placement(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    hf_device_map: object,
+) -> None:
+    fake_torch = ModuleType("torch")
+    fake_torch.bfloat16 = object()
+
+    class FakeTokenizerLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> object:
+            return SimpleNamespace()
+
+    class FakeLoadedModel:
+        def eval(self) -> None:
+            pass
+
+    if hf_device_map is not None:
+        FakeLoadedModel.hf_device_map = hf_device_map
+
+    class FakeModelLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> FakeLoadedModel:
+            return FakeLoadedModel()
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.AutoTokenizer = FakeTokenizerLoader
+    fake_transformers.AutoModelForCausalLM = FakeModelLoader
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    with pytest.raises(ValueError):
+        TransformersChatAgent(
+            AgentConfig(
+                id="llama_70b",
+                name="Llama 70B",
+                role="Methodologist",
+                backend="transformers",
+                model_path="/models/llama",
+                prompt_path=tmp_path / "prompt.txt",
+                torch_dtype="bfloat16",
+                device_map="auto",
+                max_memory={0: "76GiB", 1: "76GiB"},
+            )
+        )
 
 
 @pytest.mark.parametrize(

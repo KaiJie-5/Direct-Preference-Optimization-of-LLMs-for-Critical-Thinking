@@ -4,7 +4,7 @@
 #SBATCH --account=ecs
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:4
+#SBATCH --gres=gpu:5
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=300G
 #SBATCH --time=3-00:00:00
@@ -26,6 +26,7 @@ conda activate "${CONDA_ENV}"
 cd "${PROJECT_DIR}"
 export PYTHONPATH="${PROJECT_DIR}/src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 echo "SLURM job id: ${SLURM_JOB_ID}"
 echo "Node list: ${SLURM_JOB_NODELIST}"

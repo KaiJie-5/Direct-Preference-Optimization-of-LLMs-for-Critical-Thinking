@@ -90,6 +90,7 @@ class TransformersChatAgent:
         self.model_path = config.model_path
         self.torch_dtype = config.torch_dtype
         self.device_map = config.device_map
+        self.max_memory = config.max_memory
         self.trust_remote_code = config.trust_remote_code
         self._torch = torch
         dtype = _resolve_torch_dtype(torch, config.torch_dtype)
@@ -97,12 +98,21 @@ class TransformersChatAgent:
             config.model_path,
             trust_remote_code=config.trust_remote_code,
         )
-        self.model = AutoModelForCausalLM.from_pretrained(
-            config.model_path,
-            torch_dtype=dtype,
-            device_map=config.device_map,
-            trust_remote_code=config.trust_remote_code,
-        )
+        model_kwargs: dict[str, Any] = {
+            "torch_dtype": dtype,
+            "device_map": config.device_map,
+            "trust_remote_code": config.trust_remote_code,
+        }
+        if config.max_memory is not None:
+            model_kwargs["max_memory"] = config.max_memory
+        self.model = AutoModelForCausalLM.from_pretrained(config.model_path, **model_kwargs)
+        self.hf_device_map = getattr(self.model, "hf_device_map", None)
+        if config.max_memory is not None:
+            _validate_loaded_device_map(
+                self.hf_device_map,
+                allowed_gpu_indexes=set(config.max_memory),
+                agent_id=config.id,
+            )
         self.model.eval()
 
     def generate(
@@ -183,6 +193,8 @@ class TransformersChatAgent:
             "model_path": self.model_path,
             "torch_dtype": self.torch_dtype,
             "device_map": self.device_map,
+            "max_memory": self.max_memory,
+            "hf_device_map": self.hf_device_map,
             "trust_remote_code": self.trust_remote_code,
         }
 
@@ -201,6 +213,52 @@ def _resolve_torch_dtype(torch: Any, torch_dtype: str) -> Any:
     if not hasattr(torch, torch_dtype):
         raise ValueError(f"Unknown torch dtype: {torch_dtype}")
     return getattr(torch, torch_dtype)
+
+
+def _validate_loaded_device_map(
+    hf_device_map: Any,
+    *,
+    allowed_gpu_indexes: set[int],
+    agent_id: str,
+) -> None:
+    if not isinstance(hf_device_map, dict) or not hf_device_map:
+        raise ValueError(
+            f"Agent {agent_id} was configured with max_memory, but the loaded model "
+            "did not expose a non-empty hf_device_map to verify placement."
+        )
+
+    used_gpu_indexes: set[int] = set()
+    for module_name, raw_device in hf_device_map.items():
+        device = _device_index_from_loaded_map_value(raw_device)
+        if device is None:
+            raise ValueError(
+                f"Agent {agent_id} placed module {module_name!r} on unsupported "
+                f"device {raw_device!r}; CPU/disk/offload placements are not allowed."
+            )
+        used_gpu_indexes.add(device)
+
+    unexpected_gpu_indexes = used_gpu_indexes - allowed_gpu_indexes
+    if unexpected_gpu_indexes:
+        raise ValueError(
+            f"Agent {agent_id} used GPU indexes {sorted(unexpected_gpu_indexes)}, "
+            f"outside allowed max_memory GPUs {sorted(allowed_gpu_indexes)}."
+        )
+
+
+def _device_index_from_loaded_map_value(raw_device: Any) -> int | None:
+    if isinstance(raw_device, bool):
+        return None
+    if isinstance(raw_device, int):
+        return raw_device if raw_device >= 0 else None
+
+    device_text = str(raw_device).strip().lower()
+    if device_text.isdecimal():
+        return int(device_text)
+    if device_text.startswith("cuda:"):
+        device_index = device_text.removeprefix("cuda:")
+        if device_index.isdecimal():
+            return int(device_index)
+    return None
 
 
 def _message_value(messages: list[dict[str, str]], label: str) -> str:

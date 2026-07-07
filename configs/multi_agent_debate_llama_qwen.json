@@ -33,7 +33,11 @@
       "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Llama-3.3-70B-Instruct",
       "prompt_path": "../prompts/debate/llama_70b_debate_placeholder.txt",
       "torch_dtype": "bfloat16",
-      "device_map": 0,
+      "device_map": "auto",
+      "max_memory": {
+        "0": "76GiB",
+        "1": "76GiB"
+      },
       "trust_remote_code": false
     },
     {
@@ -44,7 +48,12 @@
       "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Qwen__Qwen2.5-72B-Instruct",
       "prompt_path": "../prompts/debate/qwen_72b_debate_placeholder.txt",
       "torch_dtype": "bfloat16",
-      "device_map": 1,
+      "device_map": "auto",
+      "max_memory": {
+        "2": "76GiB",
+        "3": "76GiB",
+        "4": "76GiB"
+      },
       "trust_remote_code": false
     }
   ],
