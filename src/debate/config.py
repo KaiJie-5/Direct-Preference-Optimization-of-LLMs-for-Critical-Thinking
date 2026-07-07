@@ -9,7 +9,14 @@ from typing import Any, TypeAlias
 
 DeviceMapValue: TypeAlias = str | int | dict[str, str | int]
 MaxMemoryValue: TypeAlias = dict[int, str]
+QuantizationMethod: TypeAlias = str
 _MEMORY_VALUE_PATTERN = re.compile(r"^[1-9][0-9]*(?:\.[0-9]+)?\s*(?:GiB|MiB|GB|MB)$")
+_QUANTIZATION_METHODS = {"bitsandbytes_8bit", "prequantized_gptq"}
+
+
+@dataclass(frozen=True, slots=True)
+class QuantizationConfig:
+    method: QuantizationMethod
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,6 +39,7 @@ class AgentConfig:
     device_map: DeviceMapValue = "auto"
     max_memory: MaxMemoryValue | None = None
     trust_remote_code: bool = False
+    quantization: QuantizationConfig | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -98,6 +106,7 @@ def debate_config_from_mapping(payload: dict[str, Any], *, base_dir: Path) -> De
             device_map=_device_map(item.get("device_map", "auto")),
             max_memory=_max_memory(item.get("max_memory")),
             trust_remote_code=bool(item.get("trust_remote_code", False)),
+            quantization=_quantization(item.get("quantization")),
         )
         for item in payload.get("agents", [])
     )
@@ -185,6 +194,11 @@ def config_to_jsonable(config: DebateConfig) -> dict[str, Any]:
                 "device_map": item.device_map,
                 "max_memory": item.max_memory,
                 "trust_remote_code": item.trust_remote_code,
+                "quantization": (
+                    {"method": item.quantization.method}
+                    if item.quantization is not None
+                    else None
+                ),
             }
             for item in config.agents
         ],
@@ -261,3 +275,20 @@ def _max_memory(value: Any) -> MaxMemoryValue | None:
         parsed[gpu_index] = raw_memory
 
     return parsed
+
+
+def _quantization(value: Any) -> QuantizationConfig | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError("quantization must be an object with a supported method.")
+    method = value.get("method")
+    if not isinstance(method, str) or method not in _QUANTIZATION_METHODS:
+        raise ValueError(
+            "quantization.method must be one of "
+            f"{sorted(_QUANTIZATION_METHODS)}."
+        )
+    extra_keys = set(value) - {"method"}
+    if extra_keys:
+        raise ValueError(f"Unsupported quantization keys: {sorted(extra_keys)}")
+    return QuantizationConfig(method=method)

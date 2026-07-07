@@ -8,10 +8,16 @@ from types import ModuleType, SimpleNamespace
 import pytest
 
 from debate.agents import TransformersChatAgent
-from debate.config import AgentConfig, GenerationConfig, debate_config_from_mapping, load_debate_config
+from debate.config import (
+    AgentConfig,
+    GenerationConfig,
+    QuantizationConfig,
+    debate_config_from_mapping,
+    load_debate_config,
+)
 
 
-def test_llama_qwen_config_uses_controlled_five_gpu_sharding_and_four_code_blocks() -> None:
+def test_llama_qwen_config_uses_two_h200_8bit_layout_and_four_code_blocks() -> None:
     repo_root = Path(__file__).parents[1]
     config = load_debate_config(
         repo_root / "configs" / "multi_agent_debate_llama_qwen.json"
@@ -20,14 +26,23 @@ def test_llama_qwen_config_uses_controlled_five_gpu_sharding_and_four_code_block
     assert [agent.id for agent in config.agents] == ["llama_70b", "qwen_72b"]
     assert [agent.device_map for agent in config.agents] == ["auto", "auto"]
     assert [agent.max_memory for agent in config.agents] == [
-        {0: "76GiB", 1: "76GiB"},
-        {2: "76GiB", 3: "76GiB", 4: "76GiB"},
+        {0: "125GiB"},
+        {1: "125GiB"},
     ]
-    assert [agent.torch_dtype for agent in config.agents] == ["bfloat16", "bfloat16"]
+    assert [agent.torch_dtype for agent in config.agents] == ["bfloat16", "auto"]
+    assert [agent.quantization.method for agent in config.agents if agent.quantization] == [
+        "bitsandbytes_8bit",
+        "prequantized_gptq",
+    ]
     assert config.agents[0].model_path == (
         "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Llama-3.3-70B-Instruct"
     )
+    assert config.agents[1].model_path == (
+        "/iridisfs/scratch/kjl1a21/DPO/models/teacher/"
+        "Qwen__Qwen2.5-72B-Instruct-GPTQ-Int8"
+    )
     assert config.agents[0].prompt_path.name == "llama_70b_debate_placeholder.txt"
+    assert config.agents[1].prompt_path.name == "qwen_72b_debate_placeholder.txt"
     assert config.generation.do_sample is False
     assert config.generation.temperature == 0.0
     assert config.generation.max_new_tokens == 8192
@@ -44,6 +59,17 @@ def test_llama_qwen_config_uses_controlled_five_gpu_sharding_and_four_code_block
         "qwen_72b",
     ]
     assert config.turns[-1].contributes_to_aggregation is True
+
+
+def test_slurm_job_targets_quad_h200_two_gpu_partition() -> None:
+    repo_root = Path(__file__).parents[1]
+    text = (repo_root / "submit_job_multi_agent_debate_llama_qwen.slurm").read_text(
+        encoding="utf-8"
+    )
+
+    assert "#SBATCH --partition=quad_h200" in text
+    assert "#SBATCH --gres=gpu:2" in text
+    assert "#SBATCH --gres=gpu:5" not in text
 
 
 def test_device_map_accepts_gpu_indexes_and_rejects_booleans(tmp_path: Path) -> None:
@@ -78,6 +104,26 @@ def test_max_memory_accepts_gpu_indexes_and_rejects_offload_keys(
 
     payload["agents"][0]["max_memory"] = {"0": "lots"}
     with pytest.raises(ValueError, match="max_memory"):
+        debate_config_from_mapping(payload, base_dir=tmp_path)
+
+
+def test_quantization_accepts_supported_methods_and_rejects_unknown(
+    tmp_path: Path,
+) -> None:
+    payload = _minimal_config_payload(tmp_path)
+    payload["agents"][0]["quantization"] = {"method": "bitsandbytes_8bit"}
+    payload["agents"][1]["quantization"] = {"method": "prequantized_gptq"}
+    config = debate_config_from_mapping(payload, base_dir=tmp_path)
+
+    assert config.agents[0].quantization == QuantizationConfig(
+        method="bitsandbytes_8bit"
+    )
+    assert config.agents[1].quantization == QuantizationConfig(
+        method="prequantized_gptq"
+    )
+
+    payload["agents"][0]["quantization"] = {"method": "int2_surprise"}
+    with pytest.raises(ValueError, match="quantization.method"):
         debate_config_from_mapping(payload, base_dir=tmp_path)
 
 
@@ -132,6 +178,120 @@ def test_transformers_agent_loads_bfloat16_on_explicit_gpu(
         "device_map": 0,
         "trust_remote_code": False,
     }
+    assert calls["eval"] is True
+
+
+def test_transformers_agent_passes_bitsandbytes_8bit_config_for_llama(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: dict[str, object] = {}
+    fake_torch = ModuleType("torch")
+    fake_torch.bfloat16 = object()
+
+    class FakeBitsAndBytesConfig:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    class FakeTokenizerLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> object:
+            calls["tokenizer"] = (model_path, kwargs)
+            return SimpleNamespace()
+
+    class FakeLoadedModel:
+        hf_device_map = {"": 0}
+
+        def eval(self) -> None:
+            calls["eval"] = True
+
+    class FakeModelLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> FakeLoadedModel:
+            calls["model"] = (model_path, kwargs)
+            return FakeLoadedModel()
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.AutoTokenizer = FakeTokenizerLoader
+    fake_transformers.AutoModelForCausalLM = FakeModelLoader
+    fake_transformers.BitsAndBytesConfig = FakeBitsAndBytesConfig
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    agent = TransformersChatAgent(
+        AgentConfig(
+            id="llama_70b",
+            name="Llama 70B",
+            role="Methodologist",
+            backend="transformers",
+            model_path="/models/llama",
+            prompt_path=tmp_path / "prompt.txt",
+            torch_dtype="bfloat16",
+            device_map="auto",
+            max_memory={0: "125GiB"},
+            quantization=QuantizationConfig(method="bitsandbytes_8bit"),
+        )
+    )
+
+    _, model_kwargs = calls["model"]
+    quantization_config = model_kwargs["quantization_config"]
+    assert isinstance(quantization_config, FakeBitsAndBytesConfig)
+    assert quantization_config.kwargs == {"load_in_8bit": True}
+    assert agent.metadata()["quantization"] == {"method": "bitsandbytes_8bit"}
+    assert calls["eval"] is True
+
+
+def test_transformers_agent_does_not_pass_bitsandbytes_for_prequantized_gptq(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: dict[str, object] = {}
+    fake_torch = ModuleType("torch")
+
+    class FakeTokenizerLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> object:
+            calls["tokenizer"] = (model_path, kwargs)
+            return SimpleNamespace()
+
+    class FakeLoadedModel:
+        hf_device_map = {"": 1}
+
+        def eval(self) -> None:
+            calls["eval"] = True
+
+    class FakeModelLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> FakeLoadedModel:
+            calls["model"] = (model_path, kwargs)
+            return FakeLoadedModel()
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.AutoTokenizer = FakeTokenizerLoader
+    fake_transformers.AutoModelForCausalLM = FakeModelLoader
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    agent = TransformersChatAgent(
+        AgentConfig(
+            id="qwen_72b",
+            name="Qwen 72B",
+            role="Auditor",
+            backend="transformers",
+            model_path="/models/qwen-gptq-int8",
+            prompt_path=tmp_path / "prompt.txt",
+            torch_dtype="auto",
+            device_map="auto",
+            max_memory={1: "125GiB"},
+            quantization=QuantizationConfig(method="prequantized_gptq"),
+        )
+    )
+
+    _, model_kwargs = calls["model"]
+    assert "quantization_config" not in model_kwargs
+    assert model_kwargs["torch_dtype"] == "auto"
+    assert model_kwargs["max_memory"] == {1: "125GiB"}
+    assert agent.metadata()["quantization"] == {"method": "prequantized_gptq"}
     assert calls["eval"] is True
 
 

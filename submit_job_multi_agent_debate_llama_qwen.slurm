@@ -1,10 +1,10 @@
 #!/bin/bash
 #SBATCH --job-name=dpo_debate_llama_qwen
-#SBATCH --partition=swarm_h100
+#SBATCH --partition=quad_h200
 #SBATCH --account=ecs
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:5
+#SBATCH --gres=gpu:2
 #SBATCH --cpus-per-task=24
 #SBATCH --mem=300G
 #SBATCH --time=3-00:00:00

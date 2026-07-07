@@ -35,8 +35,10 @@
       "torch_dtype": "bfloat16",
       "device_map": "auto",
       "max_memory": {
-        "0": "76GiB",
-        "1": "76GiB"
+        "0": "125GiB"
+      },
+      "quantization": {
+        "method": "bitsandbytes_8bit"
       },
       "trust_remote_code": false
     },
@@ -45,14 +47,15 @@
       "name": "Qwen2.5-72B-Instruct",
       "role": "Contestability and Reflexive Evidence Auditor",
       "backend": "transformers",
-      "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Qwen__Qwen2.5-72B-Instruct",
+      "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Qwen__Qwen2.5-72B-Instruct-GPTQ-Int8",
       "prompt_path": "../prompts/debate/qwen_72b_debate_placeholder.txt",
-      "torch_dtype": "bfloat16",
+      "torch_dtype": "auto",
       "device_map": "auto",
       "max_memory": {
-        "2": "76GiB",
-        "3": "76GiB",
-        "4": "76GiB"
+        "1": "125GiB"
+      },
+      "quantization": {
+        "method": "prequantized_gptq"
       },
       "trust_remote_code": false
     }

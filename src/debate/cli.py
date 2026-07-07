@@ -5,6 +5,7 @@ from pathlib import Path
 
 from .compare import compare_rankings
 from .config import load_debate_config
+from .preflight import run_preflight
 from .ranking import run_debate_ranking
 
 
@@ -16,6 +17,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     rank = subparsers.add_parser("rank", help="Run multi-agent debate ranking.")
     rank.add_argument("--config", required=True, type=Path)
+
+    preflight = subparsers.add_parser(
+        "preflight",
+        help="Load configured debate agents and report device placement.",
+    )
+    preflight.add_argument("--config", required=True, type=Path)
+    preflight.add_argument(
+        "--generate-qwen-json",
+        action="store_true",
+        help="After loading both agents, ask qwen_72b for a tiny strict JSON response.",
+    )
 
     compare = subparsers.add_parser(
         "compare",
@@ -45,6 +57,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "rank":
         config = load_debate_config(args.config)
         run_debate_ranking(config)
+        return 0
+    if args.command == "preflight":
+        config = load_debate_config(args.config)
+        run_preflight(config, generate_qwen_json=args.generate_qwen_json)
         return 0
     if args.command == "compare":
         compare_rankings(

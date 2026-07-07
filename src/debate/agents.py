@@ -6,7 +6,7 @@ import time
 from dataclasses import dataclass
 from typing import Any, Protocol
 
-from .config import AgentConfig, GenerationConfig
+from .config import AgentConfig, GenerationConfig, QuantizationConfig
 
 
 @dataclass(frozen=True, slots=True)
@@ -92,6 +92,7 @@ class TransformersChatAgent:
         self.device_map = config.device_map
         self.max_memory = config.max_memory
         self.trust_remote_code = config.trust_remote_code
+        self.quantization = config.quantization
         self._torch = torch
         dtype = _resolve_torch_dtype(torch, config.torch_dtype)
         self.tokenizer = AutoTokenizer.from_pretrained(
@@ -105,6 +106,9 @@ class TransformersChatAgent:
         }
         if config.max_memory is not None:
             model_kwargs["max_memory"] = config.max_memory
+        quantization_config = _model_quantization_config(config.quantization)
+        if quantization_config is not None:
+            model_kwargs["quantization_config"] = quantization_config
         self.model = AutoModelForCausalLM.from_pretrained(config.model_path, **model_kwargs)
         self.hf_device_map = getattr(self.model, "hf_device_map", None)
         if config.max_memory is not None:
@@ -196,6 +200,11 @@ class TransformersChatAgent:
             "max_memory": self.max_memory,
             "hf_device_map": self.hf_device_map,
             "trust_remote_code": self.trust_remote_code,
+            "quantization": (
+                {"method": self.quantization.method}
+                if self.quantization is not None
+                else None
+            ),
         }
 
 
@@ -213,6 +222,23 @@ def _resolve_torch_dtype(torch: Any, torch_dtype: str) -> Any:
     if not hasattr(torch, torch_dtype):
         raise ValueError(f"Unknown torch dtype: {torch_dtype}")
     return getattr(torch, torch_dtype)
+
+
+def _model_quantization_config(config: QuantizationConfig | None) -> Any:
+    if config is None:
+        return None
+    if config.method == "prequantized_gptq":
+        return None
+    if config.method == "bitsandbytes_8bit":
+        try:
+            from transformers import BitsAndBytesConfig
+        except ImportError as exc:
+            raise RuntimeError(
+                "bitsandbytes 8-bit loading requires transformers with "
+                "BitsAndBytesConfig and the bitsandbytes package installed."
+            ) from exc
+        return BitsAndBytesConfig(load_in_8bit=True)
+    raise ValueError(f"Unsupported quantization method: {config.method}")
 
 
 def _validate_loaded_device_map(
