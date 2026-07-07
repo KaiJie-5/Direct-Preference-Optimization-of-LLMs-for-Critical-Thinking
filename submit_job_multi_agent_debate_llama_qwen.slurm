@@ -1,18 +1,17 @@
 #!/bin/bash
 #SBATCH --job-name=dpo_debate_llama_qwen
-#SBATCH --partition=quad_h200
+#SBATCH --partition=swarm_h100
 #SBATCH --account=ecs
 #SBATCH --nodes=1
 #SBATCH --ntasks-per-node=1
-#SBATCH --gres=gpu:2
-#SBATCH --cpus-per-task=12
+#SBATCH --gres=gpu:4
+#SBATCH --cpus-per-task=24
 #SBATCH --mem=300G
-#SBATCH --time=2-12:00:00
+#SBATCH --time=3-00:00:00
 #SBATCH --output=dpo_debate_llama_qwen_%j.out
 #SBATCH --error=dpo_debate_llama_qwen_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=kjl1a21@soton.ac.uk
-#SBATCH --exclude=blossom04
 
 # =========================
 # Easy configuration block
