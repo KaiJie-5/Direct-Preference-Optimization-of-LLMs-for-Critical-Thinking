@@ -20,6 +20,23 @@ CONDA_ENV="dpo"
 PROJECT_DIR="/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking"
 CONFIG_PATH="${PROJECT_DIR}/configs/multi_agent_debate_llama_qwen.json"
 
+require_file() {
+    if [[ ! -f "$1" ]]; then
+        echo "Required file does not exist: $1" >&2
+        exit 2
+    fi
+}
+
+require_directory() {
+    if [[ ! -d "$1" ]]; then
+        echo "Required directory does not exist: $1" >&2
+        exit 2
+    fi
+}
+
+require_directory "${PROJECT_DIR}"
+require_file "${CONFIG_PATH}"
+
 source ~/.bashrc
 conda activate "${CONDA_ENV}"
 
@@ -27,6 +44,8 @@ cd "${PROJECT_DIR}"
 export PYTHONPATH="${PROJECT_DIR}/src:${PYTHONPATH:-}"
 export TOKENIZERS_PARALLELISM=false
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTHONIOENCODING=utf-8
+export PYTHONUTF8=1
 
 echo "SLURM job id: ${SLURM_JOB_ID}"
 echo "Node list: ${SLURM_JOB_NODELIST}"
@@ -53,6 +72,7 @@ if command -v nvidia-smi >/dev/null 2>&1; then
     nvidia-smi
 fi
 
+echo "Running multi-agent debate ranking"
 python -m debate.cli rank --config "${CONFIG_PATH}"
 
 echo "Multi-agent debate ranking complete"

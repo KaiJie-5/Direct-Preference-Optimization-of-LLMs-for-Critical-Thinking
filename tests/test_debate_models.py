@@ -24,11 +24,8 @@ def test_llama_qwen_config_uses_two_h200_8bit_layout_and_four_code_blocks() -> N
     )
 
     assert [agent.id for agent in config.agents] == ["llama_70b", "qwen_72b"]
-    assert [agent.device_map for agent in config.agents] == ["auto", "auto"]
-    assert [agent.max_memory for agent in config.agents] == [
-        {0: "125GiB"},
-        {1: "125GiB"},
-    ]
+    assert [agent.device_map for agent in config.agents] == [{"": 0}, {"": 1}]
+    assert [agent.max_memory for agent in config.agents] == [None, None]
     assert [agent.torch_dtype for agent in config.agents] == ["bfloat16", "auto"]
     assert [agent.quantization.method for agent in config.agents if agent.quantization] == [
         "bitsandbytes_8bit",
@@ -70,6 +67,26 @@ def test_slurm_job_targets_quad_h200_two_gpu_partition() -> None:
     assert "#SBATCH --partition=quad_h200" in text
     assert "#SBATCH --gres=gpu:2" in text
     assert "#SBATCH --gres=gpu:5" not in text
+
+
+def test_slurm_job_fails_fast_and_preflights_before_ranking() -> None:
+    repo_root = Path(__file__).parents[1]
+    text = (repo_root / "submit_job_multi_agent_debate_llama_qwen.slurm").read_text(
+        encoding="utf-8"
+    )
+
+    assert "set -eo pipefail" in text
+    assert 'require_directory "${PROJECT_DIR}"' in text
+    assert 'require_file "${CONFIG_PATH}"' in text
+    assert "export PYTHONIOENCODING=utf-8" in text
+    assert "export PYTHONUTF8=1" in text
+
+    preflight = 'python -m debate.cli preflight --config "${CONFIG_PATH}" --generate-qwen-json'
+    rank = 'python -m debate.cli rank --config "${CONFIG_PATH}"'
+    assert preflight in text
+    assert rank in text
+    assert text.index(preflight) < text.index(rank)
+    assert text.index(rank) < text.index('echo "Multi-agent debate ranking complete"')
 
 
 def test_device_map_accepts_gpu_indexes_and_rejects_booleans(tmp_path: Path) -> None:
