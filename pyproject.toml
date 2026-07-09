@@ -18,6 +18,7 @@ transformers = [
   "bitsandbytes",
   "optimum",
   "gptqmodel",
+  "torchvision",
 ]
 legacy-gptq = ["auto-gptq"]
 

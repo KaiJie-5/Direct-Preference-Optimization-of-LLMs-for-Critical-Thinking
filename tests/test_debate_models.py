@@ -80,6 +80,10 @@ def test_slurm_job_fails_fast_and_preflights_before_ranking() -> None:
     assert 'require_file "${CONFIG_PATH}"' in text
     assert "export PYTHONIOENCODING=utf-8" in text
     assert "export PYTHONUTF8=1" in text
+    assert "Checking debate Python dependencies" in text
+    assert '"torchvision"' in text
+    assert '"gptqmodel"' in text
+    assert "while importing {module_name}: missing {missing_name}" in text
 
     preflight = 'python -m debate.cli preflight --config "${CONFIG_PATH}" --generate-qwen-json'
     rank = 'python -m debate.cli rank --config "${CONFIG_PATH}"'
@@ -87,6 +91,14 @@ def test_slurm_job_fails_fast_and_preflights_before_ranking() -> None:
     assert rank in text
     assert text.index(preflight) < text.index(rank)
     assert text.index(rank) < text.index('echo "Multi-agent debate ranking complete"')
+
+
+def test_transformers_extra_declares_gptq_runtime_dependencies() -> None:
+    repo_root = Path(__file__).parents[1]
+    text = (repo_root / "pyproject.toml").read_text(encoding="utf-8")
+
+    assert '"gptqmodel"' in text
+    assert '"torchvision"' in text
 
 
 def test_device_map_accepts_gpu_indexes_and_rejects_booleans(tmp_path: Path) -> None:
