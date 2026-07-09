@@ -17,6 +17,7 @@ _QUANTIZATION_METHODS = {"bitsandbytes_8bit", "prequantized_gptq"}
 @dataclass(frozen=True, slots=True)
 class QuantizationConfig:
     method: QuantizationMethod
+    backend: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -195,7 +196,7 @@ def config_to_jsonable(config: DebateConfig) -> dict[str, Any]:
                 "max_memory": item.max_memory,
                 "trust_remote_code": item.trust_remote_code,
                 "quantization": (
-                    {"method": item.quantization.method}
+                    _quantization_to_jsonable(item.quantization)
                     if item.quantization is not None
                     else None
                 ),
@@ -288,7 +289,24 @@ def _quantization(value: Any) -> QuantizationConfig | None:
             "quantization.method must be one of "
             f"{sorted(_QUANTIZATION_METHODS)}."
         )
-    extra_keys = set(value) - {"method"}
+    backend = value.get("backend")
+    if backend is not None:
+        if not isinstance(backend, str) or not backend.strip():
+            raise ValueError("quantization.backend must be a non-empty string.")
+        if method != "prequantized_gptq":
+            raise ValueError(
+                "quantization.backend is only supported for prequantized_gptq."
+            )
+        backend = backend.strip()
+
+    extra_keys = set(value) - {"method", "backend"}
     if extra_keys:
         raise ValueError(f"Unsupported quantization keys: {sorted(extra_keys)}")
-    return QuantizationConfig(method=method)
+    return QuantizationConfig(method=method, backend=backend)
+
+
+def _quantization_to_jsonable(config: QuantizationConfig) -> dict[str, Any]:
+    payload: dict[str, Any] = {"method": config.method}
+    if config.backend is not None:
+        payload["backend"] = config.backend
+    return payload

@@ -106,7 +106,11 @@ class TransformersChatAgent:
         }
         if config.max_memory is not None:
             model_kwargs["max_memory"] = config.max_memory
-        quantization_config = _model_quantization_config(config.quantization)
+        quantization_config = _model_quantization_config(
+            config.quantization,
+            model_path=config.model_path,
+            trust_remote_code=config.trust_remote_code,
+        )
         if quantization_config is not None:
             model_kwargs["quantization_config"] = quantization_config
         self.model = AutoModelForCausalLM.from_pretrained(config.model_path, **model_kwargs)
@@ -201,7 +205,7 @@ class TransformersChatAgent:
             "hf_device_map": self.hf_device_map,
             "trust_remote_code": self.trust_remote_code,
             "quantization": (
-                {"method": self.quantization.method}
+                _quantization_metadata(self.quantization)
                 if self.quantization is not None
                 else None
             ),
@@ -224,11 +228,47 @@ def _resolve_torch_dtype(torch: Any, torch_dtype: str) -> Any:
     return getattr(torch, torch_dtype)
 
 
-def _model_quantization_config(config: QuantizationConfig | None) -> Any:
+def _model_quantization_config(
+    config: QuantizationConfig | None,
+    *,
+    model_path: str | None,
+    trust_remote_code: bool,
+) -> Any:
     if config is None:
         return None
     if config.method == "prequantized_gptq":
-        return None
+        if config.backend is None:
+            return None
+        if not model_path:
+            raise ValueError("prequantized_gptq backend override requires model_path.")
+        try:
+            from transformers import AutoConfig, GPTQConfig
+        except ImportError as exc:
+            raise RuntimeError(
+                "prequantized_gptq backend override requires transformers with "
+                "AutoConfig and GPTQConfig."
+            ) from exc
+        model_config = AutoConfig.from_pretrained(
+            model_path,
+            trust_remote_code=trust_remote_code,
+        )
+        raw_quantization_config = getattr(model_config, "quantization_config", None)
+        if raw_quantization_config is None:
+            raise ValueError(
+                "prequantized_gptq backend override requires the model config to "
+                "include quantization_config."
+            )
+        if hasattr(raw_quantization_config, "to_dict"):
+            payload = dict(raw_quantization_config.to_dict())
+        elif isinstance(raw_quantization_config, dict):
+            payload = dict(raw_quantization_config)
+        else:
+            raise ValueError(
+                "prequantized_gptq model quantization_config must be a mapping or "
+                "provide to_dict()."
+            )
+        payload["backend"] = config.backend
+        return GPTQConfig.from_dict(payload)
     if config.method == "bitsandbytes_8bit":
         try:
             from transformers import BitsAndBytesConfig
@@ -239,6 +279,13 @@ def _model_quantization_config(config: QuantizationConfig | None) -> Any:
             ) from exc
         return BitsAndBytesConfig(load_in_8bit=True)
     raise ValueError(f"Unsupported quantization method: {config.method}")
+
+
+def _quantization_metadata(config: QuantizationConfig) -> dict[str, Any]:
+    payload: dict[str, Any] = {"method": config.method}
+    if config.backend is not None:
+        payload["backend"] = config.backend
+    return payload
 
 
 def _validate_loaded_device_map(

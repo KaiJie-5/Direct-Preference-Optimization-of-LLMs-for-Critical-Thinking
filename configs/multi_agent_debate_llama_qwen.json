@@ -53,7 +53,8 @@
         "": 1
       },
       "quantization": {
-        "method": "prequantized_gptq"
+        "method": "prequantized_gptq",
+        "backend": "gptq_triton"
       },
       "trust_remote_code": false
     }

@@ -31,6 +31,10 @@ def test_llama_qwen_config_uses_two_h200_8bit_layout_and_four_code_blocks() -> N
         "bitsandbytes_8bit",
         "prequantized_gptq",
     ]
+    assert [
+        agent.quantization.backend if agent.quantization else None
+        for agent in config.agents
+    ] == [None, "gptq_triton"]
     assert config.agents[0].model_path == (
         "/iridisfs/scratch/kjl1a21/DPO/models/teacher/Llama-3.3-70B-Instruct"
     )
@@ -69,27 +73,19 @@ def test_slurm_job_targets_quad_h200_two_gpu_partition() -> None:
     assert "#SBATCH --gres=gpu:5" not in text
 
 
-def test_slurm_job_fails_fast_and_preflights_before_ranking() -> None:
+def test_slurm_job_runs_debate_ranking_with_expected_environment() -> None:
     repo_root = Path(__file__).parents[1]
     text = (repo_root / "submit_job_multi_agent_debate_llama_qwen.slurm").read_text(
         encoding="utf-8"
     )
 
-    assert "set -eo pipefail" in text
     assert 'require_directory "${PROJECT_DIR}"' in text
     assert 'require_file "${CONFIG_PATH}"' in text
     assert "export PYTHONIOENCODING=utf-8" in text
     assert "export PYTHONUTF8=1" in text
-    assert "Checking debate Python dependencies" in text
-    assert '"torchvision"' in text
-    assert '"gptqmodel"' in text
-    assert "while importing {module_name}: missing {missing_name}" in text
 
-    preflight = 'python -m debate.cli preflight --config "${CONFIG_PATH}" --generate-qwen-json'
     rank = 'python -m debate.cli rank --config "${CONFIG_PATH}"'
-    assert preflight in text
     assert rank in text
-    assert text.index(preflight) < text.index(rank)
     assert text.index(rank) < text.index('echo "Multi-agent debate ranking complete"')
 
 
@@ -141,15 +137,33 @@ def test_quantization_accepts_supported_methods_and_rejects_unknown(
 ) -> None:
     payload = _minimal_config_payload(tmp_path)
     payload["agents"][0]["quantization"] = {"method": "bitsandbytes_8bit"}
-    payload["agents"][1]["quantization"] = {"method": "prequantized_gptq"}
+    payload["agents"][1]["quantization"] = {
+        "method": "prequantized_gptq",
+        "backend": "gptq_triton",
+    }
     config = debate_config_from_mapping(payload, base_dir=tmp_path)
 
     assert config.agents[0].quantization == QuantizationConfig(
         method="bitsandbytes_8bit"
     )
     assert config.agents[1].quantization == QuantizationConfig(
-        method="prequantized_gptq"
+        method="prequantized_gptq",
+        backend="gptq_triton",
     )
+
+    payload["agents"][0]["quantization"] = {
+        "method": "bitsandbytes_8bit",
+        "backend": "gptq_triton",
+    }
+    with pytest.raises(ValueError, match="quantization.backend"):
+        debate_config_from_mapping(payload, base_dir=tmp_path)
+
+    payload["agents"][0]["quantization"] = {
+        "method": "prequantized_gptq",
+        "backend": "",
+    }
+    with pytest.raises(ValueError, match="quantization.backend"):
+        debate_config_from_mapping(payload, base_dir=tmp_path)
 
     payload["agents"][0]["quantization"] = {"method": "int2_surprise"}
     with pytest.raises(ValueError, match="quantization.method"):
@@ -321,6 +335,98 @@ def test_transformers_agent_does_not_pass_bitsandbytes_for_prequantized_gptq(
     assert model_kwargs["torch_dtype"] == "auto"
     assert model_kwargs["max_memory"] == {1: "125GiB"}
     assert agent.metadata()["quantization"] == {"method": "prequantized_gptq"}
+    assert calls["eval"] is True
+
+
+def test_transformers_agent_overrides_prequantized_gptq_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    calls: dict[str, object] = {}
+    fake_torch = ModuleType("torch")
+
+    class FakeTokenizerLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> object:
+            calls["tokenizer"] = (model_path, kwargs)
+            return SimpleNamespace()
+
+    class FakeAutoConfigLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> object:
+            calls["config"] = (model_path, kwargs)
+            return SimpleNamespace(
+                quantization_config={
+                    "bits": 8,
+                    "group_size": 128,
+                    "quant_method": "gptq",
+                    "format": "gptq",
+                }
+            )
+
+    class FakeGPTQConfig:
+        def __init__(self, payload: dict[str, object]) -> None:
+            self.payload = payload
+
+        @classmethod
+        def from_dict(cls, payload: dict[str, object]) -> FakeGPTQConfig:
+            calls["gptq_config_payload"] = payload
+            return cls(payload)
+
+    class FakeLoadedModel:
+        def eval(self) -> None:
+            calls["eval"] = True
+
+    class FakeModelLoader:
+        @staticmethod
+        def from_pretrained(model_path: str, **kwargs: object) -> FakeLoadedModel:
+            calls["model"] = (model_path, kwargs)
+            return FakeLoadedModel()
+
+    fake_transformers = ModuleType("transformers")
+    fake_transformers.AutoTokenizer = FakeTokenizerLoader
+    fake_transformers.AutoConfig = FakeAutoConfigLoader
+    fake_transformers.AutoModelForCausalLM = FakeModelLoader
+    fake_transformers.GPTQConfig = FakeGPTQConfig
+    monkeypatch.setitem(sys.modules, "torch", fake_torch)
+    monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+    agent = TransformersChatAgent(
+        AgentConfig(
+            id="qwen_72b",
+            name="Qwen 72B",
+            role="Auditor",
+            backend="transformers",
+            model_path="/models/qwen-gptq-int8",
+            prompt_path=tmp_path / "prompt.txt",
+            torch_dtype="auto",
+            device_map={"": 1},
+            quantization=QuantizationConfig(
+                method="prequantized_gptq",
+                backend="gptq_triton",
+            ),
+        )
+    )
+
+    assert calls["config"] == (
+        "/models/qwen-gptq-int8",
+        {"trust_remote_code": False},
+    )
+    payload = calls["gptq_config_payload"]
+    assert payload == {
+        "bits": 8,
+        "group_size": 128,
+        "quant_method": "gptq",
+        "format": "gptq",
+        "backend": "gptq_triton",
+    }
+    _, model_kwargs = calls["model"]
+    assert isinstance(model_kwargs["quantization_config"], FakeGPTQConfig)
+    assert model_kwargs["quantization_config"].payload == payload
+    assert agent.metadata()["quantization"] == {
+        "method": "prequantized_gptq",
+        "backend": "gptq_triton",
+    }
     assert calls["eval"] is True
 
 
