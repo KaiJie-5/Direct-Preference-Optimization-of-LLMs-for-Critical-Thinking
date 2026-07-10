@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# Some HPC login shells export nounset through SHELLOPTS. Disable it before
+# loading Conda's shell integration so system startup files cannot fail on
+# optional variables.
+set +u
 set -eo pipefail
 
 # Preprocess UKDA Study 4688 without modifying the source archive.
@@ -16,7 +20,27 @@ if [[ ! -d "${INPUT_PATH}/rtf" ]]; then
     exit 2
 fi
 
-source ~/.bashrc
+CONDA_BASE="${CONDA_BASE:-}"
+if [[ -z "${CONDA_BASE}" && -n "${CONDA_EXE:-}" && -x "${CONDA_EXE}" ]]; then
+    CONDA_BASE="$("${CONDA_EXE}" info --base)"
+fi
+if [[ -z "${CONDA_BASE}" ]] && command -v conda >/dev/null 2>&1; then
+    CONDA_BASE="$(conda info --base)"
+fi
+if [[ -z "${CONDA_BASE}" ]]; then
+    for candidate in "${HOME}/miniconda3" "${HOME}/anaconda3"; do
+        if [[ -f "${candidate}/etc/profile.d/conda.sh" ]]; then
+            CONDA_BASE="${candidate}"
+            break
+        fi
+    done
+fi
+if [[ -z "${CONDA_BASE}" || ! -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
+    echo "Unable to locate Conda. Set CONDA_BASE to the Conda installation directory." >&2
+    exit 2
+fi
+
+source "${CONDA_BASE}/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 
 cd "${PROJECT_DIR}"
@@ -42,3 +66,4 @@ python -m preprocessing.cli "${ARGS[@]}"
 echo "Preprocessing complete"
 echo "Manifest: ${OUTPUT_DIR}/preprocessing_manifest.json"
 echo "QA report: ${OUTPUT_DIR}/preprocessing_qa.json"
+echo "Target filter audit: ${OUTPUT_DIR}/target_filter_audit.jsonl"

@@ -15,6 +15,7 @@ UKDA_4688_DATASET_ID = "ukda-4688"
 UKDA_4688_DOMAIN = "working families, work-life balance, and urban life"
 UKDA_4688_EXPECTED_TRANSCRIPT_COUNT = 85
 UKDA_4688_NORMALIZATION = "ukda-4688-conservative-v1"
+UKDA_4688_TARGET_SELECTION = "ukda-4688-analytical-evidence-v1"
 
 _SPEAKER_PATTERN = re.compile(
     r"(?im)^[ \t]*\*?"
@@ -34,6 +35,88 @@ _FILLER_TOKEN = re.compile(
     re.IGNORECASE,
 )
 _FILLER_SEPARATORS = re.compile(r"[\s,.;!?…'\"()\-]+")
+
+_ANALYSIS_WORD = re.compile(
+    r"[^\W_]+(?:[\u2019'\-][^\W_]+)*", re.UNICODE
+)
+_ANALYSIS_STAGE_DIRECTION = re.compile(
+    r"[\[(][^\])]*(?:laugh|laughter|cough|sigh|pause|tape|phone|door|noise|"
+    r"inaudible|overlap|side\s+(?:one|two)|end\s+of)[^\])]*[\])]",
+    re.IGNORECASE,
+)
+
+_INTERVIEWER_BACKCHANNELS = {
+    "absolutely", "exactly", "fine", "good", "i know", "i see", "no",
+    "no no", "of course", "ok", "okay", "right", "right right", "so",
+    "sure", "that is right", "that's right", "very good", "well", "yeah",
+    "yeah yeah", "yep", "yes", "yes yes",
+}
+_INTERVIEWER_BACKCHANNEL_TOKENS = {
+    "absolutely", "course", "exactly", "fine", "good", "i", "is", "it",
+    "know", "no", "of", "ok", "okay", "right", "see", "so", "sure", "that",
+    "that's", "very", "well", "yeah", "yep", "yes",
+}
+_ACKNOWLEDGEMENT_TOKENS = {
+    "absolutely", "ah", "aye", "definitely", "eh", "erm", "exactly", "fine",
+    "good", "ha", "hm", "hmm", "huh", "indeed", "laughter", "laughs", "mm",
+    "mmm", "no", "oh", "ok", "okay", "quite", "really", "right", "so",
+    "sure", "true", "um", "well", "yeah", "yea", "yep", "yer", "yes",
+}
+_ACKNOWLEDGEMENT_PHRASES = {
+    "it is",
+    "it is yeah",
+    "it was",
+    "no not at all",
+    "not at all",
+    "that is right",
+    "that is right yeah",
+    "that is true",
+    "that's right",
+    "that's right yeah",
+}
+_ECHO_DISCOURSE_TOKENS = {
+    "absolutely", "ah", "aye", "definitely", "erm", "exactly", "hm", "hmm",
+    "huh", "mm", "mmm", "oh", "ok", "okay", "right", "sure", "um", "well",
+    "yeah", "yea", "yep", "yer", "yes",
+}
+_NO_INFORMATION_PHRASES = {
+    "can't remember", "cannot remember", "do not know", "don't know",
+    "i can't remember", "i cannot remember", "i do not know", "i don't know",
+    "i know", "i mean", "it depends", "not really", "you know",
+}
+_NO_INFORMATION_PATTERN = re.compile(
+    r"^(?:i\s+)?(?:really\s+)?(?:do\s+not|don't|cannot|can't|can\s+not)\s+"
+    r"(?:really\s+)?(?:know|remember)$"
+)
+_CLAIM_SUBJECT_PRONOUNS = {"he", "i", "it", "she", "they", "there", "we", "you"}
+_FINITE_PREDICATES = {
+    "am", "are", "became", "becomes", "buy", "buys", "can", "clean",
+    "cleans", "cook", "cooks", "could", "depends", "did", "disagree",
+    "disagrees", "do", "does", "drive", "drives", "feel", "feels", "felt",
+    "found", "gave", "get", "gets", "go", "goes", "got", "had", "has",
+    "have", "is", "knew", "know", "left", "like", "likes", "live", "lives",
+    "look", "looks", "made", "may", "mean", "means", "meet", "meets", "met",
+    "might", "move", "moves", "must", "need", "needs", "own", "owns", "pay",
+    "pays", "prefer", "prefers", "remember", "remembers", "rent", "rents",
+    "said", "sell", "sells", "seem", "seems", "shall", "should", "stay",
+    "stays", "take", "takes", "think", "thinks", "thought", "took", "walk",
+    "walks", "want", "wants", "was", "were", "will", "work", "works",
+    "would",
+}
+_HARD_CUTOFF_WORDS = {"although", "and", "because", "but", "or", "whereas"}
+_CONTINUATION_WORDS = _HARD_CUTOFF_WORDS | {
+    "a", "an", "are", "can", "could", "did", "do", "does", "for", "from",
+    "had", "has", "have", "her", "his", "is", "may", "might", "must", "my",
+    "of", "our", "should", "the", "their", "to", "was", "were", "will",
+    "with", "would", "your",
+}
+_TARGET_REJECTION_PRECEDENCE = (
+    "no_clear_evidence",
+    "acknowledgement_or_no_information",
+    "question_echo",
+    "short_fragment",
+    "clear_cutoff",
+)
 
 _CANONICAL_SPEAKERS: dict[str, tuple[str, str, bool]] = {
     "Q": ("interviewer", "Interviewer", False),
@@ -92,6 +175,22 @@ class ParsedInterview:
     excluded_filler_turns: list[RtfTurn]
     speaker_corrections: dict[str, int]
     warnings: list[str] = field(default_factory=list)
+
+
+@dataclass(slots=True)
+class TargetSelection:
+    retained_turns: list[RtfTurn]
+    pruned_turns: list[dict[str, Any]]
+    reason_codes: list[str]
+    primary_reason: str | None
+    candidate_total_word_count: int
+    candidate_clear_word_count: int
+    total_word_count: int
+    clear_word_count: int
+
+    @property
+    def retained(self) -> bool:
+        return self.primary_reason is None
 
 
 ProfileHandler = Callable[..., dict[str, Any]]
@@ -153,7 +252,12 @@ def preprocess_ukda_4688_dataset(
     segments_dir = output_dir / "segments_jsonl"
     manifest_path = output_dir / "preprocessing_manifest.json"
     qa_path = output_dir / "preprocessing_qa.json"
-    if (manifest_path.exists() or qa_path.exists()) and not overwrite:
+    target_filter_audit_path = output_dir / "target_filter_audit.jsonl"
+    if (
+        manifest_path.exists()
+        or qa_path.exists()
+        or target_filter_audit_path.exists()
+    ) and not overwrite:
         raise FileExistsError(
             f"UKDA 4688 preprocessing output already exists in {output_dir}; use --overwrite."
         )
@@ -163,6 +267,7 @@ def preprocess_ukda_4688_dataset(
 
     manifest_items: list[dict[str, Any]] = []
     qa_items: list[dict[str, Any]] = []
+    target_filter_audit: list[dict[str, Any]] = []
     aggregate = {
         "source_turn_count": 0,
         "normalized_turn_count": 0,
@@ -170,8 +275,14 @@ def preprocess_ukda_4688_dataset(
         "unclear_only_context_turn_count": 0,
         "paired_uncertainty_count": 0,
         "isolated_uncertainty_count": 0,
+        "candidate_exchange_count": 0,
+        "retained_exchange_count": 0,
+        "rejected_exchange_count": 0,
+        "pruned_target_turn_count": 0,
         "exchange_count": 0,
     }
+    aggregate_primary_reasons: dict[str, int] = {}
+    aggregate_all_reasons: dict[str, int] = {}
 
     for source_path in transcript_paths:
         parsed = _parse_ukda_4688_interview(
@@ -188,18 +299,27 @@ def preprocess_ukda_4688_dataset(
         source_text_path.write_text(parsed.extracted_text, encoding="utf-8")
         normalized_html = _render_normalized_html(parsed)
         normalized_html_path.write_text(normalized_html, encoding="utf-8")
-        segments = _build_exchange_segments(
+        segments, interview_audit = _build_exchange_segments_with_audit(
             parsed,
             source_text_path=source_text_path,
             normalized_html_path=normalized_html_path,
         )
         _write_jsonl(segments_path, segments)
+        target_filter_audit.extend(interview_audit)
 
         normalized_turns = [turn for turn in parsed.turns if not turn.is_filler_only]
-        qa_item = _qa_item(parsed, segments=segments)
+        qa_item = _qa_item(parsed, segments=segments, audit_records=interview_audit)
         qa_items.append(qa_item)
         for key in aggregate:
             aggregate[key] += qa_item[key]
+        _merge_counts(
+            aggregate_primary_reasons,
+            qa_item["target_rejection_primary_counts"],
+        )
+        _merge_counts(
+            aggregate_all_reasons,
+            qa_item["target_rejection_reason_counts"],
+        )
         manifest_items.append(
             {
                 "interview_id": parsed.interview_id,
@@ -211,12 +331,24 @@ def preprocess_ukda_4688_dataset(
                 "extracted_text_sha256": _sha256_text(parsed.extracted_text),
                 "source_turn_count": len(parsed.turns),
                 "normalized_turn_count": len(normalized_turns),
+                "candidate_exchange_count": qa_item["candidate_exchange_count"],
+                "retained_exchange_count": qa_item["retained_exchange_count"],
+                "rejected_exchange_count": qa_item["rejected_exchange_count"],
+                "pruned_target_turn_count": qa_item["pruned_target_turn_count"],
+                "target_rejection_primary_counts": qa_item[
+                    "target_rejection_primary_counts"
+                ],
+                "target_rejection_reason_counts": qa_item[
+                    "target_rejection_reason_counts"
+                ],
                 "segment_count": len(segments),
                 "participant_characteristics": parsed.participant_characteristics,
                 "warnings": parsed.warnings,
             }
         )
 
+    _ensure_writable_output(target_filter_audit_path, overwrite=overwrite)
+    _write_jsonl(target_filter_audit_path, target_filter_audit)
     created_utc = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     manifest = {
         "created_utc": created_utc,
@@ -226,8 +358,20 @@ def preprocess_ukda_4688_dataset(
         "input_path": str(input_path),
         "output_dir": str(output_dir),
         "strict_inventory": strict_inventory,
+        "target_selection_policy": UKDA_4688_TARGET_SELECTION,
+        "target_filter_audit_path": str(target_filter_audit_path),
+        "target_filter_audit_sha256": _sha256_bytes(
+            target_filter_audit_path.read_bytes()
+        ),
         "documented_transcript_count": len(documented_names),
         "transcript_count": len(transcript_paths),
+        "candidate_exchange_count": aggregate["candidate_exchange_count"],
+        "retained_exchange_count": aggregate["retained_exchange_count"],
+        "rejected_exchange_count": aggregate["rejected_exchange_count"],
+        "pruned_target_turn_count": aggregate["pruned_target_turn_count"],
+        "exchange_count": aggregate["exchange_count"],
+        "target_rejection_primary_counts": aggregate_primary_reasons,
+        "target_rejection_reason_counts": aggregate_all_reasons,
         "text_normalization": UKDA_4688_NORMALIZATION,
         "normalization_policy": {
             "paired_uncertainty": "[unclear: transcribed words]",
@@ -235,15 +379,19 @@ def preprocess_ukda_4688_dataset(
             "standalone_fillers": "excluded_from_normalized_turns",
             "unclear_only_participant_turns": "context_only",
             "incidental_speakers": "context_only",
-            "target_unit": "question_led_adult_response_exchange",
+            "interviewer_backchannels": "context_only_non_boundaries",
+            "target_unit": "analytical_question_led_adult_response_exchange",
         },
         "interviews": manifest_items,
     }
     qa_report = {
         "created_utc": created_utc,
         "profile": UKDA_4688_PROFILE,
+        "target_selection_policy": UKDA_4688_TARGET_SELECTION,
         "transcript_count": len(transcript_paths),
         **aggregate,
+        "target_rejection_primary_counts": aggregate_primary_reasons,
+        "target_rejection_reason_counts": aggregate_all_reasons,
         "interviews": qa_items,
     }
     manifest_path.write_text(
@@ -479,6 +627,20 @@ def _build_exchange_segments(
     source_text_path: Path,
     normalized_html_path: Path,
 ) -> list[dict[str, Any]]:
+    records, _ = _build_exchange_segments_with_audit(
+        interview,
+        source_text_path=source_text_path,
+        normalized_html_path=normalized_html_path,
+    )
+    return records
+
+
+def _build_exchange_segments_with_audit(
+    interview: ParsedInterview,
+    *,
+    source_text_path: Path,
+    normalized_html_path: Path,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     normalized_turns = [turn for turn in interview.turns if not turn.is_filler_only]
     interview_turns = [_turn_payload(turn) for turn in normalized_turns]
     exchanges: list[tuple[RtfTurn, list[RtfTurn]]] = []
@@ -486,6 +648,8 @@ def _build_exchange_segments(
     current_responses: list[RtfTurn] = []
     for turn in normalized_turns:
         if turn.role == "interviewer" and not turn.is_unclear_only:
+            if _is_interviewer_backchannel(turn.text):
+                continue
             if current_question is not None and current_responses:
                 exchanges.append((current_question, current_responses))
             current_question = turn
@@ -503,26 +667,74 @@ def _build_exchange_segments(
 
     width = max(3, len(str(len(exchanges))))
     records: list[dict[str, Any]] = []
+    audit_records: list[dict[str, Any]] = []
     for segment_index, (question, responses) in enumerate(exchanges, start=1):
         segment_id = f"SEG{segment_index:0{width}d}"
-        target_turn_indexes = [turn.turn_index for turn in responses]
-        response_speakers = list(dict.fromkeys(turn.speaker_label for turn in responses))
-        target_text = _compose_exchange_target(responses)
-        first_response = responses[0]
-        last_response = responses[-1]
-        next_turn = _next_normalized_turn(normalized_turns, last_response.turn_index)
+        record_id = f"{interview.interview_id}_{segment_id}"
+        selection = _select_analytical_target(question, responses)
+        retained_responses = selection.retained_turns
+        candidate_target_turn_indexes = [turn.turn_index for turn in responses]
+        target_turn_indexes = [turn.turn_index for turn in retained_responses]
+        candidate_text = _compose_exchange_target(responses)
+        target_text = (
+            _compose_exchange_target(retained_responses) if retained_responses else ""
+        )
+        response_speakers = list(
+            dict.fromkeys(turn.speaker_label for turn in retained_responses)
+        )
+        audit_records.append(
+            {
+                "candidate_record_id": record_id,
+                "interview_id": interview.interview_id,
+                "candidate_segment_id": segment_id,
+                "decision": "retained" if selection.retained else "rejected",
+                "primary_reason": selection.primary_reason,
+                "reason_codes": selection.reason_codes,
+                "target_selection_policy": UKDA_4688_TARGET_SELECTION,
+                "interviewer_question": question.text,
+                "question_turn_index": question.turn_index,
+                "candidate_text": candidate_text,
+                "selected_text": target_text,
+                "candidate_target_turn_indexes": candidate_target_turn_indexes,
+                "target_turn_indexes": target_turn_indexes,
+                "pruned_turns": selection.pruned_turns,
+                "candidate_response_speakers": list(
+                    dict.fromkeys(turn.speaker_label for turn in responses)
+                ),
+                "response_speakers": response_speakers,
+                "candidate_total_word_count": selection.candidate_total_word_count,
+                "candidate_clear_word_count": selection.candidate_clear_word_count,
+                "total_word_count": selection.total_word_count,
+                "clear_word_count": selection.clear_word_count,
+                "unclear_word_count": max(
+                    0, selection.total_word_count - selection.clear_word_count
+                ),
+            }
+        )
+        if not selection.retained:
+            continue
+
+        first_response = retained_responses[0]
+        last_candidate_response = responses[-1]
+        next_turn = _next_normalized_turn(
+            normalized_turns, last_candidate_response.turn_index
+        )
         records.append(
             {
-                "record_id": f"{interview.interview_id}_{segment_id}",
+                "record_id": record_id,
                 "text": target_text,
                 "interview_id": interview.interview_id,
                 "segment_id": segment_id,
                 "speaker": "participant",
                 "turn_index": first_response.turn_index,
-                "paragraph_index_start": min(turn.paragraph_index for turn in responses),
-                "paragraph_index_end": max(turn.paragraph_index for turn in responses),
-                "line_start": min(turn.paragraph_index for turn in responses),
-                "line_end": max(turn.paragraph_index for turn in responses),
+                "paragraph_index_start": min(
+                    turn.paragraph_index for turn in retained_responses
+                ),
+                "paragraph_index_end": max(
+                    turn.paragraph_index for turn in retained_responses
+                ),
+                "line_start": min(turn.paragraph_index for turn in retained_responses),
+                "line_end": max(turn.paragraph_index for turn in retained_responses),
                 "previous_context": f"Interviewer: {question.text}",
                 "next_context": _format_context_turn(next_turn),
                 "interview_turns": interview_turns,
@@ -530,6 +742,10 @@ def _build_exchange_segments(
                 "interviewer_question": question.text,
                 "question_turn_index": question.turn_index,
                 "target_turn_indexes": target_turn_indexes,
+                "candidate_target_turn_indexes": candidate_target_turn_indexes,
+                "pruned_target_turn_indexes": [
+                    item["turn_index"] for item in selection.pruned_turns
+                ],
                 "response_speakers": response_speakers,
                 "source_rtf_path": str(interview.source_path),
                 "source_text_path": str(source_text_path),
@@ -540,10 +756,239 @@ def _build_exchange_segments(
                     "pseudonym", interview.interview_id
                 ),
                 "text_normalization": UKDA_4688_NORMALIZATION,
+                "target_selection_policy": UKDA_4688_TARGET_SELECTION,
+                "target_total_word_count": selection.total_word_count,
+                "target_clear_word_count": selection.clear_word_count,
                 "archive_warnings": interview.warnings,
             }
         )
-    return records
+    return records, audit_records
+
+
+def _is_interviewer_backchannel(text: str) -> bool:
+    tokens = _analysis_tokens(_remove_stage_directions(text))
+    normalized = " ".join(tokens)
+    return (
+        not normalized
+        or normalized in _INTERVIEWER_BACKCHANNELS
+        or (
+            len(tokens) <= 4
+            and all(token in _INTERVIEWER_BACKCHANNEL_TOKENS for token in tokens)
+        )
+    )
+
+
+def _select_analytical_target(
+    question: RtfTurn,
+    responses: list[RtfTurn],
+) -> TargetSelection:
+    retained_turns: list[RtfTurn] = []
+    pruned_turns: list[dict[str, Any]] = []
+    candidate_total_word_count = 0
+    candidate_clear_word_count = 0
+
+    for turn in responses:
+        total_tokens, clear_tokens = _evidence_tokens(turn.text)
+        candidate_total_word_count += len(total_tokens)
+        candidate_clear_word_count += len(clear_tokens)
+        turn_reason = _weak_turn_reason(clear_tokens)
+        if turn_reason is None:
+            retained_turns.append(turn)
+        else:
+            pruned_turns.append(
+                {
+                    "turn_index": turn.turn_index,
+                    "speaker_label": turn.speaker_label,
+                    "reason": turn_reason,
+                }
+            )
+
+    if not retained_turns:
+        pruned_reasons = {item["reason"] for item in pruned_turns}
+        reason_codes = [
+            reason
+            for reason in _TARGET_REJECTION_PRECEDENCE
+            if reason in pruned_reasons
+        ]
+        primary_reason = reason_codes[0] if reason_codes else "no_clear_evidence"
+        if not reason_codes:
+            reason_codes = [primary_reason]
+        return TargetSelection(
+            retained_turns=[],
+            pruned_turns=pruned_turns,
+            reason_codes=reason_codes,
+            primary_reason=primary_reason,
+            candidate_total_word_count=candidate_total_word_count,
+            candidate_clear_word_count=candidate_clear_word_count,
+            total_word_count=0,
+            clear_word_count=0,
+        )
+
+    selected_total_tokens: list[str] = []
+    selected_clear_tokens: list[str] = []
+    for turn in retained_turns:
+        total_tokens, clear_tokens = _evidence_tokens(turn.text)
+        selected_total_tokens.extend(total_tokens)
+        selected_clear_tokens.extend(clear_tokens)
+
+    reason_set: set[str] = set()
+    if _is_question_echo(selected_clear_tokens, question.text):
+        reason_set.add("question_echo")
+    if len(selected_clear_tokens) <= 5 and not any(
+        _has_complete_claim(_evidence_tokens(turn.text)[1])
+        for turn in retained_turns
+    ):
+        reason_set.add("short_fragment")
+    if _has_clear_cutoff(retained_turns[-1].text):
+        reason_set.add("clear_cutoff")
+
+    reason_codes = [
+        reason for reason in _TARGET_REJECTION_PRECEDENCE if reason in reason_set
+    ]
+    primary_reason = reason_codes[0] if reason_codes else None
+    return TargetSelection(
+        retained_turns=retained_turns,
+        pruned_turns=pruned_turns,
+        reason_codes=reason_codes,
+        primary_reason=primary_reason,
+        candidate_total_word_count=candidate_total_word_count,
+        candidate_clear_word_count=candidate_clear_word_count,
+        total_word_count=len(selected_total_tokens),
+        clear_word_count=len(selected_clear_tokens),
+    )
+
+
+def _remove_stage_directions(text: str) -> str:
+    return _ANALYSIS_STAGE_DIRECTION.sub(" ", text)
+
+
+def _analysis_tokens(text: str) -> list[str]:
+    return [
+        token.lower().replace("\u2019", "'")
+        for token in _ANALYSIS_WORD.findall(text)
+    ]
+
+
+def _evidence_tokens(text: str) -> tuple[list[str], list[str]]:
+    without_stage_directions = _remove_stage_directions(text)
+    total_view = _replace_unclear_spans(
+        without_stage_directions,
+        preserve_transcribed_words=True,
+    )
+    clear_view = _replace_unclear_spans(
+        without_stage_directions,
+        preserve_transcribed_words=False,
+    )
+    return _analysis_tokens(total_view), _analysis_tokens(clear_view)
+
+
+def _clear_evidence_text(text: str) -> str:
+    return _replace_unclear_spans(
+        _remove_stage_directions(text),
+        preserve_transcribed_words=False,
+    ).strip()
+
+
+def _replace_unclear_spans(text: str, *, preserve_transcribed_words: bool) -> str:
+    pieces: list[str] = []
+    cursor = 0
+    while True:
+        match = re.search(r"\[unclear\b", text[cursor:], flags=re.IGNORECASE)
+        if match is None:
+            pieces.append(text[cursor:])
+            break
+        start = cursor + match.start()
+        pieces.append(text[cursor:start])
+
+        depth = 0
+        end: int | None = None
+        for index in range(start, len(text)):
+            if text[index] == "[":
+                depth += 1
+            elif text[index] == "]":
+                depth -= 1
+                if depth == 0:
+                    end = index
+                    break
+        if end is None:
+            pieces.append(" ")
+            break
+
+        if preserve_transcribed_words:
+            inner = text[start + len("[unclear") : end]
+            if inner.lstrip().startswith(":"):
+                inner = inner.lstrip()[1:]
+                pieces.append(
+                    _replace_unclear_spans(
+                        inner,
+                        preserve_transcribed_words=True,
+                    )
+                )
+            else:
+                pieces.append(" ")
+        else:
+            pieces.append(" ")
+        cursor = end + 1
+    return "".join(pieces)
+
+
+def _weak_turn_reason(clear_tokens: list[str]) -> str | None:
+    if not clear_tokens:
+        return "no_clear_evidence"
+    normalized = " ".join(clear_tokens)
+    if (
+        normalized in _ACKNOWLEDGEMENT_PHRASES
+        or normalized in _NO_INFORMATION_PHRASES
+        or _NO_INFORMATION_PATTERN.fullmatch(normalized)
+        or all(token in _ACKNOWLEDGEMENT_TOKENS for token in clear_tokens)
+    ):
+        return "acknowledgement_or_no_information"
+    return None
+
+
+def _is_question_echo(clear_tokens: list[str], question_text: str) -> bool:
+    if not clear_tokens or len(clear_tokens) > 10:
+        return False
+    response_content = [
+        token for token in clear_tokens if token not in _ECHO_DISCOURSE_TOKENS
+    ]
+    if not response_content:
+        return False
+    _, question_tokens = _evidence_tokens(question_text)
+    return set(response_content).issubset(set(question_tokens))
+
+
+def _has_complete_claim(clear_tokens: list[str]) -> bool:
+    if not 3 <= len(clear_tokens) <= 5:
+        return False
+    for index, token in enumerate(clear_tokens[1:], start=1):
+        is_finite = (
+            token in _FINITE_PREDICATES
+            or token.endswith("ed")
+            or "n't" in token
+            or bool(re.search(r"'(?:m|re|s|ve|d|ll)$", token))
+        )
+        if not is_finite:
+            continue
+        if clear_tokens[0] in _CLAIM_SUBJECT_PRONOUNS or index >= 2:
+            return True
+    return False
+
+
+def _has_clear_cutoff(text: str) -> bool:
+    clear_text = _clear_evidence_text(text).rstrip()
+    clear_tokens = _analysis_tokens(clear_text)
+    if not clear_tokens:
+        return False
+    last_token = clear_tokens[-1]
+    if last_token in _HARD_CUTOFF_WORDS:
+        return True
+    if clear_text.endswith(("\u2014", "\u2013", "--")):
+        return True
+    continuation_punctuation = clear_text.endswith(
+        (",", ":", ";", "...", "\u2026")
+    )
+    return continuation_punctuation and last_token in _CONTINUATION_WORDS
 
 
 def _compose_exchange_target(turns: list[RtfTurn]) -> str:
@@ -605,8 +1050,27 @@ def _render_normalized_html(interview: ParsedInterview) -> str:
     )
 
 
-def _qa_item(interview: ParsedInterview, *, segments: list[dict[str, Any]]) -> dict[str, Any]:
+def _qa_item(
+    interview: ParsedInterview,
+    *,
+    segments: list[dict[str, Any]],
+    audit_records: list[dict[str, Any]],
+) -> dict[str, Any]:
     normalized_turns = [turn for turn in interview.turns if not turn.is_filler_only]
+    rejected = [record for record in audit_records if record["decision"] == "rejected"]
+    primary_reason_counts: dict[str, int] = {}
+    all_reason_counts: dict[str, int] = {}
+    for record in rejected:
+        primary_reason = record["primary_reason"]
+        if primary_reason:
+            primary_reason_counts[primary_reason] = (
+                primary_reason_counts.get(primary_reason, 0) + 1
+            )
+        for reason in record["reason_codes"]:
+            all_reason_counts[reason] = all_reason_counts.get(reason, 0) + 1
+    pruned_target_turn_count = sum(
+        len(record["pruned_turns"]) for record in audit_records
+    )
     return {
         "interview_id": interview.interview_id,
         "source_turn_count": len(interview.turns),
@@ -621,10 +1085,21 @@ def _qa_item(interview: ParsedInterview, *, segments: list[dict[str, Any]]) -> d
         "isolated_uncertainty_count": sum(
             turn.isolated_uncertainty_count for turn in interview.turns
         ),
+        "candidate_exchange_count": len(audit_records),
+        "retained_exchange_count": len(segments),
+        "rejected_exchange_count": len(rejected),
+        "pruned_target_turn_count": pruned_target_turn_count,
         "exchange_count": len(segments),
+        "target_rejection_primary_counts": primary_reason_counts,
+        "target_rejection_reason_counts": all_reason_counts,
         "speaker_corrections": interview.speaker_corrections,
         "warnings": interview.warnings,
     }
+
+
+def _merge_counts(target: dict[str, int], source: dict[str, int]) -> None:
+    for key, count in source.items():
+        target[key] = target.get(key, 0) + count
 
 
 def _ensure_writable_output(path: Path, *, overwrite: bool) -> None:

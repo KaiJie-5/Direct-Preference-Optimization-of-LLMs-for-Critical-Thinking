@@ -80,14 +80,37 @@ dpo-preprocess rtf \
 
 The profile validates all 85 documented transcripts, preserves exact extracted
 text under `source_text`, writes an auditable normalized HTML rendering, and
-creates question-led adult-response exchange records under `segments_jsonl`.
-Standalone backchannels are retained in the source text and counted in
-`preprocessing_qa.json`, but are excluded from normalized enrichment context.
-Runs of two or more transcription question marks become explicit `[unclear]`
-markers; normal question punctuation is unchanged.
+creates analytical question-led adult-response exchange records under
+`segments_jsonl`. The target-selection policy is
+`ukda-4688-analytical-evidence-v1`.
+
+Interviewer backchannels such as `Right.` remain in normalized interview
+context but do not create false exchange boundaries. Participant turns that
+contain only acknowledgements, interview noise, or clear-uncertainty markers
+are retained in context but pruned from target evidence. Targets containing
+only a short fragment, a question echo, or a clear cut-off are rejected. Short
+complete claims remain eligible, while labels and quantities such as
+`State schools.` and `10 months.` do not. Runs of two or more transcription
+question marks still become explicit `[unclear]` markers; normal question
+punctuation is unchanged.
+
+Every candidate decision is recorded without repeated full-interview context
+in `target_filter_audit.jsonl`. `preprocessing_qa.json` reports candidate,
+retained, rejected, and pruned-turn counts plus rejection reasons. Retained
+segment JSONL continues to embed `interview_turns` for enrichment compatibility,
+so the generated segment directory remains intentionally storage-heavy.
 
 The source archive is never modified. Use `run_preprocessing_ukda4688.sh` for
-the same configured HPC workflow.
+the same configured HPC workflow. To replace an existing derived output after
+this policy change, run:
+
+```bash
+OVERWRITE=true bash run_preprocessing_ukda4688.sh
+```
+
+The script loads Conda directly instead of sourcing the user `.bashrc`. Set
+`CONDA_BASE` explicitly only when Conda is not discoverable from `PATH`,
+`~/miniconda3`, or `~/anaconda3`.
 
 ## Enrich Segments
 
