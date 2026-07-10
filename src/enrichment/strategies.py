@@ -6,7 +6,7 @@ from typing import Any
 
 from .data import DatasetRecord
 from .logging import RunLogger
-from .prompts import PromptTemplate
+from .prompts import PromptTemplate, align_prompt_context_contract
 from .schema import (
     SAMPLE_SCHEMA_VERSION,
     canonicalize_source_fields,
@@ -29,6 +29,8 @@ def run_self_consistency(
     logger: RunLogger,
     codebook: dict[str, Any] | None = None,
     context_scope: str = "immediate",
+    context_turns_before: int = 20,
+    context_turns_after: int = 20,
 ) -> dict[str, Any]:
     if aggregation != "scaffold":
         raise ValueError(
@@ -37,11 +39,26 @@ def run_self_consistency(
         )
 
     variables = {
-        **record.to_prompt_vars(codebook, context_scope=context_scope),
+        **record.to_prompt_vars(
+            codebook,
+            context_scope=context_scope,
+            context_turns_before=context_turns_before,
+            context_turns_after=context_turns_after,
+        ),
         **prompt_vars,
     }
-    variables["analysis_context"] = record.analysis_context(context_scope)
-    rendered_prompt = prompt.render(variables)
+    variables["analysis_context"] = record.analysis_context(
+        context_scope,
+        context_turns_before=context_turns_before,
+        context_turns_after=context_turns_after,
+    )
+    if context_scope == "turn_window":
+        variables["context_scope"] = context_scope
+        variables["context_turns_before"] = context_turns_before
+        variables["context_turns_after"] = context_turns_after
+    rendered_prompt = align_prompt_context_contract(
+        prompt.render(variables), context_scope
+    )
     expected_codebook_version = _expected_codebook_version(record, codebook)
     samples: list[dict[str, Any]] = []
 
@@ -67,6 +84,14 @@ def run_self_consistency(
         "source": record.source,
         "strategy": "self_consistency",
         "context_scope": context_scope,
+        **(
+            {
+                "context_turns_before": context_turns_before,
+                "context_turns_after": context_turns_after,
+            }
+            if context_scope == "turn_window"
+            else {}
+        ),
         "prompt_path": str(prompt.path),
         "num_samples": num_samples,
         "aggregation": aggregation,
@@ -92,14 +117,31 @@ def run_self_refine(
     logger: RunLogger,
     codebook: dict[str, Any] | None = None,
     context_scope: str = "immediate",
+    context_turns_before: int = 20,
+    context_turns_after: int = 20,
 ) -> dict[str, Any]:
     variables = {
-        **record.to_prompt_vars(codebook, context_scope=context_scope),
+        **record.to_prompt_vars(
+            codebook,
+            context_scope=context_scope,
+            context_turns_before=context_turns_before,
+            context_turns_after=context_turns_after,
+        ),
         **prompt_vars,
     }
-    variables["analysis_context"] = record.analysis_context(context_scope)
+    variables["analysis_context"] = record.analysis_context(
+        context_scope,
+        context_turns_before=context_turns_before,
+        context_turns_after=context_turns_after,
+    )
+    if context_scope == "turn_window":
+        variables["context_scope"] = context_scope
+        variables["context_turns_before"] = context_turns_before
+        variables["context_turns_after"] = context_turns_after
     expected_codebook_version = _expected_codebook_version(record, codebook)
-    initial_rendered = initial_prompt.render(variables)
+    initial_rendered = align_prompt_context_contract(
+        initial_prompt.render(variables), context_scope
+    )
     initial_sample = _generate_validated_sample(
         record=record,
         teacher=teacher,
@@ -132,7 +174,9 @@ def run_self_refine(
             "current_answer_json": current_parsed,
             "refinement_history": refinement_history,
         }
-        critique_rendered = critique_prompt.render(feedback_vars)
+        critique_rendered = align_prompt_context_contract(
+            critique_prompt.render(feedback_vars), context_scope
+        )
         critique_result = teacher.generate(critique_rendered, generation_options)
         prompt_reference = logger.prompt_snapshot(
             record_id=record.record_id,
@@ -193,7 +237,9 @@ def run_self_refine(
             "feedback": critique_result.text,
             "refinement_history": _format_refinement_history(trace, history_format),
         }
-        revision_rendered = revision_prompt.render(revision_vars)
+        revision_rendered = align_prompt_context_contract(
+            revision_prompt.render(revision_vars), context_scope
+        )
         revision_sample = _generate_validated_sample(
             record=record,
             teacher=teacher,
@@ -224,6 +270,14 @@ def run_self_refine(
         "source": record.source,
         "strategy": "self_refine",
         "context_scope": context_scope,
+        **(
+            {
+                "context_turns_before": context_turns_before,
+                "context_turns_after": context_turns_after,
+            }
+            if context_scope == "turn_window"
+            else {}
+        ),
         "prompt_paths": {
             "initial": str(initial_prompt.path),
             "critique": str(critique_prompt.path),

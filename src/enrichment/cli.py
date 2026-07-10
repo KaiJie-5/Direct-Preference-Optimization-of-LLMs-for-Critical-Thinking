@@ -38,13 +38,26 @@ def build_parser() -> argparse.ArgumentParser:
     io_group.add_argument("--limit", type=int)
     io_group.add_argument(
         "--context-scope",
-        choices=["immediate", "full_interview"],
+        choices=["immediate", "full_interview", "turn_window"],
         default="immediate",
         help=(
-            "Use immediate previous/next context or the complete ordered interview. "
-            "Full interview mode requires reprocessed segment JSONL and an "
-            "{analysis_context} placeholder in every strategy prompt."
+            "Use immediate previous/next context, the complete ordered interview, "
+            "or a centered complete-turn window. Full interview and turn-window "
+            "modes require reprocessed segment JSONL and an {analysis_context} "
+            "placeholder in every strategy prompt."
         ),
+    )
+    io_group.add_argument(
+        "--context-turns-before",
+        type=int,
+        default=20,
+        help="Complete normalized turns before the target in turn_window mode.",
+    )
+    io_group.add_argument(
+        "--context-turns-after",
+        type=int,
+        default=20,
+        help="Complete normalized turns after the target in turn_window mode.",
     )
     io_group.add_argument(
         "--continue-on-error",
@@ -172,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
         prompt=prompt,
         critique_prompt=critique_prompt,
         revision_prompt=revision_prompt,
+        context_turns_before=args.context_turns_before,
+        context_turns_after=args.context_turns_after,
     )
     teacher = build_teacher(args)
 
@@ -351,6 +366,8 @@ def _run_strategy(
             aggregation=args.self_consistency_aggregation,
             logger=logger,
             context_scope=args.context_scope,
+            context_turns_before=args.context_turns_before,
+            context_turns_after=args.context_turns_after,
         )
 
     if args.strategy == "self_refine":
@@ -370,6 +387,8 @@ def _run_strategy(
             history_format=args.refine_history_format,
             logger=logger,
             context_scope=args.context_scope,
+            context_turns_before=args.context_turns_before,
+            context_turns_after=args.context_turns_after,
         )
 
     raise ValueError(f"Unsupported strategy: {args.strategy}")
@@ -389,6 +408,9 @@ def _manifest(
         key: str(value) if isinstance(value, Path) else value
         for key, value in vars(args).items()
     }
+    if args.context_scope != "turn_window":
+        args_dict.pop("context_turns_before", None)
+        args_dict.pop("context_turns_after", None)
     return {
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "python": sys.version,
@@ -450,6 +472,14 @@ def _focused_self_consistency_payload(enriched: dict[str, Any]) -> dict[str, Any
         "source": enriched["source"],
         "strategy": enriched["strategy"],
         "context_scope": enriched["context_scope"],
+        **(
+            {
+                "context_turns_before": enriched["context_turns_before"],
+                "context_turns_after": enriched["context_turns_after"],
+            }
+            if "context_turns_before" in enriched
+            else {}
+        ),
         "prompt_path": enriched["prompt_path"],
         "num_samples": enriched["num_samples"],
         "aggregation": enriched["aggregation"],
@@ -511,8 +541,10 @@ def _validate_context_configuration(
     prompt: PromptTemplate,
     critique_prompt: PromptTemplate | None,
     revision_prompt: PromptTemplate | None,
+    context_turns_before: int,
+    context_turns_after: int,
 ) -> None:
-    if context_scope != "full_interview":
+    if context_scope == "immediate":
         return
 
     required_prompts = [("main", prompt)]
@@ -528,12 +560,16 @@ def _validate_context_configuration(
     for label, template in required_prompts:
         if not template.uses_variable("analysis_context"):
             raise ValueError(
-                f"context_scope='full_interview' requires {{analysis_context}} "
+                f"context_scope={context_scope!r} requires {{analysis_context}} "
                 f"in the {label} prompt: {template.path}"
             )
 
     for record in records:
-        record.analysis_context(context_scope)
+        record.analysis_context(
+            context_scope,
+            context_turns_before=context_turns_before,
+            context_turns_after=context_turns_after,
+        )
 
 
 if __name__ == "__main__":

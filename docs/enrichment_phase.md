@@ -57,6 +57,38 @@ participant characteristics extracted from the interview metadata table, and an
 source order. Codebooks are selected later during enrichment so the same
 segments can be reused with different codebook versions.
 
+## Preprocess UKDA 4688 RTF Interviews
+
+UKDA Study 4688 uses an archive-specific RTF profile. Activate the project
+environment and install the project so `striprtf==0.0.32` is installed inside
+that environment:
+
+```bash
+conda activate dpo
+python -m pip install -e ".[dev]"
+```
+
+Run strict preprocessing on the HPC archive:
+
+```bash
+dpo-preprocess rtf \
+  --profile ukda-4688 \
+  --input-path /iridisfs/scratch/kjl1a21/DPO/interview_datasets/UKDA-4688-rtf \
+  --output-dir /iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-preprocessed \
+  --strict-inventory
+```
+
+The profile validates all 85 documented transcripts, preserves exact extracted
+text under `source_text`, writes an auditable normalized HTML rendering, and
+creates question-led adult-response exchange records under `segments_jsonl`.
+Standalone backchannels are retained in the source text and counted in
+`preprocessing_qa.json`, but are excluded from normalized enrichment context.
+Runs of two or more transcription question marks become explicit `[unclear]`
+markers; normal question punctuation is unchanged.
+
+The source archive is never modified. Use `run_preprocessing_ukda4688.sh` for
+the same configured HPC workflow.
+
 ## Enrich Segments
 
 Smoke test without loading a model:
@@ -105,6 +137,19 @@ turn, and marks the current participant turn as the target. Full-interview mode
 also requires `{analysis_context}` in every prompt used by the selected
 strategy, and validates this before loading the teacher model.
 
+`--context-scope turn_window` renders complete normalized turns around the
+target exchange. Its defaults are 20 turns before and 20 turns after; customize
+them with `--context-turns-before` and `--context-turns-after`. Interview
+metadata, the leading interviewer question, boundary notices, and every target
+response turn are included. The existing self-consistency prompt is aligned at
+runtime so its JSON contract reports `analysis_context_scope: "turn_window"`;
+the checked-in full-interview prompt text and historical modes are unchanged.
+
+For UKDA 4688, `submit_job_enrichment_self_consistency_ukda4688.slurm` uses the
+20/20 window, five self-consistency samples, and the existing DeepSeek teacher.
+Submit it only after setting `CODEBOOK_PATH` and `RESEARCH_QUESTIONS_FILE`; the
+latter is a UTF-8 file containing one research question per non-comment line.
+
 New Self-Consistency and Self-Refine generations use
 `segment_enrichment_sample_v2`. Historical v1 outputs remain readable. Each
 sample is generated exactly once. Missing or malformed JSON, schema violations,
@@ -135,6 +180,8 @@ Templates can use:
 - `{record_id}`
 - `{input_text}`
 - `{analysis_context}` (selected by `--context-scope`)
+- `{context_scope}`, `{context_turns_before}`, and `{context_turns_after}` in
+  `turn_window` runs
 - `{segment_json}`
 - `{interview_id}`, `{segment_id}`, `{speaker}`
 - `{previous_context}`, `{next_context}`

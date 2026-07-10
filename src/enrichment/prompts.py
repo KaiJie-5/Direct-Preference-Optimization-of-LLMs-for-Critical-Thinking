@@ -38,3 +38,19 @@ def parse_prompt_vars(values: list[str] | None) -> dict[str, str]:
         key, raw = value.split("=", 1)
         variables[key] = raw
     return variables
+
+
+def align_prompt_context_contract(rendered_prompt: str, context_scope: str) -> str:
+    """Align the existing v2 JSON example for additive windowed context runs.
+
+    The checked-in full-interview prompt remains unchanged for historical runs. Only
+    the new turn-window runtime replaces its literal schema example after rendering.
+    Custom prompts that already use the runtime scope are left untouched.
+    """
+
+    if context_scope != "turn_window":
+        return rendered_prompt
+    return rendered_prompt.replace(
+        '"analysis_context_scope": "full_interview"',
+        '"analysis_context_scope": "turn_window"',
+    )

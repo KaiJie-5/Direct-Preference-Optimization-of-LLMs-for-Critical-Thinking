@@ -7,7 +7,7 @@ name = "dpo-critical-thinking"
 version = "0.1.0"
 description = "Enrichment utilities for DPO critical-thinking data preparation."
 requires-python = ">=3.10"
-dependencies = ["beautifulsoup4>=4.12", "openpyxl>=3.1"]
+dependencies = ["beautifulsoup4>=4.12", "openpyxl>=3.1", "striprtf==0.0.32"]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]

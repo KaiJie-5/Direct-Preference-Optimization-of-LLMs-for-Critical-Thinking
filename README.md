@@ -86,3 +86,7 @@ It supports configurable teacher backends, prompt templates, HTML/JSONL/JSON/CSV
 ```text
 docs/enrichment_phase.md
 ```
+
+The preprocessing CLI also includes an isolated `rtf --profile ukda-4688`
+workflow for the UKDA 4688 interview archive and enrichment supports centered
+complete-turn context windows without changing the existing defaults.

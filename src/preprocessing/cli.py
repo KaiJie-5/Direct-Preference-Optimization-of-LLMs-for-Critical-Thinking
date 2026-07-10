@@ -6,6 +6,7 @@ from pathlib import Path
 
 from .codebook import convert_xlsx_codebook
 from .html import preprocess_html_dataset
+from .rtf import PROFILE_REGISTRY, preprocess_rtf_dataset
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -53,6 +54,15 @@ def build_parser() -> argparse.ArgumentParser:
     html.add_argument("--domain")
     html.add_argument("--overwrite", action="store_true")
 
+    rtf = subparsers.add_parser(
+        "rtf", help="Preprocess an RTF interview archive with a dataset profile."
+    )
+    rtf.add_argument("--profile", required=True, choices=sorted(PROFILE_REGISTRY))
+    rtf.add_argument("--input-path", required=True, type=Path)
+    rtf.add_argument("--output-dir", required=True, type=Path)
+    rtf.add_argument("--strict-inventory", action="store_true")
+    rtf.add_argument("--overwrite", action="store_true")
+
     return parser
 
 
@@ -92,6 +102,29 @@ def main(argv: list[str] | None = None) -> int:
                     "manifest_path": str(args.manifest_path),
                     "interview_count": len(manifest["interviews"]),
                     "segment_count": sum(item["segment_count"] for item in manifest["interviews"]),
+                },
+                indent=2,
+            )
+        )
+        return 0
+
+    if args.command == "rtf":
+        manifest = preprocess_rtf_dataset(
+            profile=args.profile,
+            input_path=args.input_path,
+            output_dir=args.output_dir,
+            strict_inventory=args.strict_inventory,
+            overwrite=args.overwrite,
+        )
+        print(
+            json.dumps(
+                {
+                    "profile": manifest["profile"],
+                    "output_dir": str(args.output_dir),
+                    "interview_count": len(manifest["interviews"]),
+                    "segment_count": sum(
+                        item["segment_count"] for item in manifest["interviews"]
+                    ),
                 },
                 indent=2,
             )
