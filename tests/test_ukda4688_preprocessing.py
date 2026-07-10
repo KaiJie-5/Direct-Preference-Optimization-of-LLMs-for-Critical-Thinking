@@ -238,6 +238,8 @@ def test_ukda_hpc_job_requires_runtime_analysis_inputs() -> None:
     assert "SELF_CONSISTENCY_SAMPLES=5" in script
     assert "CODEBOOK_PATH must be supplied" in script
     assert "RESEARCH_QUESTIONS_FILE contains no research questions" in script
+    assert "set -eo pipefail" in script
+    assert "set -euo pipefail" not in script
 
 
 @pytest.mark.skipif(

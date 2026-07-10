@@ -1,6 +1,6 @@
 #!/bin/bash
 
-set -euo pipefail
+set -eo pipefail
 
 # Preprocess UKDA Study 4688 without modifying the source archive.
 # Override INPUT_PATH or OUTPUT_DIR when the HPC layout changes.
