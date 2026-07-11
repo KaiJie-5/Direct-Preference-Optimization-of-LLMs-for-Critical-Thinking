@@ -10,6 +10,11 @@ from enrichment.cli import build_parser as build_enrichment_parser
 from enrichment.data import DatasetRecord
 from enrichment.prompts import align_prompt_context_contract
 from preprocessing.cli import build_parser as build_preprocessing_parser
+from preprocessing.exclusions import (
+    UKDA_4688_REVIEW_POLICY,
+    approve_exclusions,
+    generate_target_review,
+)
 from preprocessing.rtf import (
     UKDA_4688_EXPECTED_TRANSCRIPT_COUNT,
     UKDA_4688_TARGET_SELECTION,
@@ -137,6 +142,168 @@ def test_complete_claim_and_cutoff_helpers_are_conservative() -> None:
     assert not _has_complete_claim(_evidence_tokens("State schools.")[1])
     assert _has_clear_cutoff("I had a job and.") is True
     assert _has_clear_cutoff("I worked there for many years…") is False
+
+
+def test_target_review_generates_broad_deterministic_review_queue(
+    tmp_path: Path,
+) -> None:
+    audit_path = tmp_path / "target_filter_audit.jsonl"
+    output_path = tmp_path / "enrichment_exclusion_review.jsonl"
+    records = [
+        _audit_record(
+            "int001t_SEG007",
+            "Female: Oh I love it, yeah, [unclear] lovely.",
+            "Do you feel attached to Edinburgh?",
+            clear_words=6,
+            total_words=6,
+        ),
+        _audit_record(
+            "int001t_SEG008",
+            "Female: We have a car.",
+            "Do you run a car?",
+            clear_words=4,
+            total_words=4,
+        ),
+        _audit_record(
+            "int001t_SEG009",
+            "Female: I worked in a research organisation and managed several "
+            "long-term public health projects for local hospitals.",
+            "What work did you do?",
+            clear_words=17,
+            total_words=17,
+        ),
+        _audit_record(
+            "int001t_SEG010",
+            "Female: I wanted to continue working but I was [unclear]",
+            "What happened next?",
+            clear_words=9,
+            total_words=12,
+        ),
+        _audit_record(
+            "int001t_SEG011",
+            "Female: What are you going to do with all this information?",
+            "Do you have any questions about the research?",
+            clear_words=10,
+            total_words=10,
+        ),
+        _audit_record(
+            "int001t_SEG012",
+            "Female: The remaining clear account still describes how our family "
+            "managed the change despite extensive damaged speech.",
+            "How did your family manage the change?",
+            clear_words=15,
+            total_words=40,
+        ),
+    ]
+    _write_test_jsonl(audit_path, records)
+
+    manifest = generate_target_review(
+        profile="ukda-4688",
+        audit_path=audit_path,
+        output_path=output_path,
+    )
+
+    review = _read_test_jsonl(output_path)
+    assert [record["record_id"] for record in review] == [
+        "int001t_SEG007",
+        "int001t_SEG008",
+        "int001t_SEG010",
+        "int001t_SEG011",
+        "int001t_SEG012",
+    ]
+    assert all(record["decision"] == "review" for record in review)
+    assert review[0]["suggested_reasons"] == ["very_short", "bare_evaluation"]
+    assert review[1]["suggested_reasons"] == ["very_short"]
+    assert "explicitly_unfinished" in review[2]["suggested_reasons"]
+    assert "interview_management" in review[3]["suggested_reasons"]
+    assert "participant_question" in review[3]["suggested_reasons"]
+    assert review[4]["suggested_reasons"] == ["unclear_or_damaged"]
+    assert manifest["review_policy"] == UKDA_4688_REVIEW_POLICY
+    assert manifest["candidate_count"] == 5
+    assert manifest["source_audit_sha256"]
+    assert (tmp_path / "enrichment_exclusion_review_manifest.json").is_file()
+    with pytest.raises(FileExistsError, match="use --overwrite"):
+        generate_target_review(
+            profile="ukda-4688",
+            audit_path=audit_path,
+            output_path=output_path,
+        )
+
+
+def test_approve_exclusions_requires_resolved_exact_review_rows(
+    tmp_path: Path,
+) -> None:
+    audit_path = tmp_path / "target_filter_audit.jsonl"
+    review_path = tmp_path / "enrichment_exclusion_review.jsonl"
+    approved_path = tmp_path / "enrichment_exclusions.jsonl"
+    audit = [
+        _audit_record(
+            "int001t_SEG007",
+            "Female: Oh I love it, yeah, [unclear] lovely.",
+            "Do you feel attached?",
+            clear_words=6,
+            total_words=6,
+        ),
+        _audit_record(
+            "int001t_SEG008",
+            "Female: We have a car.",
+            "Do you run a car?",
+            clear_words=4,
+            total_words=4,
+        ),
+    ]
+    _write_test_jsonl(audit_path, audit)
+    generate_target_review(
+        profile="ukda-4688",
+        audit_path=audit_path,
+        output_path=review_path,
+    )
+
+    with pytest.raises(ValueError, match="unresolved records"):
+        approve_exclusions(
+            review_path=review_path,
+            audit_path=audit_path,
+            output_path=approved_path,
+        )
+
+    review = _read_test_jsonl(review_path)
+    review[0]["decision"] = "exclude"
+    review[1]["decision"] = "keep"
+    _write_test_jsonl(review_path, review)
+    manifest = approve_exclusions(
+        review_path=review_path,
+        audit_path=audit_path,
+        output_path=approved_path,
+    )
+
+    assert _read_test_jsonl(approved_path) == [
+        {
+            "record_id": "int001t_SEG007",
+            "text": "Female: Oh I love it, yeah, [unclear] lovely.",
+        }
+    ]
+    assert manifest["keep_count"] == 1
+    assert manifest["exclude_count"] == 1
+    assert (tmp_path / "enrichment_exclusions_manifest.json").is_file()
+
+    duplicate_review_path = tmp_path / "duplicate_review.jsonl"
+    _write_test_jsonl(duplicate_review_path, [*review, review[0]])
+    with pytest.raises(ValueError, match="Duplicate exclusion review"):
+        approve_exclusions(
+            review_path=duplicate_review_path,
+            audit_path=audit_path,
+            output_path=tmp_path / "duplicate_approved.jsonl",
+        )
+
+    stale_review = _read_test_jsonl(review_path)
+    stale_review[0]["text"] = "Female: stale text."
+    _write_test_jsonl(review_path, stale_review)
+    with pytest.raises(ValueError, match="does not match retained audit"):
+        approve_exclusions(
+            review_path=review_path,
+            audit_path=audit_path,
+            output_path=tmp_path / "stale.jsonl",
+        )
 
 
 def test_ukda_parser_groups_question_led_adult_responses_only(tmp_path: Path) -> None:
@@ -356,6 +523,33 @@ def test_turn_window_cli_defaults_and_prompt_contract_are_additive() -> None:
     assert preprocessing_args.profile == "ukda-4688"
     assert preprocessing_args.strict_inventory is True
 
+    review_args = build_preprocessing_parser().parse_args(
+        [
+            "target-review",
+            "--profile",
+            "ukda-4688",
+            "--audit-path",
+            "target_filter_audit.jsonl",
+            "--output-path",
+            "enrichment_exclusion_review.jsonl",
+        ]
+    )
+    assert review_args.command == "target-review"
+    assert review_args.profile == "ukda-4688"
+
+    approve_args = build_preprocessing_parser().parse_args(
+        [
+            "approve-exclusions",
+            "--review-path",
+            "enrichment_exclusion_review.jsonl",
+            "--audit-path",
+            "target_filter_audit.jsonl",
+            "--output-path",
+            "enrichment_exclusions.jsonl",
+        ]
+    )
+    assert approve_args.command == "approve-exclusions"
+
 
 def test_ukda_hpc_job_requires_runtime_analysis_inputs() -> None:
     script = (
@@ -368,6 +562,12 @@ def test_ukda_hpc_job_requires_runtime_analysis_inputs() -> None:
     assert "SELF_CONSISTENCY_SAMPLES=5" in script
     assert "CODEBOOK_PATH must be supplied" in script
     assert "RESEARCH_QUESTIONS_FILE contains no research questions" in script
+    assert "EXCLUDE_RECORDS_PATH" in script
+    assert 'require_file "${EXCLUDE_RECORDS_PATH}"' in script
+    assert '--exclude-records-path "${EXCLUDE_RECORDS_PATH}"' in script
+    assert "source ~/.bashrc" not in script
+    assert 'source "${CONDA_BASE}/etc/profile.d/conda.sh"' in script
+    assert "set +u" in script
     assert "set -eo pipefail" in script
     assert "set -euo pipefail" not in script
 
@@ -400,6 +600,39 @@ def test_optional_real_archive_inventory_and_speaker_parsing() -> None:
         _parse_ukda_4688_interview(path, strict_speakers=True) for path in paths
     ]
     assert len(parsed) == UKDA_4688_EXPECTED_TRANSCRIPT_COUNT
+
+
+def _audit_record(
+    record_id: str,
+    text: str,
+    question: str,
+    *,
+    clear_words: int,
+    total_words: int,
+) -> dict[str, object]:
+    return {
+        "candidate_record_id": record_id,
+        "decision": "retained",
+        "selected_text": text,
+        "interviewer_question": question,
+        "clear_word_count": clear_words,
+        "total_word_count": total_words,
+        "target_turn_indexes": [2],
+    }
+
+
+def _write_test_jsonl(path: Path, records: list[dict[str, object]]) -> None:
+    with path.open("w", encoding="utf-8") as handle:
+        for record in records:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
+
+def _read_test_jsonl(path: Path) -> list[dict[str, object]]:
+    return [
+        json.loads(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def _test_turn(

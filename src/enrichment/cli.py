@@ -11,7 +11,11 @@ from typing import Any
 
 from preprocessing.codebook import load_codebook
 
-from .data import DatasetRecord, group_records_by_interview, load_segment_records
+from .data import (
+    DatasetRecord,
+    group_records_by_interview,
+    load_segment_records_with_report,
+)
 from .logging import RunLogger
 from .prompts import PromptTemplate, parse_prompt_vars
 from .schema import SAMPLE_SCHEMA_VERSION
@@ -27,6 +31,14 @@ def build_parser() -> argparse.ArgumentParser:
     io_group = parser.add_argument_group("input/output")
     io_group.add_argument("--segments-path", required=True, type=Path)
     io_group.add_argument("--output-dir", required=True, type=Path)
+    io_group.add_argument(
+        "--exclude-records-path",
+        type=Path,
+        help=(
+            "Optional JSONL containing exact record_id/text pairs to skip before "
+            "applying --limit."
+        ),
+    )
     io_group.add_argument(
         "--codebook-path",
         type=Path,
@@ -150,7 +162,12 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    records = load_segment_records(args.segments_path, limit=args.limit)
+    load_result = load_segment_records_with_report(
+        args.segments_path,
+        limit=args.limit,
+        exclude_records_path=args.exclude_records_path,
+    )
+    records = load_result.records
     codebook = _load_runtime_codebook(args.codebook_path, records)
     prompt_vars = {
         **_research_question_prompt_vars(args.research_question),
@@ -199,7 +216,9 @@ def main(argv: list[str] | None = None) -> int:
         "output_schema_version": SAMPLE_SCHEMA_VERSION,
         "codebook": _codebook_summary(codebook),
         "interview_count": len(grouped_records),
+        "source_record_count": load_result.source_record_count,
         "record_count": len(records),
+        "exclusion_filter": load_result.exclusion_summary,
         "interviews": [],
     }
 
@@ -217,6 +236,7 @@ def main(argv: list[str] | None = None) -> int:
             interview_id=interview_id,
             records=interview_records,
             output_dir=interview_output_dir,
+            exclusion_summary=load_result.exclusion_summary,
         )
         batch_summary["interviews"].append(summary)
 
@@ -243,6 +263,7 @@ def _run_interview(
     interview_id: str,
     records: list[DatasetRecord],
     output_dir: Path,
+    exclusion_summary: dict[str, Any],
 ) -> dict[str, Any]:
     logger = RunLogger(output_dir)
     manifest = _manifest(
@@ -253,6 +274,7 @@ def _run_interview(
         codebook=codebook,
         generation_options=generation_options,
         output_dir=output_dir,
+        exclusion_summary=exclusion_summary,
     )
     logger.write_manifest(manifest)
     logger.event({"event": "run_started", "manifest": manifest})
@@ -403,6 +425,7 @@ def _manifest(
     codebook: dict[str, Any] | None,
     generation_options: GenerationOptions,
     output_dir: Path,
+    exclusion_summary: dict[str, Any],
 ) -> dict[str, Any]:
     args_dict = {
         key: str(value) if isinstance(value, Path) else value
@@ -411,6 +434,14 @@ def _manifest(
     if args.context_scope != "turn_window":
         args_dict.pop("context_turns_before", None)
         args_dict.pop("context_turns_after", None)
+    manifest_exclusion_summary = {
+        key: value
+        for key, value in exclusion_summary.items()
+        if key != "excluded_by_interview"
+    }
+    manifest_exclusion_summary["interview_excluded_count"] = exclusion_summary.get(
+        "excluded_by_interview", {}
+    ).get(interview_id, 0)
     return {
         "created_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "python": sys.version,
@@ -419,6 +450,7 @@ def _manifest(
         "record_count": record_count,
         "output_dir": str(output_dir),
         "args": args_dict,
+        "exclusion_filter": manifest_exclusion_summary,
         "teacher": teacher_metadata,
         "codebook": _codebook_summary(codebook),
         "generation_options": asdict(generation_options),

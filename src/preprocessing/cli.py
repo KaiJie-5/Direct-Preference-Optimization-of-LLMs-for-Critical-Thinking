@@ -5,6 +5,11 @@ import json
 from pathlib import Path
 
 from .codebook import convert_xlsx_codebook
+from .exclusions import (
+    UKDA_4688_REVIEW_PROFILE,
+    approve_exclusions,
+    generate_target_review,
+)
 from .html import preprocess_html_dataset
 from .rtf import PROFILE_REGISTRY, preprocess_rtf_dataset
 
@@ -62,6 +67,28 @@ def build_parser() -> argparse.ArgumentParser:
     rtf.add_argument("--output-dir", required=True, type=Path)
     rtf.add_argument("--strict-inventory", action="store_true")
     rtf.add_argument("--overwrite", action="store_true")
+
+    target_review = subparsers.add_parser(
+        "target-review",
+        help="Generate a review queue of possible enrichment exclusions.",
+    )
+    target_review.add_argument(
+        "--profile",
+        required=True,
+        choices=[UKDA_4688_REVIEW_PROFILE],
+    )
+    target_review.add_argument("--audit-path", required=True, type=Path)
+    target_review.add_argument("--output-path", required=True, type=Path)
+    target_review.add_argument("--overwrite", action="store_true")
+
+    approve = subparsers.add_parser(
+        "approve-exclusions",
+        help="Compile resolved target-review decisions into a runtime exclusion list.",
+    )
+    approve.add_argument("--review-path", required=True, type=Path)
+    approve.add_argument("--audit-path", required=True, type=Path)
+    approve.add_argument("--output-path", required=True, type=Path)
+    approve.add_argument("--overwrite", action="store_true")
 
     return parser
 
@@ -129,6 +156,26 @@ def main(argv: list[str] | None = None) -> int:
                 indent=2,
             )
         )
+        return 0
+
+    if args.command == "target-review":
+        manifest = generate_target_review(
+            profile=args.profile,
+            audit_path=args.audit_path,
+            output_path=args.output_path,
+            overwrite=args.overwrite,
+        )
+        print(json.dumps(manifest, indent=2))
+        return 0
+
+    if args.command == "approve-exclusions":
+        manifest = approve_exclusions(
+            review_path=args.review_path,
+            audit_path=args.audit_path,
+            output_path=args.output_path,
+            overwrite=args.overwrite,
+        )
+        print(json.dumps(manifest, indent=2))
         return 0
 
     raise ValueError(f"Unsupported command: {args.command}")

@@ -8,7 +8,7 @@ from typing import Any
 import pytest
 
 from enrichment.cli import build_parser, main as enrich_main
-from enrichment.data import load_segment_records
+from enrichment.data import load_segment_records, load_segment_records_with_report
 from enrichment.logging import RunLogger
 from enrichment.prompts import PromptTemplate
 from enrichment.schema import (
@@ -194,6 +194,98 @@ def test_load_segment_records_accepts_file_or_directory(tmp_path: Path) -> None:
     assert [record.record_id for record in one_file] == ["INT01_SEG001"]
     assert [record.record_id for record in all_files] == ["INT01_SEG001", "INT02_SEG001"]
     assert all_files[0].to_prompt_vars()["candidate_example_codes_json"] == "[]"
+
+
+def test_exact_exclusions_apply_before_limit_and_report_partial_validation(
+    tmp_path: Path,
+) -> None:
+    segments_path = _write_jsonl(
+        tmp_path / "segments.jsonl",
+        [_segment("INT01", 1), _segment("INT01", 2)],
+    )
+    exclusion_path = _write_jsonl(
+        tmp_path / "exclusions.jsonl",
+        [
+            {
+                "record_id": "INT01_SEG001",
+                "text": "AI can help, but someone still needs to check the result.",
+            }
+        ],
+    )
+
+    result = load_segment_records_with_report(
+        segments_path,
+        limit=1,
+        exclude_records_path=exclusion_path,
+    )
+
+    assert [record.record_id for record in result.records] == ["INT01_SEG002"]
+    assert result.source_record_count == 2
+    assert result.exclusion_summary["entry_count"] == 1
+    assert result.exclusion_summary["matched_count"] == 1
+    assert result.exclusion_summary["skipped_count"] == 1
+    assert result.exclusion_summary["validation_status"] == "partial"
+    assert result.exclusion_summary["excluded_by_interview"] == {"INT01": 1}
+
+
+def test_complete_exclusion_validation_rejects_stale_or_malformed_lists(
+    tmp_path: Path,
+) -> None:
+    segments_path = _write_jsonl(
+        tmp_path / "segments.jsonl", [_segment("INT01", 1)]
+    )
+    mismatched = _write_jsonl(
+        tmp_path / "mismatched.jsonl",
+        [{"record_id": "INT01_SEG001", "text": "stale text"}],
+    )
+    unknown = _write_jsonl(
+        tmp_path / "unknown.jsonl",
+        [{"record_id": "INT99_SEG999", "text": "unknown text"}],
+    )
+    duplicate = _write_jsonl(
+        tmp_path / "duplicate.jsonl",
+        [
+            {
+                "record_id": "INT01_SEG001",
+                "text": "AI can help, but someone still needs to check the result.",
+            },
+            {
+                "record_id": "INT01_SEG001",
+                "text": "AI can help, but someone still needs to check the result.",
+            },
+        ],
+    )
+    extra_field = _write_jsonl(
+        tmp_path / "extra.jsonl",
+        [
+            {
+                "record_id": "INT01_SEG001",
+                "text": "AI can help, but someone still needs to check the result.",
+                "decision": "exclude",
+            }
+        ],
+    )
+
+    with pytest.raises(ValueError, match="text does not match"):
+        load_segment_records(
+            segments_path,
+            exclude_records_path=mismatched,
+        )
+    with pytest.raises(ValueError, match="were not found"):
+        load_segment_records(
+            segments_path,
+            exclude_records_path=unknown,
+        )
+    with pytest.raises(ValueError, match="Duplicate approved exclusion"):
+        load_segment_records(
+            segments_path,
+            exclude_records_path=duplicate,
+        )
+    with pytest.raises(ValueError, match="exactly record_id and text"):
+        load_segment_records(
+            segments_path,
+            exclude_records_path=extra_field,
+        )
 
 
 def test_context_scope_immediate_supports_legacy_segments(tmp_path: Path) -> None:
@@ -986,6 +1078,7 @@ def test_enrichment_cli_context_scope_defaults_to_immediate() -> None:
     )
 
     assert args.context_scope == "immediate"
+    assert args.exclude_records_path is None
 
 
 def test_full_interview_rejects_missing_prompt_placeholder_before_teacher_load(
@@ -1105,6 +1198,61 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
     assert "parsed_output" in sample["attempts"][0]
     assert "rendered_prompt" not in sample
     assert "raw_response" not in sample["attempts"][0]
+
+
+def test_enrichment_cli_skips_approved_records_and_records_filter_manifest(
+    tmp_path: Path,
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    _write_jsonl(
+        segments_dir / "INT01_segments.jsonl",
+        [_segment("INT01", 1), _segment("INT01", 2)],
+    )
+    exclusion_path = _write_jsonl(
+        tmp_path / "exclusions.jsonl",
+        [
+            {
+                "record_id": "INT01_SEG001",
+                "text": "AI can help, but someone still needs to check the result.",
+            }
+        ],
+    )
+    prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {segment_json}")
+    codebook_path = _write_codebook(tmp_path)
+
+    status = enrich_main(
+        [
+            "--segments-path",
+            str(segments_dir),
+            "--exclude-records-path",
+            str(exclusion_path),
+            "--output-dir",
+            str(tmp_path / "outputs"),
+            "--codebook-path",
+            str(codebook_path),
+            "--strategy",
+            "self_consistency",
+            "--prompt-path",
+            str(prompt_path),
+            "--teacher-backend",
+            "dry-run",
+            "--self-consistency-samples",
+            "1",
+        ]
+    )
+
+    assert status == 0
+    interview_dir = tmp_path / "outputs" / "INT01_self_consistency"
+    assert not (interview_dir / "segments" / "INT01_SEG001.json").exists()
+    assert (interview_dir / "segments" / "INT01_SEG002.json").exists()
+    manifest = json.loads(
+        (interview_dir / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["exclusion_filter"]["entry_count"] == 1
+    assert manifest["exclusion_filter"]["matched_count"] == 1
+    assert manifest["exclusion_filter"]["interview_excluded_count"] == 1
+    assert manifest["exclusion_filter"]["validation_status"] == "complete"
 
 
 def test_enrichment_cli_still_records_teacher_failures(

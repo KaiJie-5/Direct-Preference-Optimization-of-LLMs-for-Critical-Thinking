@@ -100,6 +100,41 @@ retained, rejected, and pruned-turn counts plus rejection reasons. Retained
 segment JSONL continues to embed `interview_turns` for enrichment compatibility,
 so the generated segment directory remains intentionally storage-heavy.
 
+### Review Remaining UKDA Enrichment Targets
+
+Generate a broad, human-reviewable queue from the compact target audit:
+
+```bash
+dpo-preprocess target-review \
+  --profile ukda-4688 \
+  --audit-path /iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-preprocessed/target_filter_audit.jsonl \
+  --output-path /iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-preprocessed/enrichment_exclusion_review.jsonl
+```
+
+Each row contains the exact target, its interviewer question, suggested review
+reasons, and `"decision": "review"`. Edit every decision to either `keep` or
+`exclude`. Concise factual targets are deliberately included in this broad
+queue and can be marked `keep`; no review suggestion is automatically active.
+
+After resolving every row, compile the strict runtime list:
+
+```bash
+dpo-preprocess approve-exclusions \
+  --review-path /iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-preprocessed/enrichment_exclusion_review.jsonl \
+  --audit-path /iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-preprocessed/target_filter_audit.jsonl \
+  --output-path /iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-preprocessed/enrichment_exclusions.jsonl
+```
+
+Compilation fails for unresolved decisions or stale target text. The approved
+file contains only exact `record_id`/`text` pairs. Review and approved-list
+manifests record source hashes and decision counts. The rich review file cannot
+be used as the runtime list because enrichment rejects extra fields.
+
+The UKDA SLURM template requires this approved file and passes it through
+`--exclude-records-path`. Direct enrichment commands can use the same option;
+without it, record loading is unchanged for existing datasets. Exclusions are
+applied before `--limit`, and run manifests record the list hash and skip count.
+
 The source archive is never modified. Use `run_preprocessing_ukda4688.sh` for
 the same configured HPC workflow. To replace an existing derived output after
 this policy change, run:

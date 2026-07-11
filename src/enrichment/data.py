@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -342,19 +343,109 @@ class DatasetRecord:
         return str(turn["speaker"]).capitalize()
 
 
+@dataclass(slots=True)
+class SegmentLoadResult:
+    records: list[DatasetRecord]
+    source_record_count: int
+    exclusion_summary: dict[str, Any]
+
+
 def load_segment_records(
     segments_path: Path,
     *,
     limit: int | None = None,
+    exclude_records_path: Path | None = None,
 ) -> list[DatasetRecord]:
     """Load preprocessed segment-level JSONL records from one file or a directory."""
 
+    return load_segment_records_with_report(
+        segments_path,
+        limit=limit,
+        exclude_records_path=exclude_records_path,
+    ).records
+
+
+def load_segment_records_with_report(
+    segments_path: Path,
+    *,
+    limit: int | None = None,
+    exclude_records_path: Path | None = None,
+) -> SegmentLoadResult:
+    """Load records and report exact-match exclusions applied before the limit."""
+
+    exclusions, exclusion_sha256 = _load_record_exclusions(exclude_records_path)
+    matched_ids: set[str] = set()
+    excluded_by_interview: dict[str, int] = {}
+    source_record_count = 0
     records: list[DatasetRecord] = []
+
+    if limit is not None and limit < 0:
+        raise ValueError(f"limit must be non-negative; got {limit}.")
+    if limit == 0:
+        return SegmentLoadResult(
+            records=[],
+            source_record_count=0,
+            exclusion_summary=_exclusion_summary(
+                path=exclude_records_path,
+                sha256=exclusion_sha256,
+                entry_count=len(exclusions),
+                matched_ids=matched_ids,
+                excluded_by_interview=excluded_by_interview,
+                validation_complete=False,
+            ),
+        )
+
+    validation_complete = True
+    stop_loading = False
     for path in iter_segment_files(segments_path):
-        records.extend(_load_segment_jsonl(path))
-        if limit is not None and len(records) >= limit:
-            return records[:limit]
-    return records
+        with path.open("r", encoding="utf-8") as handle:
+            for line_index, line in enumerate(handle, start=1):
+                if not line.strip():
+                    continue
+                payload = json.loads(line)
+                record = _record_from_segment_payload(payload, path, line_index)
+                source_record_count += 1
+                expected_text = exclusions.get(record.record_id)
+                if expected_text is not None:
+                    if record.text != expected_text:
+                        raise ValueError(
+                            "Approved exclusion text does not match segment "
+                            f"record {record.record_id!r} from {path}:{line_index}."
+                        )
+                    matched_ids.add(record.record_id)
+                    excluded_by_interview[record.interview_id] = (
+                        excluded_by_interview.get(record.interview_id, 0) + 1
+                    )
+                    continue
+                records.append(record)
+                if limit is not None and len(records) >= limit:
+                    validation_complete = False
+                    stop_loading = True
+                    break
+        if stop_loading:
+            break
+
+    unmatched_ids = sorted(set(exclusions) - matched_ids)
+    if validation_complete and unmatched_ids:
+        preview = ", ".join(unmatched_ids[:10])
+        suffix = "" if len(unmatched_ids) <= 10 else f" (+{len(unmatched_ids) - 10} more)"
+        raise ValueError(
+            "Approved exclusion IDs were not found in the complete segment input: "
+            f"{preview}{suffix}."
+        )
+
+    return SegmentLoadResult(
+        records=records,
+        source_record_count=source_record_count,
+        exclusion_summary=_exclusion_summary(
+            path=exclude_records_path,
+            sha256=exclusion_sha256,
+            entry_count=len(exclusions),
+            matched_ids=matched_ids,
+            excluded_by_interview=excluded_by_interview,
+            validation_complete=validation_complete,
+        ),
+    )
 
 
 def iter_segment_files(segments_path: Path) -> list[Path]:
@@ -392,6 +483,75 @@ def _load_segment_jsonl(path: Path) -> list[DatasetRecord]:
             payload = json.loads(line)
             records.append(_record_from_segment_payload(payload, path, line_index))
     return records
+
+
+def _load_record_exclusions(
+    path: Path | None,
+) -> tuple[dict[str, str], str | None]:
+    if path is None:
+        return {}, None
+    if not path.is_file():
+        raise FileNotFoundError(f"Approved exclusion file does not exist: {path}")
+
+    exclusions: dict[str, str] = {}
+    digest = hashlib.sha256()
+    with path.open("rb") as binary_handle:
+        for chunk in iter(lambda: binary_handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    with path.open("r", encoding="utf-8") as handle:
+        for line_index, line in enumerate(handle, start=1):
+            if not line.strip():
+                continue
+            try:
+                payload = json.loads(line)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"Invalid JSON at {path}:{line_index}: {exc}.") from exc
+            if not isinstance(payload, dict):
+                raise ValueError(f"{path}:{line_index} must contain a JSON object.")
+            fields = set(payload)
+            required = {"record_id", "text"}
+            if fields != required:
+                missing = sorted(required - fields)
+                extra = sorted(fields - required)
+                raise ValueError(
+                    f"{path}:{line_index} must contain exactly record_id and text; "
+                    f"missing={missing}, extra={extra}."
+                )
+            record_id = payload["record_id"]
+            text = payload["text"]
+            if not isinstance(record_id, str) or not record_id.strip():
+                raise ValueError(f"{path}:{line_index} record_id must be non-empty.")
+            if not isinstance(text, str) or not text.strip():
+                raise ValueError(f"{path}:{line_index} text must be non-empty.")
+            if record_id in exclusions:
+                raise ValueError(f"Duplicate approved exclusion record_id: {record_id}.")
+            exclusions[record_id] = text
+    return exclusions, digest.hexdigest()
+
+
+def _exclusion_summary(
+    *,
+    path: Path | None,
+    sha256: str | None,
+    entry_count: int,
+    matched_ids: set[str],
+    excluded_by_interview: dict[str, int],
+    validation_complete: bool,
+) -> dict[str, Any]:
+    if path is None:
+        validation_status = "not_requested"
+    else:
+        validation_status = "complete" if validation_complete else "partial"
+    return {
+        "path": str(path) if path is not None else None,
+        "sha256": sha256,
+        "entry_count": entry_count,
+        "matched_count": len(matched_ids),
+        "skipped_count": len(matched_ids),
+        "unmatched_count": entry_count - len(matched_ids),
+        "validation_status": validation_status,
+        "excluded_by_interview": dict(sorted(excluded_by_interview.items())),
+    }
 
 
 def _record_from_segment_payload(

@@ -13,6 +13,7 @@
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=kjl1a21@soton.ac.uk
 
+set +u
 set -eo pipefail
 
 CONDA_ENV="${CONDA_ENV:-dpo}"
@@ -21,6 +22,7 @@ SCRATCH_DPO="${SCRATCH_DPO:-/iridisfs/scratch/kjl1a21/DPO}"
 
 MODEL_PATH="${MODEL_PATH:-${SCRATCH_DPO}/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B}"
 SEGMENTS_PATH="${SEGMENTS_PATH:-${SCRATCH_DPO}/data/UKDA-4688-rtf-preprocessed/segments_jsonl}"
+EXCLUDE_RECORDS_PATH="${EXCLUDE_RECORDS_PATH:-${SCRATCH_DPO}/data/UKDA-4688-rtf-preprocessed/enrichment_exclusions.jsonl}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${SCRATCH_DPO}/data/UKDA-4688-rtf-enriched}"
 PROMPT_PATH="${PROMPT_PATH:-${PROJECT_DIR}/prompts/enrichment/self_consistency_placeholder.txt}"
 
@@ -62,6 +64,7 @@ if [[ -z "${RESEARCH_QUESTIONS_FILE}" ]]; then
 fi
 require_directory "${MODEL_PATH}"
 require_directory "${SEGMENTS_PATH}"
+require_file "${EXCLUDE_RECORDS_PATH}"
 require_file "${CODEBOOK_PATH}"
 require_file "${PROMPT_PATH}"
 require_file "${RESEARCH_QUESTIONS_FILE}"
@@ -81,7 +84,26 @@ RUN_DIR="${OUTPUT_ROOT}/${RUN_ID}"
 mkdir -p "${RUN_DIR}"
 exec > >(tee -a "${RUN_DIR}/enrichment.log") 2> >(tee -a "${RUN_DIR}/enrichment.err" >&2)
 
-source ~/.bashrc
+CONDA_BASE="${CONDA_BASE:-}"
+if [[ -z "${CONDA_BASE}" && -n "${CONDA_EXE:-}" && -x "${CONDA_EXE}" ]]; then
+    CONDA_BASE="$("${CONDA_EXE}" info --base)"
+fi
+if [[ -z "${CONDA_BASE}" ]] && command -v conda >/dev/null 2>&1; then
+    CONDA_BASE="$(conda info --base)"
+fi
+if [[ -z "${CONDA_BASE}" ]]; then
+    for candidate in "${HOME}/miniconda3" "${HOME}/anaconda3"; do
+        if [[ -f "${candidate}/etc/profile.d/conda.sh" ]]; then
+            CONDA_BASE="${candidate}"
+            break
+        fi
+    done
+fi
+if [[ -z "${CONDA_BASE}" || ! -f "${CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
+    echo "Unable to locate Conda. Set CONDA_BASE to the Conda installation directory." >&2
+    exit 2
+fi
+source "${CONDA_BASE}/etc/profile.d/conda.sh"
 conda activate "${CONDA_ENV}"
 cd "${PROJECT_DIR}"
 export PYTHONPATH="${PROJECT_DIR}/src:${PYTHONPATH:-}"
@@ -91,6 +113,7 @@ export PYTHONUTF8=1
 
 ARGS=(
     --segments-path "${SEGMENTS_PATH}"
+    --exclude-records-path "${EXCLUDE_RECORDS_PATH}"
     --output-dir "${RUN_DIR}"
     --codebook-path "${CODEBOOK_PATH}"
     --strategy self_consistency
