@@ -90,3 +90,26 @@ docs/enrichment_phase.md
 The preprocessing CLI also includes an isolated `rtf --profile ukda-4688`
 workflow for the UKDA 4688 interview archive and enrichment supports centered
 complete-turn context windows without changing the existing defaults.
+
+## Multi-agent debate ranking
+
+Start a debate ranking run with:
+
+```bash
+dpo-debate rank --config configs/multi_agent_debate_llama_qwen.json
+```
+
+If a job reaches its scheduler time limit, resume it in the original run
+directory:
+
+```bash
+dpo-debate rank \
+  --config configs/multi_agent_debate_llama_qwen.json \
+  --resume /path/to/multi_agent_debate_rankings/existing_run_directory
+```
+
+Resume validates the supplied config and all saved trace files before loading
+the models. Successful and failed saved review blocks are preserved, and only
+missing blocks are generated. A block interrupted before its trace was saved
+restarts from its first debate turn. Final JSONL, CSV, and failure outputs are
+rebuilt from the complete set of checkpoints when the run finishes.

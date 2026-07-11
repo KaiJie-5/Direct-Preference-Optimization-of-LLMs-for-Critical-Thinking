@@ -19,6 +19,7 @@
 CONDA_ENV="dpo"
 PROJECT_DIR="/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking"
 CONFIG_PATH="${PROJECT_DIR}/configs/multi_agent_debate_llama_qwen.json"
+RESUME_RUN_DIR="/iridisfs/scratch/kjl1a21/DPO/data/multi_agent_debate_rankings/llama_70b_qwen_72b_four_turn_debate_20260709_085307"
 
 require_file() {
     if [[ ! -f "$1" ]]; then
@@ -36,6 +37,7 @@ require_directory() {
 
 require_directory "${PROJECT_DIR}"
 require_file "${CONFIG_PATH}"
+require_directory "${RESUME_RUN_DIR}"
 
 source ~/.bashrc
 conda activate "${CONDA_ENV}"
@@ -52,6 +54,7 @@ echo "Node list: ${SLURM_JOB_NODELIST}"
 echo "CUDA devices: ${CUDA_VISIBLE_DEVICES:-unset}"
 echo "Project directory: ${PROJECT_DIR}"
 echo "Config path: ${CONFIG_PATH}"
+echo "Resume run directory: ${RESUME_RUN_DIR}"
 date
 
 echo "Python: $(which python)"
@@ -73,7 +76,9 @@ if command -v nvidia-smi >/dev/null 2>&1; then
 fi
 
 echo "Running multi-agent debate ranking"
-python -m debate.cli rank --config "${CONFIG_PATH}"
+python -m debate.cli rank \
+    --config "${CONFIG_PATH}" \
+    --resume "${RESUME_RUN_DIR}"
 
 echo "Multi-agent debate ranking complete"
 date

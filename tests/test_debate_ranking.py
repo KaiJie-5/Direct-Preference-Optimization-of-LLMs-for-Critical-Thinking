@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +11,7 @@ import pytest
 from debate.agents import DebateGenerationResult
 from debate.aggregation import borda_aggregate
 from debate.compare import compare_rankings
+from debate.cli import build_parser
 from debate.config import (
     DebateConfig,
     GenerationConfig,
@@ -434,6 +436,225 @@ def test_dry_run_debate_writes_segment_trace_final_jsonl_and_long_csv(
         "reflective_question_candidates" not in row["rendered_prompt"]
         for row in trace_rows
     )
+
+
+def test_rank_cli_accepts_resume_run_directory(tmp_path: Path) -> None:
+    args = build_parser().parse_args(
+        [
+            "rank",
+            "--config",
+            str(tmp_path / "config.json"),
+            "--resume",
+            str(tmp_path / "existing-run"),
+        ]
+    )
+
+    assert args.resume == tmp_path / "existing-run"
+
+
+def test_resume_requires_an_existing_run_directory(tmp_path: Path) -> None:
+    review_pack, enriched_parent = _write_review_pack_fixture(tmp_path)
+    prompt_paths = _write_turn_prompts(tmp_path)
+    config = _dummy_config(
+        tmp_path,
+        review_pack,
+        enriched_parent,
+        _turns(prompt_paths),
+    )
+
+    with pytest.raises(FileNotFoundError, match="does not exist"):
+        run_debate_ranking(config, resume_dir=tmp_path / "missing-run")
+
+    not_a_directory = tmp_path / "not-a-directory"
+    not_a_directory.write_text("file", encoding="utf-8")
+    with pytest.raises(ValueError, match="not a directory"):
+        run_debate_ranking(config, resume_dir=not_a_directory)
+
+
+def test_resume_skips_saved_blocks_and_restarts_at_next_missing_block(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from debate import ranking as ranking_module
+
+    review_pack, enriched_parent = _write_review_pack_fixture(tmp_path)
+    prompt_paths = _write_turn_prompts(tmp_path)
+    config = _dummy_config(
+        tmp_path,
+        review_pack,
+        enriched_parent,
+        _turns(prompt_paths),
+    )
+    run_dir = run_debate_ranking(config)
+    trace_path = run_dir / "debate_traces" / "energy" / "INT01_SEG001.json"
+    trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    failed_block = trace["review_blocks"]["too_broad_code"]
+    failed_block["status"] = "failed"
+    failed_block["failure_reason"] = "saved failure"
+    failed_block["failed_turn_id"] = "turn4_final_72b"
+    failed_block["failed_turn_role"] = "final_ranking"
+    failed_block["failed_agent_id"] = "qwen_72b"
+    failed_block["turns"][-1]["parse_status"] = "invalid"
+    failed_block["turns"][-1]["validation_errors"] = ["saved failure"]
+    failed_block["agent_rankings"].pop()
+    failed_block["aggregation_rankings"].pop()
+    for field in (
+        "final_ranking",
+        "borda_scores",
+        "tiebreak_agent_id",
+        "tiebreak_applied",
+        "tiebreaks",
+    ):
+        failed_block.pop(field)
+    trace["review_blocks"].pop("useful_analytical_code")
+    trace_path.write_text(json.dumps(trace), encoding="utf-8")
+    (run_dir / "final_rankings.jsonl").unlink()
+    (run_dir / "final_rankings_long.csv").unlink()
+
+    original_build_agent = ranking_module.build_agent
+    generation_calls: list[str] = []
+
+    class CountingAgent:
+        def __init__(self, wrapped: Any) -> None:
+            self.wrapped = wrapped
+            self.agent_id = wrapped.agent_id
+            self.name = wrapped.name
+
+        def generate(self, messages: Any, generation: Any) -> DebateGenerationResult:
+            generation_calls.append(self.agent_id)
+            return self.wrapped.generate(messages, generation)
+
+        def metadata(self) -> dict[str, Any]:
+            return self.wrapped.metadata()
+
+    monkeypatch.setattr(
+        ranking_module,
+        "build_agent",
+        lambda agent_config: CountingAgent(original_build_agent(agent_config)),
+    )
+
+    resumed_dir = run_debate_ranking(config, resume_dir=run_dir)
+
+    assert resumed_dir == run_dir.resolve()
+    assert generation_calls == ["llama_70b", "qwen_72b", "llama_70b", "qwen_72b"]
+    rebuilt_trace = json.loads(trace_path.read_text(encoding="utf-8"))
+    assert list(rebuilt_trace["review_blocks"]) == [block.id for block in REVIEW_BLOCKS]
+    assert rebuilt_trace["review_blocks"]["too_broad_code"]["status"] == "failed"
+    assert len(_read_jsonl(run_dir / "final_rankings.jsonl")) == 1
+    assert len(_read_csv(run_dir / "final_rankings_long.csv")) == 4
+    failures = _read_jsonl(run_dir / "failures.jsonl")
+    assert len(failures) == 1
+    assert failures[0]["review_block"] == "too_broad_code"
+
+
+def test_resume_complete_run_does_not_load_agents_and_is_idempotent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from debate import ranking as ranking_module
+
+    review_pack, enriched_parent = _write_review_pack_fixture(tmp_path)
+    prompt_paths = _write_turn_prompts(tmp_path)
+    config = _dummy_config(
+        tmp_path,
+        review_pack,
+        enriched_parent,
+        _turns(prompt_paths),
+    )
+    run_dir = run_debate_ranking(config)
+    expected_jsonl = (run_dir / "final_rankings.jsonl").read_text(encoding="utf-8")
+    expected_csv = (run_dir / "final_rankings_long.csv").read_text(encoding="utf-8")
+    monkeypatch.setattr(
+        ranking_module,
+        "build_agent",
+        lambda _config: pytest.fail("completed resume must not load agents"),
+    )
+
+    run_debate_ranking(config, resume_dir=run_dir)
+    run_debate_ranking(config, resume_dir=run_dir)
+
+    assert (run_dir / "final_rankings.jsonl").read_text(encoding="utf-8") == expected_jsonl
+    assert (run_dir / "final_rankings_long.csv").read_text(encoding="utf-8") == expected_csv
+    manifest = json.loads((run_dir / "run_manifest.json").read_text(encoding="utf-8"))
+    assert manifest["run_state"]["status"] == "complete"
+    assert manifest["run_state"]["resume_count"] == 2
+
+
+def test_resume_rejects_execution_config_change_before_loading_agents(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from debate import ranking as ranking_module
+
+    review_pack, enriched_parent = _write_review_pack_fixture(tmp_path)
+    prompt_paths = _write_turn_prompts(tmp_path)
+    config = _dummy_config(
+        tmp_path,
+        review_pack,
+        enriched_parent,
+        _turns(prompt_paths),
+    )
+    run_dir = run_debate_ranking(config)
+    changed_config = replace(
+        config,
+        generation=replace(config.generation, max_new_tokens=123),
+    )
+    monkeypatch.setattr(
+        ranking_module,
+        "build_agent",
+        lambda _config: pytest.fail("invalid resume must not load agents"),
+    )
+
+    with pytest.raises(ValueError, match=r"config\.generation\.max_new_tokens"):
+        run_debate_ranking(changed_config, resume_dir=run_dir)
+
+
+@pytest.mark.parametrize(
+    "damage", ["corrupt", "metadata", "non-prefix", "unknown"]
+)
+def test_resume_rejects_invalid_checkpoint_layout(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    damage: str,
+) -> None:
+    from debate import ranking as ranking_module
+
+    review_pack, enriched_parent = _write_review_pack_fixture(tmp_path)
+    prompt_paths = _write_turn_prompts(tmp_path)
+    config = _dummy_config(
+        tmp_path,
+        review_pack,
+        enriched_parent,
+        _turns(prompt_paths),
+    )
+    run_dir = run_debate_ranking(config)
+    trace_path = run_dir / "debate_traces" / "energy" / "INT01_SEG001.json"
+    if damage == "corrupt":
+        trace_path.write_text("{", encoding="utf-8")
+        expected_error = "Could not read resume trace"
+    elif damage == "metadata":
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        trace["candidate_labels"] = ["A", "B"]
+        trace_path.write_text(json.dumps(trace), encoding="utf-8")
+        expected_error = "metadata mismatch"
+    elif damage == "non-prefix":
+        trace = json.loads(trace_path.read_text(encoding="utf-8"))
+        trace["review_blocks"].pop("descriptive_not_answering_research_question")
+        trace_path.write_text(json.dumps(trace), encoding="utf-8")
+        expected_error = "configured-order prefix"
+    else:
+        unknown_dir = run_dir / "debate_traces" / "unknown"
+        unknown_dir.mkdir()
+        (unknown_dir / "UNKNOWN.json").write_text("{}", encoding="utf-8")
+        expected_error = "does not correspond"
+    monkeypatch.setattr(
+        ranking_module,
+        "build_agent",
+        lambda _config: pytest.fail("invalid resume must not load agents"),
+    )
+
+    with pytest.raises(ValueError, match=expected_error):
+        run_debate_ranking(config, resume_dir=run_dir)
 
 
 def test_four_turn_debate_aggregates_only_turn_3_and_turn_4(tmp_path: Path) -> None:

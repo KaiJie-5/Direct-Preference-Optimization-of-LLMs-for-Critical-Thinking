@@ -17,6 +17,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     rank = subparsers.add_parser("rank", help="Run multi-agent debate ranking.")
     rank.add_argument("--config", required=True, type=Path)
+    rank.add_argument(
+        "--resume",
+        type=Path,
+        metavar="RUN_DIR",
+        help="Resume an interrupted ranking run in the existing run directory.",
+    )
 
     preflight = subparsers.add_parser(
         "preflight",
@@ -56,7 +62,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "rank":
         config = load_debate_config(args.config)
-        run_debate_ranking(config)
+        run_debate_ranking(config, resume_dir=args.resume)
         return 0
     if args.command == "preflight":
         config = load_debate_config(args.config)
