@@ -24,9 +24,10 @@ legacy-gptq = ["auto-gptq"]
 
 [project.scripts]
 dpo-enrich = "enrichment.cli:main"
+dpo-reflective-enrich = "reflective_enrichment.cli:main"
 dpo-preprocess = "preprocessing.cli:main"
 dpo-debate = "debate.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["enrichment*", "preprocessing*", "debate*"]
+include = ["enrichment*", "preprocessing*", "debate*", "reflective_enrichment*"]

@@ -1,0 +1,28 @@
+{
+  "ranking_run_dir": "/iridisfs/scratch/kjl1a21/DPO/data/multi_agent_debate_rankings/llama_70b_qwen_72b_four_turn_debate_20260709_085307",
+  "review_pack_path": "/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking/outputs/researchers_preference_review",
+  "output_root": "/iridisfs/scratch/kjl1a21/DPO/data/reflective_questions_enrichment",
+  "prompt_path": "/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking/prompts/enrichment/reflective_questions_enrichment.txt",
+  "run_name": "deepseek_r1_ranked_codes_reflective_questions",
+  "limit": null,
+  "teacher": {
+    "backend": "transformers",
+    "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B",
+    "torch_dtype": "auto",
+    "device_map": "auto",
+    "trust_remote_code": false,
+    "use_chat_template": true,
+    "force_think_prefix": true,
+    "think_prefix": "<think>\n"
+  },
+  "generation": {
+    "max_new_tokens": 8192,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": null,
+    "repetition_penalty": null,
+    "seed": null,
+    "stop": [],
+    "json_repair_attempts": 2
+  }
+}

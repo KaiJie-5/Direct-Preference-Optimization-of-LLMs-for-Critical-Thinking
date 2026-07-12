@@ -113,3 +113,25 @@ the models. Successful and failed saved review blocks are preserved, and only
 missing blocks are generated. A block interrupted before its trace was saved
 restarts from its first debate turn. Final JSONL, CSV, and failure outputs are
 rebuilt from the complete set of checkpoints when the run finishes.
+
+## Stage-two reflective-question enrichment
+
+Generate four reflective questions per segment from the top-ranked code in each
+debate category:
+
+```bash
+dpo-reflective-enrich --config configs/reflective_questions_enrichment.json
+```
+
+Resume an interrupted scheduler job in its existing run directory:
+
+```bash
+dpo-reflective-enrich \
+  --config configs/reflective_questions_enrichment.json \
+  --resume /path/to/reflective_questions_enrichment/existing_run
+```
+
+Resume validates the ranking-to-sample mapping, selected code payloads, full
+interview context, prompt, execution config, and saved segment checkpoints
+before loading the teacher. Valid successful segments are skipped; failed or
+interrupted segments are regenerated.

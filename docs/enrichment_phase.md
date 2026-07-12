@@ -260,3 +260,30 @@ Research questions can be injected separately and repeated:
 --research-question "How do participants discuss energy efficiency?" \
 --research-question "How do participants describe smart technology use?"
 ```
+
+## Stage-Two Reflective Questions From Ranked Codes
+
+After debate ranking, run the dedicated second enrichment stage:
+
+```bash
+dpo-reflective-enrich --config configs/reflective_questions_enrichment.json
+```
+
+For every segment, it resolves the first-ranked candidate in each of the four
+code-quality categories back to its original enrichment sample and generates
+all four reflective questions in one teacher call. The target segment remains
+the evidence unit; the full interview is supplied only as interpretive context.
+
+Outputs contain an auditable per-segment trace, a rebuilt
+`reflective_questions.jsonl`, `failures.jsonl`, and a run manifest. To resume,
+pass the existing run folder:
+
+```bash
+dpo-reflective-enrich \
+  --config configs/reflective_questions_enrichment.json \
+  --resume /path/to/existing/run
+```
+
+Only strictly validated successful checkpoints are skipped. Failed, invalid,
+and interrupted segments are retried, while prior saved attempts remain in the
+segment audit trace.
