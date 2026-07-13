@@ -13,8 +13,6 @@
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=kjl1a21@soton.ac.uk
 
-set -euo pipefail
-
 CONDA_ENV="dpo"
 PROJECT_DIR="/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking"
 CONFIG_PATH="${PROJECT_DIR}/configs/reflective_questions_enrichment.json"
