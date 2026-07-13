@@ -156,13 +156,12 @@ dpo-enrich \
   --segments-path data/segments_jsonl \
   --output-dir outputs/enrichment \
   --codebook-path data/codebooks/example_codes_v1.json \
-  --strategy self_consistency \
-  --prompt-path prompts/enrichment/self_consistency_placeholder.txt \
+  --strategy single_pass \
+  --prompt-path prompts/enrichment/self_consistency_four_codes.txt \
   --research-question "How do participants discuss energy efficiency?" \
   --research-question "How do participants describe smart technology use?" \
   --teacher-backend dry-run \
   --context-scope full_interview \
-  --self-consistency-samples 5 \
   --limit 1
 ```
 
@@ -173,8 +172,8 @@ dpo-enrich \
   --segments-path data/segments_jsonl \
   --output-dir outputs/enrichment \
   --codebook-path data/codebooks/example_codes_v1.json \
-  --strategy self_consistency \
-  --prompt-path prompts/enrichment/self_consistency_placeholder.txt \
+  --strategy single_pass \
+  --prompt-path prompts/enrichment/self_consistency_four_codes.txt \
   --research-question "How do participants discuss energy efficiency?" \
   --research-question "How do participants describe smart technology use?" \
   --teacher-backend transformers \
@@ -182,7 +181,6 @@ dpo-enrich \
   --model-path /path/to/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B \
   --temperature 0.6 \
   --max-new-tokens 32768 \
-  --self-consistency-samples 5 \
   --force-think-prefix
 ```
 
@@ -199,28 +197,34 @@ strategy, and validates this before loading the teacher model.
 target exchange. Its defaults are 20 turns before and 20 turns after; customize
 them with `--context-turns-before` and `--context-turns-after`. Interview
 metadata, the leading interviewer question, boundary notices, and every target
-response turn are included. The existing self-consistency prompt is aligned at
-runtime so its JSON contract reports `analysis_context_scope: "turn_window"`;
-the checked-in full-interview prompt text and historical modes are unchanged.
+response turn are included. `{context_scope}` is rendered directly into the v3
+prompt contract, so the saved scope always matches the runtime selection.
 
 For UKDA 4688, `submit_job_enrichment_self_consistency_ukda4688.slurm` uses the
-20/20 window, five self-consistency samples, and the existing DeepSeek teacher.
-Submit it only after setting `CODEBOOK_PATH` and `RESEARCH_QUESTIONS_FILE`; the
-latter is a UTF-8 file containing one research question per non-comment line.
+20/20 window, one strict single-pass generation, and the existing DeepSeek teacher.
+Submit it after setting `CODEBOOK_PATH`. The two UKDA-4688 research questions
+are defined directly in the Slurm script and passed as repeated
+`--research-question` arguments.
+This output contains the four code-quality examples directly and must not be sent
+to debate ranking, which requires at least two candidates.
 
-New Self-Consistency and Self-Refine generations use
-`segment_enrichment_sample_v2`. Historical v1 outputs remain readable. Each
-sample is generated exactly once. Missing or malformed JSON, schema violations,
-and missing closed `<think>...</think>` blocks are retained with
-`final_parse_status: "warning"` and detailed `validation_warnings`; they do not
-fail the record. Teacher, filesystem, configuration, and other operational
-exceptions still fail the record and make the final batch exit nonzero.
+```bash
+sbatch --export=ALL,CODEBOOK_PATH=/absolute/path/codebook.json submit_job_enrichment_self_consistency_ukda4688.slurm
+```
+
+New enrichment generations use `segment_enrichment_sample_v3`. Historical v1
+and v2 outputs remain readable. In `single_pass`, missing or malformed JSON,
+schema violations, and missing closed `<think>...</think>` blocks are retained
+with `final_parse_status: "invalid"` and detailed `validation_errors`. The segment
+is marked failed, processing continues, and the final batch exits nonzero when
+any segment fails. Historical multi-sample strategies retain their warning-based
+collection behavior.
 
 Outputs are grouped by interview:
 
 ```text
 outputs/enrichment/
-  INT01_self_consistency/
+  INT01_single_pass/
     run_manifest.json
     events.jsonl
     segments/
@@ -229,7 +233,12 @@ outputs/enrichment/
     failures.jsonl
 ```
 
-Self-consistency currently validates and logs 5 samples per segment. Aggregation is intentionally marked as `not_implemented_yet`. Full rendered prompts and backend payloads are retained in `events.jsonl`. Each per-segment JSON records every generated sample and its single attempt, including raw output text, extracted reasoning and JSON text, model-parsed JSON, canonicalized JSON, corrections, status, and validation warnings. Bulky backend payloads remain only in `events.jsonl`.
+Single-pass enrichment validates and logs one sample per segment and selects it
+only when strict validation succeeds. Full rendered prompts and backend payloads
+are retained in `events.jsonl`. Each per-segment JSON records the generation's
+raw output, extracted reasoning and JSON text, model-parsed JSON, canonicalized
+JSON, corrections, status, and validation issues. Bulky backend payloads remain
+only in `events.jsonl`.
 
 ## Prompt Variables
 
@@ -238,8 +247,8 @@ Templates can use:
 - `{record_id}`
 - `{input_text}`
 - `{analysis_context}` (selected by `--context-scope`)
-- `{context_scope}`, `{context_turns_before}`, and `{context_turns_after}` in
-  `turn_window` runs
+- `{context_scope}` for every run; `{context_turns_before}` and
+  `{context_turns_after}` in `turn_window` runs
 - `{segment_json}`
 - `{interview_id}`, `{segment_id}`, `{speaker}`
 - `{previous_context}`, `{next_context}`

@@ -17,6 +17,70 @@ from .schema import (
 from .teachers import GenerationOptions, Teacher
 
 
+def run_single_pass(
+    *,
+    record: DatasetRecord,
+    teacher: Teacher,
+    prompt: PromptTemplate,
+    prompt_vars: dict[str, Any],
+    generation_options: GenerationOptions,
+    logger: RunLogger,
+    codebook: dict[str, Any] | None = None,
+    research_questions: list[str] | tuple[str, ...] | None = None,
+    context_scope: str = "immediate",
+    context_turns_before: int = 20,
+    context_turns_after: int = 20,
+) -> dict[str, Any]:
+    variables = {
+        **record.to_prompt_vars(
+            codebook,
+            context_scope=context_scope,
+            context_turns_before=context_turns_before,
+            context_turns_after=context_turns_after,
+        ),
+        **prompt_vars,
+    }
+    rendered_prompt = prompt.render(variables)
+    expected_codebook_version = _expected_codebook_version(record, codebook)
+    sample = _generate_validated_sample(
+        record=record,
+        teacher=teacher,
+        prompt=rendered_prompt,
+        generation_options=generation_options,
+        expected_codebook_version=expected_codebook_version,
+        expected_research_questions=research_questions,
+        context_scope=context_scope,
+        logger=logger,
+        strategy="single_pass",
+        sample_index=1,
+        strict_validation=True,
+    )
+    is_valid = sample["final_parse_status"] == "valid"
+    return {
+        "record_id": record.record_id,
+        "input_text": record.text,
+        "metadata": record.metadata,
+        "source": record.source,
+        "strategy": "single_pass",
+        "status": "success" if is_valid else "failed",
+        "context_scope": context_scope,
+        **(
+            {
+                "context_turns_before": context_turns_before,
+                "context_turns_after": context_turns_after,
+            }
+            if context_scope == "turn_window"
+            else {}
+        ),
+        "prompt_path": str(prompt.path),
+        "num_samples": 1,
+        "selected_sample_index": 1 if is_valid else None,
+        "selected_output": sample["output_text"] if is_valid else None,
+        "selected_json": sample["parsed_output"] if is_valid else None,
+        "samples": [sample],
+    }
+
+
 def run_self_consistency(
     *,
     record: DatasetRecord,
@@ -28,6 +92,7 @@ def run_self_consistency(
     aggregation: str,
     logger: RunLogger,
     codebook: dict[str, Any] | None = None,
+    research_questions: list[str] | tuple[str, ...] | None = None,
     context_scope: str = "immediate",
     context_turns_before: int = 20,
     context_turns_after: int = 20,
@@ -70,6 +135,7 @@ def run_self_consistency(
             prompt=rendered_prompt,
             generation_options=sample_options,
             expected_codebook_version=expected_codebook_version,
+            expected_research_questions=research_questions,
             context_scope=context_scope,
             logger=logger,
             strategy="self_consistency",
@@ -116,6 +182,7 @@ def run_self_refine(
     history_format: str,
     logger: RunLogger,
     codebook: dict[str, Any] | None = None,
+    research_questions: list[str] | tuple[str, ...] | None = None,
     context_scope: str = "immediate",
     context_turns_before: int = 20,
     context_turns_after: int = 20,
@@ -148,6 +215,7 @@ def run_self_refine(
         prompt=initial_rendered,
         generation_options=generation_options,
         expected_codebook_version=expected_codebook_version,
+        expected_research_questions=research_questions,
         context_scope=context_scope,
         logger=logger,
         strategy="self_refine",
@@ -246,6 +314,7 @@ def run_self_refine(
             prompt=revision_rendered,
             generation_options=generation_options,
             expected_codebook_version=expected_codebook_version,
+            expected_research_questions=research_questions,
             context_scope=context_scope,
             logger=logger,
             strategy="self_refine",
@@ -304,11 +373,13 @@ def _generate_validated_sample(
     prompt: str,
     generation_options: GenerationOptions,
     expected_codebook_version: str | None,
+    expected_research_questions: list[str] | tuple[str, ...] | None,
     context_scope: str,
     logger: RunLogger,
     strategy: str,
     sample_index: int,
     step: str = "sample",
+    strict_validation: bool = False,
 ) -> dict[str, Any]:
     attempt_index = 1
     result = teacher.generate(prompt, generation_options)
@@ -326,6 +397,7 @@ def _generate_validated_sample(
         expected_codebook_version=expected_codebook_version,
         expected_schema_version=SAMPLE_SCHEMA_VERSION,
         expected_context_scope=context_scope,
+        expected_research_questions=expected_research_questions,
         strict_prompt_schema=True,
         allow_target_text_mismatch=False,
     )
@@ -337,8 +409,14 @@ def _generate_validated_sample(
         )
     if parse_error and parsed is None:
         issues.insert(0, parse_error)
-    validation_warnings = [*issues, *validation_result.warnings]
-    parse_status = "warning" if validation_warnings else "valid"
+    if strict_validation:
+        validation_errors = issues
+        validation_warnings = list(validation_result.warnings)
+        parse_status = "invalid" if validation_errors else "valid"
+    else:
+        validation_errors = []
+        validation_warnings = [*issues, *validation_result.warnings]
+        parse_status = "warning" if validation_warnings else "valid"
     prompt_reference = logger.prompt_snapshot(
         record_id=record.record_id,
         strategy=strategy,
@@ -372,7 +450,7 @@ def _generate_validated_sample(
         "parsed_output": parsed,
         "canonical_corrections": canonical_corrections,
         "parse_status": parse_status,
-        "validation_errors": [],
+        "validation_errors": validation_errors,
         "validation_warnings": validation_warnings,
         "raw_response": raw_response,
         "elapsed_seconds": result.elapsed_seconds,
@@ -393,7 +471,7 @@ def _generate_validated_sample(
         "step": step,
         "attempt_count": 1,
         "final_parse_status": parse_status,
-        "validation_errors": [],
+        "validation_errors": validation_errors,
         "validation_warnings": validation_warnings,
         "canonical_corrections": canonical_corrections,
         "output_text": result.text,

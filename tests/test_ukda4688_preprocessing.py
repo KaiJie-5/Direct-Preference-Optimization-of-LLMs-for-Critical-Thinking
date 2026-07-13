@@ -551,7 +551,7 @@ def test_turn_window_cli_defaults_and_prompt_contract_are_additive() -> None:
     assert approve_args.command == "approve-exclusions"
 
 
-def test_ukda_hpc_job_requires_runtime_analysis_inputs() -> None:
+def test_ukda_hpc_job_requires_codebook_and_embeds_research_questions() -> None:
     script = (
         Path(__file__).parents[1]
         / "submit_job_enrichment_self_consistency_ukda4688.slurm"
@@ -559,9 +559,16 @@ def test_ukda_hpc_job_requires_runtime_analysis_inputs() -> None:
     assert 'CONTEXT_SCOPE="turn_window"' in script
     assert "CONTEXT_TURNS_BEFORE=20" in script
     assert "CONTEXT_TURNS_AFTER=20" in script
-    assert "SELF_CONSISTENCY_SAMPLES=5" in script
+    assert "SELF_CONSISTENCY_SAMPLES" not in script
+    assert "--strategy single_pass" in script
+    assert "prompts/enrichment/self_consistency_four_codes.txt" in script
     assert "CODEBOOK_PATH must be supplied" in script
-    assert "RESEARCH_QUESTIONS_FILE contains no research questions" in script
+    assert "RESEARCH_QUESTIONS_FILE" not in script
+    assert (
+        '"What factors and processes affect household choices of where to live?"'
+        in script
+    )
+    assert '"How does employment shape family life?"' in script
     assert "EXCLUDE_RECORDS_PATH" in script
     assert 'require_file "${EXCLUDE_RECORDS_PATH}"' in script
     assert '--exclude-records-path "${EXCLUDE_RECORDS_PATH}"' in script

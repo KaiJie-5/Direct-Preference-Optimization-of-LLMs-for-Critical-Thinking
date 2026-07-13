@@ -74,6 +74,7 @@ class DatasetRecord:
         variables = {
             "record_id": self.record_id,
             "input_text": self.text,
+            "context_scope": context_scope,
             "analysis_context": self.analysis_context(
                 context_scope,
                 context_turns_before=context_turns_before,
@@ -88,7 +89,6 @@ class DatasetRecord:
         if context_scope == "turn_window":
             variables.update(
                 {
-                    "context_scope": context_scope,
                     "context_turns_before": context_turns_before,
                     "context_turns_after": context_turns_after,
                 }

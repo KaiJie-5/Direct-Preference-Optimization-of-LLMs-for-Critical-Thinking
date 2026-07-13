@@ -10,30 +10,39 @@ from .data import DatasetRecord
 
 
 LEGACY_SAMPLE_SCHEMA_VERSION = "segment_enrichment_sample_v1"
-SAMPLE_SCHEMA_VERSION = "segment_enrichment_sample_v2"
+V2_SAMPLE_SCHEMA_VERSION = "segment_enrichment_sample_v2"
+SAMPLE_SCHEMA_VERSION = "segment_enrichment_sample_v3"
 SUPPORTED_SAMPLE_SCHEMA_VERSIONS = {
     LEGACY_SAMPLE_SCHEMA_VERSION,
+    V2_SAMPLE_SCHEMA_VERSION,
     SAMPLE_SCHEMA_VERSION,
 }
 
-BASE_SAMPLE_REQUIRED_FIELDS = {
+CORE_SAMPLE_REQUIRED_FIELDS = {
     "schema_version",
     "record_id",
     "codebook_version",
     "analysis_unit",
-    "candidate_code_matches",
-    "possible_new_codes",
     "code_quality_examples",
-    "reflective_question_candidates",
     "quality_control",
 }
 
-V1_SAMPLE_REQUIRED_FIELDS = BASE_SAMPLE_REQUIRED_FIELDS | {
+V1_SAMPLE_REQUIRED_FIELDS = CORE_SAMPLE_REQUIRED_FIELDS | {
+    "candidate_code_matches",
+    "possible_new_codes",
+    "reflective_question_candidates",
     "research_question_relevance",
     "contrastive_judgement",
 }
 
-V2_SAMPLE_REQUIRED_FIELDS = BASE_SAMPLE_REQUIRED_FIELDS | {
+V2_SAMPLE_REQUIRED_FIELDS = CORE_SAMPLE_REQUIRED_FIELDS | {
+    "candidate_code_matches",
+    "possible_new_codes",
+    "reflective_question_candidates",
+    "research_question_relevance",
+}
+
+V3_SAMPLE_REQUIRED_FIELDS = CORE_SAMPLE_REQUIRED_FIELDS | {
     "research_question_relevance",
 }
 
@@ -245,7 +254,10 @@ def canonicalize_source_fields(
             "speaker": record.metadata.get("speaker"),
             "target_text": record.text,
         }
-        if expected_schema_version == SAMPLE_SCHEMA_VERSION:
+        if expected_schema_version in {
+            V2_SAMPLE_SCHEMA_VERSION,
+            SAMPLE_SCHEMA_VERSION,
+        }:
             expected_analysis_unit.update(
                 {
                     "analysis_context_used": True,
@@ -507,6 +519,7 @@ def validate_segment_enrichment_sample(
     expected_codebook_version: str | None = None,
     expected_schema_version: str | None = None,
     expected_context_scope: str | None = None,
+    expected_research_questions: list[str] | tuple[str, ...] | None = None,
     strict_prompt_schema: bool = True,
 ) -> list[str]:
     return validate_segment_enrichment_sample_result(
@@ -515,6 +528,7 @@ def validate_segment_enrichment_sample(
         expected_codebook_version=expected_codebook_version,
         expected_schema_version=expected_schema_version,
         expected_context_scope=expected_context_scope,
+        expected_research_questions=expected_research_questions,
         strict_prompt_schema=strict_prompt_schema,
         allow_target_text_mismatch=False,
     ).errors
@@ -527,6 +541,7 @@ def validate_segment_enrichment_sample_result(
     expected_codebook_version: str | None = None,
     expected_schema_version: str | None = None,
     expected_context_scope: str | None = None,
+    expected_research_questions: list[str] | tuple[str, ...] | None = None,
     strict_prompt_schema: bool = True,
     allow_target_text_mismatch: bool = False,
 ) -> ValidationResult:
@@ -551,17 +566,22 @@ def validate_segment_enrichment_sample_result(
             f"{expected_schema_version!r}, got {actual_schema_version!r}"
         )
 
-    is_v2 = validation_schema_version == SAMPLE_SCHEMA_VERSION
-    if is_v2:
+    is_v3 = validation_schema_version == SAMPLE_SCHEMA_VERSION
+    is_v2 = validation_schema_version == V2_SAMPLE_SCHEMA_VERSION
+    if is_v3:
+        required_fields = V3_SAMPLE_REQUIRED_FIELDS
+    elif is_v2:
         required_fields = V2_SAMPLE_REQUIRED_FIELDS
     elif strict_prompt_schema:
         required_fields = V1_SAMPLE_REQUIRED_FIELDS
     else:
-        required_fields = BASE_SAMPLE_REQUIRED_FIELDS
+        required_fields = CORE_SAMPLE_REQUIRED_FIELDS
     missing = sorted(required_fields - set(payload))
     if missing:
         errors.append(f"Missing required fields: {missing}")
-    if is_v2:
+    if is_v3:
+        _validate_exact_fields(payload, "sample", V3_SAMPLE_REQUIRED_FIELDS, errors)
+    elif is_v2:
         _validate_exact_fields(payload, "sample", V2_SAMPLE_REQUIRED_FIELDS, errors)
 
     if payload.get("record_id") != record.record_id:
@@ -597,14 +617,31 @@ def validate_segment_enrichment_sample_result(
                 warnings.append(message)
             else:
                 errors.append("analysis_unit.target_text must equal the segment text.")
-        if is_v2:
+        if is_v2 or is_v3:
             _validate_analysis_unit_v2(
                 analysis_unit,
                 expected_context_scope=expected_context_scope,
                 errors=errors,
             )
 
-    if is_v2:
+    if is_v3:
+        _validate_research_question_relevance(
+            payload,
+            errors,
+            exact=True,
+            expected_research_questions=expected_research_questions,
+            enforce_consistency=True,
+            require_non_empty=True,
+        )
+        _validate_code_quality_examples(
+            payload,
+            errors,
+            strict=True,
+            schema_version=SAMPLE_SCHEMA_VERSION,
+        )
+        _validate_distinct_code_labels(payload, errors)
+        _validate_quality_control_v2(payload, errors, require_non_empty=True)
+    elif is_v2:
         _validate_research_question_relevance(payload, errors, exact=True)
         candidate_ids = _validate_candidate_code_matches(payload, errors)
         provisional_ids = _validate_possible_new_codes(payload, errors)
@@ -612,7 +649,7 @@ def validate_segment_enrichment_sample_result(
             payload,
             errors,
             strict=True,
-            schema_version=SAMPLE_SCHEMA_VERSION,
+            schema_version=V2_SAMPLE_SCHEMA_VERSION,
         )
         _validate_reflective_questions_v2(
             payload,
@@ -639,8 +676,14 @@ def validate_segment_enrichment_sample_result(
         if not isinstance(payload.get("quality_control"), dict):
             errors.append("quality_control must be an object.")
 
-    if is_v2:
-        _validate_structured_quotes(payload, record.text, errors, warnings)
+    if is_v2 or is_v3:
+        _validate_structured_quotes(
+            payload,
+            record.text,
+            errors,
+            warnings,
+            nonmatching_is_error=is_v3,
+        )
         collapsed_paths = _collapsed_narrative_paths(payload)
         if len(collapsed_paths) >= 3:
             errors.append(
@@ -656,6 +699,8 @@ def _validate_structured_quotes(
     target_text: str,
     errors: list[str],
     warnings: list[str],
+    *,
+    nonmatching_is_error: bool = False,
 ) -> None:
     for container, key, path in _structured_quote_slots(payload):
         quote = container.get(key)
@@ -666,10 +711,11 @@ def _validate_structured_quotes(
                 f"{path} must be an exact non-empty substring of the target segment."
             )
         elif isinstance(quote, str):
-            warnings.append(
+            message = (
                 f"{path} is non-empty but is not an exact target-segment "
                 "substring; manual correction is required."
             )
+            (errors if nonmatching_is_error else warnings).append(message)
 
 
 def _collapsed_narrative_paths(payload: dict[str, Any]) -> list[str]:
@@ -699,7 +745,13 @@ def _looks_whitespace_collapsed(value: Any) -> bool:
 
 
 def _validate_research_question_relevance(
-    payload: dict[str, Any], errors: list[str], *, exact: bool = False
+    payload: dict[str, Any],
+    errors: list[str],
+    *,
+    exact: bool = False,
+    expected_research_questions: list[str] | tuple[str, ...] | None = None,
+    enforce_consistency: bool = False,
+    require_non_empty: bool = False,
 ) -> None:
     relevance = payload.get("research_question_relevance")
     if not isinstance(relevance, dict):
@@ -724,16 +776,45 @@ def _validate_research_question_relevance(
             "research_question_relevance.relevant_research_questions "
             "must contain only strings."
         )
+    elif expected_research_questions is not None:
+        allowed_questions = {
+            question.strip()
+            for question in expected_research_questions
+            if isinstance(question, str) and question.strip()
+        }
+        unknown_questions = [
+            question for question in questions if question not in allowed_questions
+        ]
+        if unknown_questions:
+            errors.append(
+                "research_question_relevance.relevant_research_questions contains "
+                f"questions not supplied to this run: {unknown_questions}."
+            )
     if not isinstance(relevance.get("is_segment_analytically_useful"), bool):
         errors.append(
             "research_question_relevance.is_segment_analytically_useful must be a boolean."
         )
-    _validate_string_fields(
+    string_validator = (
+        _validate_non_empty_string_fields if require_non_empty else _validate_string_fields
+    )
+    string_validator(
         relevance,
         "research_question_relevance",
         {"segment_relevance_summary", "why_or_why_not"},
         errors,
     )
+    if enforce_consistency and isinstance(questions, list):
+        is_useful = relevance.get("is_segment_analytically_useful")
+        if not questions and is_useful is not False:
+            errors.append(
+                "research_question_relevance.is_segment_analytically_useful must be "
+                "false when relevant_research_questions is empty."
+            )
+        if questions and is_useful is not True:
+            errors.append(
+                "research_question_relevance.is_segment_analytically_useful must be "
+                "true when relevant_research_questions is non-empty."
+            )
 
 
 def _validate_code_quality_examples(
@@ -770,22 +851,52 @@ def _validate_code_quality_examples(
         if strict:
             expected_fields = (
                 V2_CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS[field]
-                if schema_version == SAMPLE_SCHEMA_VERSION
+                if schema_version in {V2_SAMPLE_SCHEMA_VERSION, SAMPLE_SCHEMA_VERSION}
                 else V1_CODE_QUALITY_EXAMPLE_REQUIRED_STRING_FIELDS[field]
             )
-            if schema_version == SAMPLE_SCHEMA_VERSION:
+            if schema_version in {V2_SAMPLE_SCHEMA_VERSION, SAMPLE_SCHEMA_VERSION}:
                 _validate_exact_fields(
                     example,
                     f"code_quality_examples.{field}",
                     expected_fields,
                     errors,
                 )
-            _validate_string_fields(
+            string_validator = (
+                _validate_non_empty_string_fields
+                if schema_version == SAMPLE_SCHEMA_VERSION
+                else _validate_string_fields
+            )
+            string_validator(
                 example,
                 f"code_quality_examples.{field}",
                 expected_fields,
                 errors,
             )
+
+
+def _validate_distinct_code_labels(
+    payload: dict[str, Any], errors: list[str]
+) -> None:
+    examples = payload.get("code_quality_examples")
+    if not isinstance(examples, dict):
+        return
+    normalized_labels: dict[str, str] = {}
+    for category in sorted(CODE_QUALITY_EXAMPLE_FIELDS):
+        example = examples.get(category)
+        if not isinstance(example, dict):
+            continue
+        label = example.get("code_label")
+        if not isinstance(label, str) or not label.strip():
+            continue
+        normalized = " ".join(label.split()).casefold()
+        previous_category = normalized_labels.get(normalized)
+        if previous_category is not None:
+            errors.append(
+                "code_quality_examples must contain four distinct code labels; "
+                f"{previous_category} and {category} both use {label!r}."
+            )
+        else:
+            normalized_labels[normalized] = category
 
 
 def _validate_analysis_unit_v2(
@@ -965,14 +1076,20 @@ def _validate_reflective_questions_v2(
 
 
 def _validate_quality_control_v2(
-    payload: dict[str, Any], errors: list[str]
+    payload: dict[str, Any],
+    errors: list[str],
+    *,
+    require_non_empty: bool = False,
 ) -> None:
     quality = payload.get("quality_control")
     if not isinstance(quality, dict):
         errors.append("quality_control must be an object.")
         return
     _validate_exact_fields(quality, "quality_control", QUALITY_CONTROL_FIELDS, errors)
-    _validate_string_fields(
+    string_validator = (
+        _validate_non_empty_string_fields if require_non_empty else _validate_string_fields
+    )
+    string_validator(
         quality,
         "quality_control",
         {
@@ -1066,6 +1183,21 @@ def _validate_string_fields(
             errors.append(f"{path}.{field} is required.")
         elif not isinstance(payload[field], str):
             errors.append(f"{path}.{field} must be a string.")
+
+
+def _validate_non_empty_string_fields(
+    payload: dict[str, Any],
+    path: str,
+    fields: set[str],
+    errors: list[str],
+) -> None:
+    for field in sorted(fields):
+        if field not in payload:
+            errors.append(f"{path}.{field} is required.")
+        elif not isinstance(payload[field], str):
+            errors.append(f"{path}.{field} must be a string.")
+        elif not payload[field].strip():
+            errors.append(f"{path}.{field} must be a non-empty string.")
 
 
 def _validate_exact_fields(

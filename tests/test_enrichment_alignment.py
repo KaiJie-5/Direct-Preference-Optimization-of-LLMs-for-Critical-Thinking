@@ -21,6 +21,7 @@ from enrichment.schema import (
 from enrichment.strategies import (
     run_self_consistency,
     run_self_refine,
+    run_single_pass,
 )
 from enrichment.teachers import (
     GenerationOptions,
@@ -37,9 +38,11 @@ class QueueTeacher:
     def __init__(self, outputs: list[str]) -> None:
         self.outputs = outputs
         self.prompts: list[str] = []
+        self.options: list[GenerationOptions] = []
 
     def generate(self, prompt: str, options: GenerationOptions) -> GenerationResult:
         self.prompts.append(prompt)
+        self.options.append(options)
         output = self.outputs.pop(0)
         return GenerationResult(
             text=output,
@@ -523,6 +526,67 @@ def test_self_consistency_keeps_invalid_json_as_warning_without_retry(
     assert generation_events[0]["is_repair_prompt"] is False
 
 
+def test_single_pass_generates_and_selects_exactly_one_valid_sample(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v3_sample(record, codebook_version="v1")
+    response = f"<think>Grounded checks.</think>\n{json.dumps(payload)}"
+    teacher = QueueTeacher([response, "must not be consumed"])
+
+    enriched = run_single_pass(
+        record=record,
+        teacher=teacher,
+        prompt=PromptTemplate(_write_prompt(tmp_path, "Prompt {record_id}")),
+        prompt_vars={},
+        codebook=_codebook_payload(),
+        research_questions=["How do participants describe AI support?"],
+        generation_options=GenerationOptions(temperature=0.6, top_p=0.95),
+        logger=RunLogger(tmp_path / "logs"),
+    )
+
+    assert len(teacher.prompts) == 1
+    assert teacher.options[0].temperature == 0.6
+    assert teacher.options[0].top_p == 0.95
+    assert enriched["status"] == "success"
+    assert enriched["num_samples"] == 1
+    assert enriched["selected_sample_index"] == 1
+    assert enriched["selected_output"] == response
+    assert enriched["selected_json"] == payload
+    assert enriched["samples"][0]["final_parse_status"] == "valid"
+
+
+def test_single_pass_retains_invalid_sample_and_does_not_select_it(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    teacher = QueueTeacher(["<think>Grounded checks.</think>\nnot json"])
+
+    enriched = run_single_pass(
+        record=record,
+        teacher=teacher,
+        prompt=PromptTemplate(_write_prompt(tmp_path, "Prompt {record_id}")),
+        prompt_vars={},
+        codebook=_codebook_payload(),
+        research_questions=["How do participants describe AI support?"],
+        generation_options=GenerationOptions(),
+        logger=RunLogger(tmp_path / "logs"),
+    )
+
+    sample = enriched["samples"][0]
+    assert enriched["status"] == "failed"
+    assert enriched["selected_sample_index"] is None
+    assert enriched["selected_output"] is None
+    assert enriched["selected_json"] is None
+    assert sample["final_parse_status"] == "invalid"
+    assert "No JSON object could be parsed." in sample["validation_errors"]
+    assert sample["output_text"].endswith("not json")
+
+
 def test_self_consistency_keeps_all_samples_after_validation_warnings(
     tmp_path: Path,
 ) -> None:
@@ -532,15 +596,15 @@ def test_self_consistency_keeps_all_samples_after_validation_warnings(
     )[0]
     codebook = _codebook_payload()
 
-    invalid_boolean = _valid_v2_sample(record, codebook_version="v1")
+    invalid_boolean = _valid_v3_sample(record, codebook_version="v1")
     invalid_boolean["research_question_relevance"][
         "is_segment_analytically_useful"
     ] = "yes"
-    invalid_enum = _valid_v2_sample(record, codebook_version="v1")
-    invalid_enum["reflective_question_candidates"][1]["question_type"] = (
-        "devil's_advocate"
+    duplicate_label = _valid_v3_sample(record, codebook_version="v1")
+    duplicate_label["code_quality_examples"]["too_broad_code"]["code_label"] = (
+        duplicate_label["code_quality_examples"]["wrong_code"]["code_label"]
     )
-    collapsed_text = _valid_v2_sample(record, codebook_version="v1")
+    collapsed_text = _valid_v3_sample(record, codebook_version="v1")
     collapsed_text["research_question_relevance"]["segment_relevance_summary"] = (
         "Thisresponsehaslostallordinaryspaces"
     )
@@ -550,12 +614,12 @@ def test_self_consistency_keeps_all_samples_after_validation_warnings(
     collapsed_text["quality_control"]["review_reason"] = (
         "Humanreviewcannotreadthiscollapsedresponse"
     )
-    clean = _valid_v2_sample(record, codebook_version="v1")
+    clean = _valid_v3_sample(record, codebook_version="v1")
     teacher = QueueTeacher(
         [
             f"<think>\nReasoning {index}.\n</think>\n{json.dumps(payload)}"
             for index, payload in enumerate(
-                [invalid_boolean, invalid_enum, collapsed_text, clean], start=1
+                [invalid_boolean, duplicate_label, collapsed_text, clean], start=1
             )
         ]
     )
@@ -583,7 +647,7 @@ def test_self_consistency_keeps_all_samples_after_validation_warnings(
     assert "must be a boolean" in " ".join(
         enriched["samples"][0]["validation_warnings"]
     )
-    assert "question_type must be one of" in " ".join(
+    assert "four distinct code labels" in " ".join(
         enriched["samples"][1]["validation_warnings"]
     )
     assert "collapsed whitespace" in " ".join(
@@ -597,7 +661,7 @@ def test_self_consistency_canonicalizes_target_text_mismatch(
     prompt_path = _write_prompt(tmp_path, "Prompt {record_id}: {candidate_example_codes_json}")
     record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
     codebook = _codebook_payload()
-    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload = _valid_v3_sample(record, codebook_version="v1")
     payload["analysis_unit"]["target_text"] = (
         "AI can help, but someone still needs to check the corrected result."
     )
@@ -632,7 +696,7 @@ def test_canonicalize_source_fields_restores_runtime_identity(tmp_path: Path) ->
     record = load_segment_records(
         _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
     )[0]
-    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload = _valid_v3_sample(record, codebook_version="v1")
     payload["record_id"] = "wrong"
     payload["analysis_unit"]["speaker"] = "interviewer"
     payload["analysis_unit"]["analysis_context_scope"] = "full_interview"
@@ -683,6 +747,7 @@ def test_canonicalize_source_fields_repairs_all_structured_quote_locations(
         record,
         expected_codebook_version="v1",
         expected_context_scope="immediate",
+        expected_schema_version="segment_enrichment_sample_v2",
     )
 
     assert canonical is not None
@@ -742,6 +807,7 @@ def test_canonicalize_source_fields_warns_for_ambiguous_quote_match(
         record,
         expected_codebook_version="v1",
         expected_context_scope="immediate",
+        expected_schema_version="segment_enrichment_sample_v2",
     )
 
     assert canonical is not None
@@ -790,7 +856,7 @@ def test_self_consistency_does_not_retry_non_empty_quote_warning(
     record = load_segment_records(
         _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
     )[0]
-    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload = _valid_v3_sample(record, codebook_version="v1")
     payload["code_quality_examples"]["wrong_code"][
         "actual_segment_quote"
     ] = "A quotation that is unrelated to the target."
@@ -851,7 +917,7 @@ def test_self_consistency_keeps_missing_think_block_as_warning(tmp_path: Path) -
     record = load_segment_records(
         _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
     )[0]
-    payload = _valid_v2_sample(record, codebook_version="v1")
+    payload = _valid_v3_sample(record, codebook_version="v1")
     teacher = QueueTeacher([json.dumps(payload)])
 
     enriched = run_self_consistency(
@@ -884,7 +950,7 @@ def test_self_consistency_receives_full_interview_context(tmp_path: Path) -> Non
     )[0]
     prompt_path = _write_prompt(tmp_path, "Context:\n{analysis_context}")
     valid_output = json.dumps(
-        _valid_v2_sample(
+        _valid_v3_sample(
             record,
             codebook_version="v1",
             context_scope="full_interview",
@@ -926,7 +992,7 @@ def test_self_refine_receives_full_context_in_every_prompt(tmp_path: Path) -> No
         "Revision:\n{analysis_context}\n{current_answer}\n{feedback}",
     )
     valid_json = json.dumps(
-        _valid_v2_sample(
+        _valid_v3_sample(
             record,
             codebook_version="v1",
             context_scope="full_interview",
@@ -971,7 +1037,7 @@ def test_self_refine_continues_from_unparseable_warning_output(tmp_path: Path) -
     revision_prompt = _write_prompt(
         tmp_path, "Revision {current_answer} {current_answer_json} {feedback}"
     )
-    valid_json = json.dumps(_valid_v2_sample(record, codebook_version="v1"))
+    valid_json = json.dumps(_valid_v3_sample(record, codebook_version="v1"))
     teacher = QueueTeacher(
         [
             "<think>\nUseful raw reasoning.\n</think>\nnot json",
@@ -1188,7 +1254,7 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
         (interview_dir / "run_manifest.json").read_text(encoding="utf-8")
     )
     assert manifest["args"]["context_scope"] == "immediate"
-    assert manifest["output_schema_version"] == "segment_enrichment_sample_v2"
+    assert manifest["output_schema_version"] == "segment_enrichment_sample_v3"
     sample = segment_payload["samples"][0]
     assert "reasoning_text" in sample
     assert sample["attempt_count"] == 1
@@ -1198,6 +1264,72 @@ def test_enrichment_cli_writes_per_interview_output_directory(tmp_path: Path) ->
     assert "parsed_output" in sample["attempts"][0]
     assert "rendered_prompt" not in sample
     assert "raw_response" not in sample["attempts"][0]
+
+
+def test_single_pass_cli_saves_invalid_audit_and_returns_nonzero(
+    tmp_path: Path,
+) -> None:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    _write_jsonl(segments_dir / "INT01_segments.jsonl", [_segment("INT01", 1)])
+    prompt_path = _write_prompt(
+        tmp_path,
+        (
+            "{record_id} {interview_id} {segment_id} {speaker} "
+            "{codebook_version} {research_questions} {analysis_context} "
+            "{context_scope} {input_text} {candidate_example_codes_json}"
+        ),
+    )
+    output_dir = tmp_path / "outputs"
+
+    status = enrich_main(
+        [
+            "--segments-path",
+            str(segments_dir),
+            "--output-dir",
+            str(output_dir),
+            "--codebook-path",
+            str(_write_codebook(tmp_path)),
+            "--strategy",
+            "single_pass",
+            "--prompt-path",
+            str(prompt_path),
+            "--research-question",
+            "How do participants describe AI support?",
+            "--teacher-backend",
+            "dry-run",
+        ]
+    )
+
+    assert status == 1
+    interview_dir = output_dir / "INT01_single_pass"
+    segment = json.loads(
+        (interview_dir / "segments" / "INT01_SEG001.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    failures = _read_jsonl(interview_dir / "failures.jsonl")
+    assert segment["status"] == "failed"
+    assert segment["samples"][0]["final_parse_status"] == "invalid"
+    assert failures[0]["error_type"] == "ValidationError"
+
+
+def test_ukda_slurm_uses_single_pass_four_code_prompt() -> None:
+    script = Path("submit_job_enrichment_self_consistency_ukda4688.slurm").read_text(
+        encoding="utf-8"
+    )
+
+    assert "prompts/enrichment/self_consistency_four_codes.txt" in script
+    assert "--strategy single_pass" in script
+    assert "SELF_CONSISTENCY_SAMPLES" not in script
+    assert "--self-consistency-samples" not in script
+    assert "RESEARCH_QUESTIONS_FILE" not in script
+    assert (
+        "What factors and processes affect household choices of where to live?"
+        in script
+    )
+    assert "How does employment shape family life?" in script
+    assert "do not submit it to debate ranking" in script
 
 
 def test_enrichment_cli_skips_approved_records_and_records_filter_manifest(
@@ -1316,18 +1448,21 @@ def test_self_consistency_prompt_has_single_codebook_and_target_copy(
     tmp_path: Path,
 ) -> None:
     record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
-    prompt = PromptTemplate(Path("prompts/enrichment/self_consistency_placeholder.txt"))
+    prompt = PromptTemplate(Path("prompts/enrichment/self_consistency_four_codes.txt"))
     rendered = prompt.render(record.to_prompt_vars(_codebook_payload()))
 
     assert rendered.count('"code_id": "human_oversight"') == 1
     assert rendered.count(record.text) == 1
-    assert "Copy the Target segment text exactly into analysis_unit.target_text." in rendered
-    assert '"schema_version": "segment_enrichment_sample_v2"' in rendered
+    assert "Every actual_segment_quote and evidence_quote" in rendered
+    assert '"schema_version": "segment_enrichment_sample_v3"' in rendered
+    assert "reflective_question_candidates" not in rendered
+    assert "candidate_code_matches" not in rendered
+    assert "possible_new_codes" not in rendered
 
 
 def test_self_consistency_prompt_includes_research_questions(tmp_path: Path) -> None:
     record = load_segment_records(_write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)]))[0]
-    prompt = PromptTemplate(Path("prompts/enrichment/self_consistency_placeholder.txt"))
+    prompt = PromptTemplate(Path("prompts/enrichment/self_consistency_four_codes.txt"))
     rendered = prompt.render(
         {
             **record.to_prompt_vars(_codebook_payload()),
@@ -1385,6 +1520,75 @@ def test_v2_schema_accepts_redesigned_output_and_irrelevant_segment(
     )
 
     assert errors == []
+
+
+def test_v3_schema_is_focused_and_enforces_cross_field_grounding(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    question = "How do participants describe AI support?"
+    valid = _valid_v3_sample(record, codebook_version="v1")
+    assert validate_segment_enrichment_sample(
+        valid,
+        record,
+        expected_codebook_version="v1",
+        expected_schema_version="segment_enrichment_sample_v3",
+        expected_context_scope="immediate",
+        expected_research_questions=[question],
+    ) == []
+
+    removed_field = json.loads(json.dumps(valid))
+    removed_field["reflective_question_candidates"] = []
+    assert any(
+        "unexpected fields" in error
+        for error in validate_segment_enrichment_sample(
+            removed_field,
+            record,
+            expected_codebook_version="v1",
+            expected_schema_version="segment_enrichment_sample_v3",
+            expected_context_scope="immediate",
+            expected_research_questions=[question],
+        )
+    )
+
+    duplicate_label = json.loads(json.dumps(valid))
+    duplicate_label["code_quality_examples"]["too_broad_code"]["code_label"] = (
+        duplicate_label["code_quality_examples"]["wrong_code"]["code_label"]
+    )
+    missing_category = json.loads(json.dumps(valid))
+    del missing_category["code_quality_examples"]["wrong_code"]
+    fabricated_question = json.loads(json.dumps(valid))
+    fabricated_question["research_question_relevance"][
+        "relevant_research_questions"
+    ] = ["A question that was not supplied."]
+    inconsistent_relevance = json.loads(json.dumps(valid))
+    inconsistent_relevance["research_question_relevance"][
+        "is_segment_analytically_useful"
+    ] = False
+    invalid_quote = json.loads(json.dumps(valid))
+    invalid_quote["code_quality_examples"]["useful_analytical_code"][
+        "evidence_quote"
+    ] = "words absent from the target"
+
+    cases = [
+        (duplicate_label, "four distinct code labels"),
+        (missing_category, "missing required examples"),
+        (fabricated_question, "questions not supplied"),
+        (inconsistent_relevance, "must be true"),
+        (invalid_quote, "not an exact target-segment substring"),
+    ]
+    for payload, expected_error in cases:
+        errors = validate_segment_enrichment_sample(
+            payload,
+            record,
+            expected_codebook_version="v1",
+            expected_schema_version="segment_enrichment_sample_v3",
+            expected_context_scope="immediate",
+            expected_research_questions=[question],
+        )
+        assert any(expected_error in error for error in errors)
 
 
 def test_v2_schema_rejects_old_fields_invalid_values_and_unknown_links(
@@ -1910,6 +2114,24 @@ def _valid_v2_sample(
     ]
     payload["quality_control"]["needs_human_review"] = True
     payload["quality_control"]["review_reason"] = "Manual review is required."
+    return payload
+
+
+def _valid_v3_sample(
+    record: Any,
+    *,
+    codebook_version: str,
+    context_scope: str = "immediate",
+) -> dict[str, Any]:
+    payload = _valid_v2_sample(
+        record,
+        codebook_version=codebook_version,
+        context_scope=context_scope,
+    )
+    payload["schema_version"] = "segment_enrichment_sample_v3"
+    del payload["candidate_code_matches"]
+    del payload["possible_new_codes"]
+    del payload["reflective_question_candidates"]
     return payload
 
 

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=dpo_enrich_4688
+#SBATCH --job-name=dpo_codes_4688
 #SBATCH --partition=quad_h200
 #SBATCH --account=ecs
 #SBATCH --nodes=1
@@ -8,10 +8,13 @@
 #SBATCH --cpus-per-task=8
 #SBATCH --mem=200G
 #SBATCH --time=2-12:00:00
-#SBATCH --output=dpo_enrich_4688_%j.out
-#SBATCH --error=dpo_enrich_4688_%j.err
+#SBATCH --output=dpo_codes_4688_%j.out
+#SBATCH --error=dpo_codes_4688_%j.err
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --mail-user=kjl1a21@soton.ac.uk
+
+set -eo pipefail
+set +u
 
 CONDA_ENV="${CONDA_ENV:-dpo}"
 PROJECT_DIR="${PROJECT_DIR:-/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking}"
@@ -21,17 +24,19 @@ MODEL_PATH="${MODEL_PATH:-${SCRATCH_DPO}/models/teacher/deepseek-ai__DeepSeek-R1
 SEGMENTS_PATH="${SEGMENTS_PATH:-${SCRATCH_DPO}/data/UKDA-4688-rtf-preprocessed/segments_jsonl}"
 EXCLUDE_RECORDS_PATH="${EXCLUDE_RECORDS_PATH:-${SCRATCH_DPO}/data/UKDA-4688-rtf-preprocessed/enrichment_exclusions.jsonl}"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${SCRATCH_DPO}/data/UKDA-4688-rtf-enriched}"
-PROMPT_PATH="${PROMPT_PATH:-${PROJECT_DIR}/prompts/enrichment/self_consistency_placeholder.txt}"
+PROMPT_PATH="${PROMPT_PATH:-${PROJECT_DIR}/prompts/enrichment/self_consistency_four_codes.txt}"
 
-# These analysis inputs are deliberately required at submission time. The UKDA
-# archive does not define this project's codebook or research questions.
+# The UKDA archive does not define this project's codebook, so it remains a
+# required submission-time input. Research questions are fixed for this run.
 CODEBOOK_PATH="${CODEBOOK_PATH:-}"
-RESEARCH_QUESTIONS_FILE="${RESEARCH_QUESTIONS_FILE:-}"
+RESEARCH_QUESTIONS=(
+    "What factors and processes affect household choices of where to live?"
+    "How does employment shape family life?"
+)
 
 CONTEXT_SCOPE="turn_window"
 CONTEXT_TURNS_BEFORE=20
 CONTEXT_TURNS_AFTER=20
-SELF_CONSISTENCY_SAMPLES=5
 MAX_NEW_TOKENS=32768
 TEMPERATURE=0.6
 TOP_P=0.95
@@ -55,28 +60,14 @@ if [[ -z "${CODEBOOK_PATH}" ]]; then
     echo "CODEBOOK_PATH must be supplied when submitting this job." >&2
     exit 2
 fi
-if [[ -z "${RESEARCH_QUESTIONS_FILE}" ]]; then
-    echo "RESEARCH_QUESTIONS_FILE must point to a UTF-8 file with one question per line." >&2
-    exit 2
-fi
 require_directory "${MODEL_PATH}"
 require_directory "${SEGMENTS_PATH}"
 require_file "${EXCLUDE_RECORDS_PATH}"
 require_file "${CODEBOOK_PATH}"
 require_file "${PROMPT_PATH}"
-require_file "${RESEARCH_QUESTIONS_FILE}"
-
-mapfile -t RESEARCH_QUESTIONS < <(
-    sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
-        -e '/^$/d' -e '/^#/d' "${RESEARCH_QUESTIONS_FILE}"
-)
-if [[ ${#RESEARCH_QUESTIONS[@]} -eq 0 ]]; then
-    echo "RESEARCH_QUESTIONS_FILE contains no research questions." >&2
-    exit 2
-fi
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-RUN_ID="ukda4688_self_consistency_${SLURM_JOB_ID}_${TIMESTAMP}"
+RUN_ID="ukda4688_single_pass_four_codes_${SLURM_JOB_ID}_${TIMESTAMP}"
 RUN_DIR="${OUTPUT_ROOT}/${RUN_ID}"
 mkdir -p "${RUN_DIR}"
 exec > >(tee -a "${RUN_DIR}/enrichment.log") 2> >(tee -a "${RUN_DIR}/enrichment.err" >&2)
@@ -113,7 +104,7 @@ ARGS=(
     --exclude-records-path "${EXCLUDE_RECORDS_PATH}"
     --output-dir "${RUN_DIR}"
     --codebook-path "${CODEBOOK_PATH}"
-    --strategy self_consistency
+    --strategy single_pass
     --context-scope "${CONTEXT_SCOPE}"
     --context-turns-before "${CONTEXT_TURNS_BEFORE}"
     --context-turns-after "${CONTEXT_TURNS_AFTER}"
@@ -123,7 +114,6 @@ ARGS=(
     --temperature "${TEMPERATURE}"
     --top-p "${TOP_P}"
     --max-new-tokens "${MAX_NEW_TOKENS}"
-    --self-consistency-samples "${SELF_CONSISTENCY_SAMPLES}"
     --force-think-prefix
     --torch-dtype auto
     --device-map auto
@@ -140,3 +130,4 @@ printf '\n' >> "${RUN_DIR}/command.txt"
 python -m enrichment.cli "${ARGS[@]}"
 
 echo "Enrichment complete: ${RUN_DIR}"
+echo "This single-pass run is final stage-one output; do not submit it to debate ranking."

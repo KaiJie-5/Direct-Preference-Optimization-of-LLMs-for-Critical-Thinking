@@ -19,7 +19,7 @@ from .data import (
 from .logging import RunLogger
 from .prompts import PromptTemplate, parse_prompt_vars
 from .schema import SAMPLE_SCHEMA_VERSION
-from .strategies import run_self_consistency, run_self_refine
+from .strategies import run_self_consistency, run_self_refine, run_single_pass
 from .teachers import DEFAULT_MAX_NEW_TOKENS, GenerationOptions, Teacher, build_teacher
 
 
@@ -81,7 +81,7 @@ def build_parser() -> argparse.ArgumentParser:
     strategy_group.add_argument(
         "--strategy",
         required=True,
-        choices=["self_consistency", "self_refine"],
+        choices=["single_pass", "self_consistency", "self_refine"],
     )
     strategy_group.add_argument("--prompt-path", required=True, type=Path)
     strategy_group.add_argument(
@@ -184,6 +184,8 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     prompt = PromptTemplate(args.prompt_path)
+    if args.strategy == "single_pass":
+        _validate_single_pass_configuration(prompt, args.research_question)
     critique_prompt = None
     revision_prompt = None
     if args.strategy == "self_refine":
@@ -321,9 +323,34 @@ def _run_interview(
                     record.record_id,
                     _focused_self_consistency_payload(enriched),
                 )
+            elif args.strategy == "single_pass":
+                segment_path = logger.enriched_segment(
+                    record.record_id,
+                    _focused_single_pass_payload(enriched),
+                )
             else:
                 logger.enriched_record(enriched)
                 segment_path = None
+            if args.strategy == "single_pass" and enriched["status"] == "failed":
+                failure_count += 1
+                validation_errors = enriched["samples"][0]["validation_errors"]
+                logger.failure(
+                    {
+                        "event": "record_failed",
+                        "record_id": record.record_id,
+                        "interview_id": interview_id,
+                        "error_type": "ValidationError",
+                        "error": "Single-pass generation failed strict validation.",
+                        "validation_errors": validation_errors,
+                        "segment_path": str(segment_path),
+                    }
+                )
+                print(
+                    f"Completed record={record.record_id} status=failed "
+                    f"error_type=ValidationError output={segment_path}",
+                    flush=True,
+                )
+                continue
             logger.event({"event": "record_completed", "record_id": record.record_id})
             completed_message = (
                 f"Completed record={record.record_id} status=success"
@@ -376,6 +403,21 @@ def _run_strategy(
     generation_options: GenerationOptions,
     logger: RunLogger,
 ) -> dict[str, Any]:
+    if args.strategy == "single_pass":
+        return run_single_pass(
+            record=record,
+            teacher=teacher,
+            prompt=prompt,
+            prompt_vars=prompt_vars,
+            codebook=codebook,
+            research_questions=args.research_question,
+            generation_options=generation_options,
+            logger=logger,
+            context_scope=args.context_scope,
+            context_turns_before=args.context_turns_before,
+            context_turns_after=args.context_turns_after,
+        )
+
     if args.strategy == "self_consistency":
         return run_self_consistency(
             record=record,
@@ -383,6 +425,7 @@ def _run_strategy(
             prompt=prompt,
             prompt_vars=prompt_vars,
             codebook=codebook,
+            research_questions=args.research_question,
             generation_options=generation_options,
             num_samples=args.self_consistency_samples,
             aggregation=args.self_consistency_aggregation,
@@ -403,6 +446,7 @@ def _run_strategy(
             revision_prompt=revision_prompt,
             prompt_vars=prompt_vars,
             codebook=codebook,
+            research_questions=args.research_question,
             generation_options=generation_options,
             refine_rounds=args.refine_rounds,
             stop_parser=args.refine_stop_parser,
@@ -493,6 +537,64 @@ def _research_question_prompt_vars(questions: list[str]) -> dict[str, str]:
     return {"research_questions": text}
 
 
+def _validate_single_pass_configuration(
+    prompt: PromptTemplate, research_questions: list[str]
+) -> None:
+    if not any(question.strip() for question in research_questions):
+        raise ValueError("single_pass requires at least one --research-question.")
+    required_variables = {
+        "record_id",
+        "interview_id",
+        "segment_id",
+        "speaker",
+        "codebook_version",
+        "research_questions",
+        "analysis_context",
+        "context_scope",
+        "input_text",
+        "candidate_example_codes_json",
+    }
+    missing = sorted(
+        variable
+        for variable in required_variables
+        if not prompt.uses_variable(variable)
+    )
+    if missing:
+        raise ValueError(
+            "single_pass prompt is missing required template variables: "
+            f"{missing}."
+        )
+
+
+def _focused_single_pass_payload(enriched: dict[str, Any]) -> dict[str, Any]:
+    metadata = enriched["metadata"]
+    return {
+        "record_id": enriched["record_id"],
+        "interview_id": metadata.get("interview_id"),
+        "segment_id": metadata.get("segment_id"),
+        "input_text": enriched["input_text"],
+        "metadata": metadata,
+        "source": enriched["source"],
+        "strategy": enriched["strategy"],
+        "status": enriched["status"],
+        "context_scope": enriched["context_scope"],
+        **(
+            {
+                "context_turns_before": enriched["context_turns_before"],
+                "context_turns_after": enriched["context_turns_after"],
+            }
+            if "context_turns_before" in enriched
+            else {}
+        ),
+        "prompt_path": enriched["prompt_path"],
+        "num_samples": enriched["num_samples"],
+        "selected_sample_index": enriched["selected_sample_index"],
+        "selected_output": enriched["selected_output"],
+        "selected_json": enriched["selected_json"],
+        "samples": _focused_samples(enriched["samples"]),
+    }
+
+
 def _focused_self_consistency_payload(enriched: dict[str, Any]) -> dict[str, Any]:
     metadata = enriched["metadata"]
     return {
@@ -518,28 +620,31 @@ def _focused_self_consistency_payload(enriched: dict[str, Any]) -> dict[str, Any
         "aggregation_status": enriched["aggregation_status"],
         "selected_sample_index": enriched["selected_sample_index"],
         "selected_output": enriched["selected_output"],
-        "samples": [
-            {
-                "sample_index": sample["sample_index"],
-                "attempt_count": sample["attempt_count"],
-                "final_parse_status": sample["final_parse_status"],
-                "validation_errors": sample["validation_errors"],
-                "validation_warnings": sample.get("validation_warnings", []),
-                "canonical_corrections": sample.get("canonical_corrections", []),
-                "output_text": sample["output_text"],
-                "reasoning_block": sample["reasoning_block"],
-                "reasoning_text": sample["reasoning_text"],
-                "json_text": sample["json_text"],
-                "reasoning_parse_status": sample["reasoning_parse_status"],
-                "parsed_output": sample["parsed_output"],
-                "attempts": [
-                    _focused_attempt_payload(attempt)
-                    for attempt in sample["attempts"]
-                ],
-            }
-            for sample in enriched["samples"]
-        ],
+        "samples": _focused_samples(enriched["samples"]),
     }
+
+
+def _focused_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "sample_index": sample["sample_index"],
+            "attempt_count": sample["attempt_count"],
+            "final_parse_status": sample["final_parse_status"],
+            "validation_errors": sample["validation_errors"],
+            "validation_warnings": sample.get("validation_warnings", []),
+            "canonical_corrections": sample.get("canonical_corrections", []),
+            "output_text": sample["output_text"],
+            "reasoning_block": sample["reasoning_block"],
+            "reasoning_text": sample["reasoning_text"],
+            "json_text": sample["json_text"],
+            "reasoning_parse_status": sample["reasoning_parse_status"],
+            "parsed_output": sample["parsed_output"],
+            "attempts": [
+                _focused_attempt_payload(attempt) for attempt in sample["attempts"]
+            ],
+        }
+        for sample in samples
+    ]
 
 
 def _focused_attempt_payload(attempt: dict[str, Any]) -> dict[str, Any]:

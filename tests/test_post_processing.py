@@ -52,6 +52,30 @@ def test_collects_invalid_samples_and_raw_final_attempt(tmp_path: Path) -> None:
     assert failed["raw_final_attempt"]["raw_output_text"] == "final raw output"
 
 
+def test_collects_single_pass_invalid_sample_when_strategy_is_selected(
+    tmp_path: Path,
+) -> None:
+    run_dir = tmp_path / "run"
+    segment = _segment_payload(
+        samples=[_sample(1, "invalid", ["strict schema failure"])]
+    )
+    segment["strategy"] = "single_pass"
+    _write_json(
+        run_dir / "INT01_single_pass" / "segments" / "INT01_SEG001.json",
+        segment,
+    )
+
+    payload = collect_failed_outputs(
+        enriched_dir=run_dir,
+        strategy="single_pass",
+        include_raw=False,
+    )
+
+    assert payload["counts"]["segments_scanned"] == 1
+    assert payload["counts"]["invalid_samples"] == 1
+    assert payload["failed_samples"][0]["repair_target"]["strategy"] == "single_pass"
+
+
 def test_collects_from_parent_folder_containing_run_folders(tmp_path: Path) -> None:
     enriched_root = tmp_path / "transcripts-energy-enriched"
     segment_path = (
