@@ -66,7 +66,7 @@ Close the reasoning block with:
 
 </think>
 
-Then return exactly one valid JSON object. Do not use markdown fences and do not write anything after the JSON object.
+Then return exactly one valid JSON object. The first non-whitespace character after </think> must be {{ and the last non-whitespace character in the response must be }}. Do not use markdown fences, explanatory headings, or prose outside the JSON object, and do not write anything after it.
 
 Core qualitative rules:
 - Use the supplied research questions to judge usefulness, not to force a code.
@@ -152,7 +152,7 @@ Output rules:
 - Replace every angle-bracket placeholder with a real value.
 - Return exactly the fields shown and no additional fields.
 - Copy record, codebook, interview, segment, speaker, target text, and context-scope values exactly.
-- Copy relevant research questions exactly, including spacing and punctuation. If none is answered, return an empty list and set is_segment_analytically_useful to false. If one or more are listed, set it to true.
+- Copy relevant research questions exactly from the supplied JSON array, including spacing, capitalization, and punctuation. Do not add list numbers or prefixes. If none is answered, return an empty list and set is_segment_analytically_useful to false. If one or more are listed, set it to true.
 - Every actual_segment_quote and evidence_quote must be a non-empty contiguous verbatim substring of the Target segment. Never paraphrase, join separate spans, or quote only from wider context.
 - Use JSON booleans and integers, not quoted versions.
 - Keep needs_human_review true and give a specific, non-empty review_reason.
@@ -167,7 +167,7 @@ speaker: {speaker}
 codebook_version: {codebook_version}
 context_scope: {context_scope}
 
-Research questions:
+Research questions JSON array (copy selected elements exactly):
 {research_questions}
 
 Interview context:

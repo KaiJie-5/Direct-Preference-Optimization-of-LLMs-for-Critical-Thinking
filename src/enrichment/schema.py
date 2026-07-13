@@ -224,6 +224,23 @@ class ValidationResult:
     warnings: list[str]
 
 
+@dataclass(frozen=True, slots=True)
+class JsonParseResult:
+    payload: dict[str, Any] | None
+    error: str | None
+    extraction_method: str
+    recovered_from_format_deviation: bool = False
+    valid_fenced_object_count: int = 0
+    format_warning: str | None = None
+
+    def audit_payload(self) -> dict[str, Any]:
+        return {
+            "method": self.extraction_method,
+            "recovered_from_format_deviation": self.recovered_from_format_deviation,
+            "valid_fenced_object_count": self.valid_fenced_object_count,
+        }
+
+
 def canonicalize_source_fields(
     payload: dict[str, Any] | None,
     record: DatasetRecord,
@@ -443,12 +460,22 @@ def split_response_sections(text: str) -> dict[str, str]:
 
 
 def parse_json_object(text: str) -> tuple[dict[str, Any] | None, str | None]:
+    result = parse_json_object_result(text)
+    return result.payload, result.error
+
+
+def parse_json_object_result(
+    text: str,
+    *,
+    allow_surrounded_fence: bool = False,
+) -> JsonParseResult:
     sections = split_response_sections(text)
     candidates: list[str] = []
     if sections["json_text"]:
-        candidates.extend(_json_candidates(sections["json_text"]))
+        json_text = sections["json_text"]
     else:
-        candidates.extend(_json_candidates(text))
+        json_text = text
+    candidates.extend(_json_candidates(json_text))
 
     for candidate in candidates:
         parsed, parse_error = _parse_json_candidate(candidate)
@@ -456,10 +483,47 @@ def parse_json_object(text: str) -> tuple[dict[str, Any] | None, str | None]:
             last_error = parse_error
             continue
         if isinstance(parsed, dict):
-            return parsed, None
+            return JsonParseResult(
+                payload=parsed,
+                error=None,
+                extraction_method="standard_json",
+            )
         last_error = "Parsed JSON is not an object."
 
-    return None, locals().get("last_error", "No JSON object found.")
+    if (
+        allow_surrounded_fence
+        and sections["reasoning_parse_status"] == "found_closed_think_block"
+    ):
+        fenced_objects = _strict_fenced_json_objects(json_text)
+        if len(fenced_objects) == 1:
+            return JsonParseResult(
+                payload=fenced_objects[0],
+                error=None,
+                extraction_method="unique_surrounded_fenced_json",
+                recovered_from_format_deviation=True,
+                valid_fenced_object_count=1,
+                format_warning=(
+                    "Recovered one valid JSON object from a fenced block surrounded "
+                    "by non-JSON text after </think>; the response did not follow "
+                    "the required JSON-only format."
+                ),
+            )
+        if len(fenced_objects) > 1:
+            return JsonParseResult(
+                payload=None,
+                error=(
+                    "Multiple valid fenced JSON objects were found after </think>; "
+                    "the response is ambiguous."
+                ),
+                extraction_method="ambiguous_surrounded_fenced_json",
+                valid_fenced_object_count=len(fenced_objects),
+            )
+
+    return JsonParseResult(
+        payload=None,
+        error=locals().get("last_error", "No JSON object found."),
+        extraction_method="none",
+    )
 
 
 def _json_candidates(text: str) -> list[str]:
@@ -480,6 +544,23 @@ def _json_candidates(text: str) -> list[str]:
         if not suffix.strip():
             candidates.append(stripped[start : end + 1])
     return _dedupe_preserving_order(candidates)
+
+
+def _strict_fenced_json_objects(text: str) -> list[dict[str, Any]]:
+    objects: list[dict[str, Any]] = []
+    fence_pattern = re.compile(
+        r"```(?:(?:json)[ \t]*)?(?:\r?\n)?(?P<body>.*?)```",
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    for match in fence_pattern.finditer(text):
+        body = match.group("body").strip()
+        try:
+            parsed = json.loads(body)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(parsed, dict):
+            objects.append(parsed)
+    return objects
 
 
 def _parse_json_candidate(text: str) -> tuple[Any | None, str | None]:
@@ -682,7 +763,7 @@ def validate_segment_enrichment_sample_result(
             record.text,
             errors,
             warnings,
-            nonmatching_is_error=is_v3,
+            nonmatching_is_error=False,
         )
         collapsed_paths = _collapsed_narrative_paths(payload)
         if len(collapsed_paths) >= 3:

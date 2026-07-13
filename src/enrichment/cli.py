@@ -529,11 +529,9 @@ def _codebook_summary(codebook: dict[str, Any] | None) -> dict[str, Any]:
 def _research_question_prompt_vars(questions: list[str]) -> dict[str, str]:
     cleaned = [question.strip() for question in questions if question.strip()]
     if cleaned:
-        text = "\n".join(
-            f"{index}. {question}" for index, question in enumerate(cleaned, start=1)
-        )
+        text = json.dumps(cleaned, ensure_ascii=False, indent=2)
     else:
-        text = "No explicit research questions were supplied for this run."
+        text = "[]"
     return {"research_questions": text}
 
 
@@ -638,6 +636,7 @@ def _focused_samples(samples: list[dict[str, Any]]) -> list[dict[str, Any]]:
             "reasoning_text": sample["reasoning_text"],
             "json_text": sample["json_text"],
             "reasoning_parse_status": sample["reasoning_parse_status"],
+            "json_extraction": sample.get("json_extraction", {}),
             "parsed_output": sample["parsed_output"],
             "attempts": [
                 _focused_attempt_payload(attempt) for attempt in sample["attempts"]
@@ -660,6 +659,7 @@ def _focused_attempt_payload(attempt: dict[str, Any]) -> dict[str, Any]:
         "reasoning_text": attempt["reasoning_text"],
         "json_text": attempt["json_text"],
         "reasoning_parse_status": attempt["reasoning_parse_status"],
+        "json_extraction": attempt.get("json_extraction", {}),
         "model_parsed_output": attempt["model_parsed_output"],
         "parsed_output": attempt["parsed_output"],
         "canonical_corrections": attempt["canonical_corrections"],

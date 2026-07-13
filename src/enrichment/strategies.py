@@ -11,6 +11,7 @@ from .schema import (
     SAMPLE_SCHEMA_VERSION,
     canonicalize_source_fields,
     parse_json_object,
+    parse_json_object_result,
     split_response_sections,
     validate_segment_enrichment_sample_result,
 )
@@ -384,7 +385,13 @@ def _generate_validated_sample(
     attempt_index = 1
     result = teacher.generate(prompt, generation_options)
     response_sections = split_response_sections(result.text)
-    model_parsed, parse_error = parse_json_object(result.text)
+    parse_result = parse_json_object_result(
+        result.text,
+        allow_surrounded_fence=True,
+    )
+    model_parsed = parse_result.payload
+    parse_error = parse_result.error
+    json_extraction = parse_result.audit_payload()
     parsed, canonical_corrections = canonicalize_source_fields(
         model_parsed,
         record,
@@ -411,11 +418,18 @@ def _generate_validated_sample(
         issues.insert(0, parse_error)
     if strict_validation:
         validation_errors = issues
-        validation_warnings = list(validation_result.warnings)
+        validation_warnings = [
+            *([parse_result.format_warning] if parse_result.format_warning else []),
+            *validation_result.warnings,
+        ]
         parse_status = "invalid" if validation_errors else "valid"
     else:
         validation_errors = []
-        validation_warnings = [*issues, *validation_result.warnings]
+        validation_warnings = [
+            *issues,
+            *([parse_result.format_warning] if parse_result.format_warning else []),
+            *validation_result.warnings,
+        ]
         parse_status = "warning" if validation_warnings else "valid"
     prompt_reference = logger.prompt_snapshot(
         record_id=record.record_id,
@@ -446,6 +460,7 @@ def _generate_validated_sample(
         "is_repair_prompt": False,
         "raw_output_text": result.text,
         **response_sections,
+        "json_extraction": json_extraction,
         "model_parsed_output": model_parsed,
         "parsed_output": parsed,
         "canonical_corrections": canonical_corrections,
@@ -476,6 +491,7 @@ def _generate_validated_sample(
         "canonical_corrections": canonical_corrections,
         "output_text": result.text,
         **response_sections,
+        "json_extraction": json_extraction,
         "parsed_output": parsed,
         "attempts": [attempt_payload],
     }

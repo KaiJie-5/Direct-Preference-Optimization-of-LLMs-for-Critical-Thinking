@@ -7,13 +7,18 @@ from typing import Any
 
 import pytest
 
-from enrichment.cli import build_parser, main as enrich_main
+from enrichment.cli import (
+    _research_question_prompt_vars,
+    build_parser,
+    main as enrich_main,
+)
 from enrichment.data import load_segment_records, load_segment_records_with_report
 from enrichment.logging import RunLogger
 from enrichment.prompts import PromptTemplate
 from enrichment.schema import (
     canonicalize_source_fields,
     parse_json_object,
+    parse_json_object_result,
     split_response_sections,
     validate_segment_enrichment_sample,
     validate_segment_enrichment_sample_result,
@@ -397,6 +402,61 @@ def test_parse_json_object_rejects_trailing_prose_and_concatenated_objects() -> 
     assert concat_error is not None
 
 
+@pytest.mark.parametrize("fence_label", ["json", ""])
+def test_online_json_parser_recovers_one_surrounded_fenced_object(
+    fence_label: str,
+) -> None:
+    payload = {"schema_version": "segment_enrichment_sample_v3", "ok": True}
+    text = (
+        "<think>Grounded reasoning.</think>\n"
+        "**Step-by-Step Explanation and Answer:**\n"
+        f"```{fence_label}\n{json.dumps(payload)}\n```\n"
+        "This prose is outside the fenced object."
+    )
+
+    strict_parsed, strict_error = parse_json_object(text)
+    recovered = parse_json_object_result(text, allow_surrounded_fence=True)
+
+    assert strict_parsed is None
+    assert strict_error is not None
+    assert recovered.payload == payload
+    assert recovered.error is None
+    assert recovered.extraction_method == "unique_surrounded_fenced_json"
+    assert recovered.recovered_from_format_deviation is True
+    assert recovered.valid_fenced_object_count == 1
+    assert "JSON-only format" in str(recovered.format_warning)
+
+
+def test_online_json_parser_rejects_ambiguous_or_malformed_fences() -> None:
+    first = json.dumps({"candidate": 1})
+    second = json.dumps({"candidate": 2})
+    ambiguous = (
+        "<think>Grounded reasoning.</think>\n"
+        f"Prose.\n```json\n{first}\n```\nMore prose.\n```\n{second}\n```"
+    )
+    malformed = (
+        "<think>Grounded reasoning.</think>\n"
+        "Prose.\n```json\n{not valid json}\n```"
+    )
+
+    ambiguous_result = parse_json_object_result(
+        ambiguous,
+        allow_surrounded_fence=True,
+    )
+    malformed_result = parse_json_object_result(
+        malformed,
+        allow_surrounded_fence=True,
+    )
+
+    assert ambiguous_result.payload is None
+    assert "Multiple valid fenced JSON objects" in str(ambiguous_result.error)
+    assert ambiguous_result.extraction_method == "ambiguous_surrounded_fenced_json"
+    assert ambiguous_result.valid_fenced_object_count == 2
+    assert malformed_result.payload is None
+    assert malformed_result.error is not None
+    assert malformed_result.extraction_method == "none"
+
+
 def test_normalize_decoded_text_repairs_byte_level_json_markers(
     tmp_path: Path,
 ) -> None:
@@ -556,6 +616,83 @@ def test_single_pass_generates_and_selects_exactly_one_valid_sample(
     assert enriched["selected_output"] == response
     assert enriched["selected_json"] == payload
     assert enriched["samples"][0]["final_parse_status"] == "valid"
+
+
+def test_single_pass_recovers_fenced_json_and_audits_format_warning(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v3_sample(record, codebook_version="v1")
+    response = (
+        "<think>Grounded checks.</think>\n"
+        "**Final JSON Object:**\n"
+        f"```json\n{json.dumps(payload)}\n```\n"
+        "Explanatory text after the fence."
+    )
+    teacher = QueueTeacher([response])
+
+    enriched = run_single_pass(
+        record=record,
+        teacher=teacher,
+        prompt=PromptTemplate(_write_prompt(tmp_path, "Prompt {record_id}")),
+        prompt_vars={},
+        codebook=_codebook_payload(),
+        research_questions=["How do participants describe AI support?"],
+        generation_options=GenerationOptions(temperature=0.6, top_p=0.95),
+        logger=RunLogger(tmp_path / "logs"),
+    )
+
+    sample = enriched["samples"][0]
+    assert enriched["status"] == "success"
+    assert sample["final_parse_status"] == "valid"
+    assert sample["parsed_output"] == payload
+    assert sample["json_extraction"] == {
+        "method": "unique_surrounded_fenced_json",
+        "recovered_from_format_deviation": True,
+        "valid_fenced_object_count": 1,
+    }
+    assert any(
+        "JSON-only format" in warning for warning in sample["validation_warnings"]
+    )
+    assert sample["attempts"][0]["json_extraction"] == sample["json_extraction"]
+
+
+def test_single_pass_keeps_non_verbatim_quote_as_non_failing_warning(
+    tmp_path: Path,
+) -> None:
+    record = load_segment_records(
+        _write_jsonl(tmp_path / "segments.jsonl", [_segment("INT01", 1)])
+    )[0]
+    payload = _valid_v3_sample(record, codebook_version="v1")
+    generated_quote = "someone still needs to check the results"
+    payload["code_quality_examples"]["useful_analytical_code"][
+        "evidence_quote"
+    ] = generated_quote
+    response = f"<think>Grounded checks.</think>\n{json.dumps(payload)}"
+
+    enriched = run_single_pass(
+        record=record,
+        teacher=QueueTeacher([response]),
+        prompt=PromptTemplate(_write_prompt(tmp_path, "Prompt {record_id}")),
+        prompt_vars={},
+        codebook=_codebook_payload(),
+        research_questions=["How do participants describe AI support?"],
+        generation_options=GenerationOptions(temperature=0.6, top_p=0.95),
+        logger=RunLogger(tmp_path / "logs"),
+    )
+
+    sample = enriched["samples"][0]
+    assert enriched["status"] == "success"
+    assert sample["final_parse_status"] == "valid"
+    assert sample["parsed_output"]["code_quality_examples"][
+        "useful_analytical_code"
+    ]["evidence_quote"] == generated_quote
+    assert any(
+        "not an exact target-segment substring" in warning
+        for warning in sample["validation_warnings"]
+    )
 
 
 def test_single_pass_retains_invalid_sample_and_does_not_select_it(
@@ -1129,6 +1266,19 @@ def test_enrichment_cli_accepts_repeated_research_questions() -> None:
     ]
 
 
+def test_research_question_prompt_vars_preserve_exact_strings_as_json() -> None:
+    questions = [
+        "What factors and processes affect household choices of where to live?",
+        "How does employment shape family life?",
+    ]
+
+    rendered = _research_question_prompt_vars(questions)["research_questions"]
+
+    assert json.loads(rendered) == questions
+    assert "1. What factors" not in rendered
+    assert _research_question_prompt_vars([])["research_questions"] == "[]"
+
+
 def test_enrichment_cli_context_scope_defaults_to_immediate() -> None:
     args = build_parser().parse_args(
         [
@@ -1311,6 +1461,10 @@ def test_single_pass_cli_saves_invalid_audit_and_returns_nonzero(
     failures = _read_jsonl(interview_dir / "failures.jsonl")
     assert segment["status"] == "failed"
     assert segment["samples"][0]["final_parse_status"] == "invalid"
+    assert segment["samples"][0]["json_extraction"]["method"] == "none"
+    assert segment["samples"][0]["attempts"][0]["json_extraction"] == (
+        segment["samples"][0]["json_extraction"]
+    )
     assert failures[0]["error_type"] == "ValidationError"
 
 
@@ -1467,13 +1621,17 @@ def test_self_consistency_prompt_includes_research_questions(tmp_path: Path) -> 
     rendered = prompt.render(
         {
             **record.to_prompt_vars(_codebook_payload()),
-            "research_questions": "1. How do participants discuss energy efficiency?",
+            "research_questions": json.dumps(
+                ["How do participants discuss energy efficiency?"],
+                indent=2,
+            ),
         }
     )
 
-    assert "Research questions:" in rendered
-    assert "Research questions JSON:" not in rendered
+    assert "Research questions JSON array" in rendered
     assert "How do participants discuss energy efficiency?" in rendered
+    assert "Do not add list numbers or prefixes" in rendered
+    assert "first non-whitespace character after </think> must be {" in rendered
 
 
 def test_segment_enrichment_schema_requires_code_quality_examples(
@@ -1568,17 +1726,31 @@ def test_v3_schema_is_focused_and_enforces_cross_field_grounding(
     inconsistent_relevance["research_question_relevance"][
         "is_segment_analytically_useful"
     ] = False
+    numbered_question = json.loads(json.dumps(valid))
+    numbered_question["research_question_relevance"][
+        "relevant_research_questions"
+    ] = [f"1. {question}"]
     invalid_quote = json.loads(json.dumps(valid))
     invalid_quote["code_quality_examples"]["useful_analytical_code"][
         "evidence_quote"
     ] = "words absent from the target"
+    empty_quote = json.loads(json.dumps(valid))
+    empty_quote["code_quality_examples"]["useful_analytical_code"][
+        "evidence_quote"
+    ] = ""
+    non_string_quote = json.loads(json.dumps(valid))
+    non_string_quote["code_quality_examples"]["useful_analytical_code"][
+        "evidence_quote"
+    ] = 10
 
     cases = [
         (duplicate_label, "four distinct code labels"),
         (missing_category, "missing required examples"),
         (fabricated_question, "questions not supplied"),
         (inconsistent_relevance, "must be true"),
-        (invalid_quote, "not an exact target-segment substring"),
+        (numbered_question, "questions not supplied"),
+        (empty_quote, "exact non-empty substring"),
+        (non_string_quote, "evidence_quote must be a string"),
     ]
     for payload, expected_error in cases:
         errors = validate_segment_enrichment_sample(
@@ -1590,6 +1762,20 @@ def test_v3_schema_is_focused_and_enforces_cross_field_grounding(
             expected_research_questions=[question],
         )
         assert any(expected_error in error for error in errors)
+
+    invalid_quote_result = validate_segment_enrichment_sample_result(
+        invalid_quote,
+        record,
+        expected_codebook_version="v1",
+        expected_schema_version="segment_enrichment_sample_v3",
+        expected_context_scope="immediate",
+        expected_research_questions=[question],
+    )
+    assert invalid_quote_result.errors == []
+    assert any(
+        "not an exact target-segment substring" in warning
+        for warning in invalid_quote_result.warnings
+    )
 
 
 def test_v2_schema_rejects_old_fields_invalid_values_and_unknown_links(
