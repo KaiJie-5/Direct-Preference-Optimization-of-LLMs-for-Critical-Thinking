@@ -202,14 +202,14 @@ prompt contract, so the saved scope always matches the runtime selection.
 
 For UKDA 4688, `submit_job_enrichment_self_consistency_ukda4688.slurm` uses the
 20/20 window, one strict single-pass generation, and the existing DeepSeek teacher.
-Submit it after setting `CODEBOOK_PATH`. The two UKDA-4688 research questions
-are defined directly in the Slurm script and passed as repeated
-`--research-question` arguments.
+The codebook path and two UKDA-4688 research questions are defined directly in
+the Slurm script. Each question is passed as a repeated `--research-question`
+argument.
 This output contains the four code-quality examples directly and must not be sent
 to debate ranking, which requires at least two candidates.
 
 ```bash
-sbatch --export=ALL,CODEBOOK_PATH=/absolute/path/codebook.json submit_job_enrichment_self_consistency_ukda4688.slurm
+sbatch submit_job_enrichment_self_consistency_ukda4688.slurm
 ```
 
 New enrichment generations use `segment_enrichment_sample_v3`. Historical v1

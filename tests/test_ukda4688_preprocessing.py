@@ -562,7 +562,8 @@ def test_ukda_hpc_job_requires_codebook_and_embeds_research_questions() -> None:
     assert "SELF_CONSISTENCY_SAMPLES" not in script
     assert "--strategy single_pass" in script
     assert "prompts/enrichment/self_consistency_four_codes.txt" in script
-    assert "CODEBOOK_PATH must be supplied" in script
+    assert 'CODEBOOK_PATH="${SCRATCH_DPO}/data/codebooks/example_codes_v1.json"' in script
+    assert "CODEBOOK_PATH must be supplied" not in script
     assert "RESEARCH_QUESTIONS_FILE" not in script
     assert (
         '"What factors and processes affect household choices of where to live?"'

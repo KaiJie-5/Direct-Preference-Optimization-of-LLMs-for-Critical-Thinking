@@ -1324,6 +1324,7 @@ def test_ukda_slurm_uses_single_pass_four_code_prompt() -> None:
     assert "SELF_CONSISTENCY_SAMPLES" not in script
     assert "--self-consistency-samples" not in script
     assert "RESEARCH_QUESTIONS_FILE" not in script
+    assert 'CODEBOOK_PATH="${SCRATCH_DPO}/data/codebooks/example_codes_v1.json"' in script
     assert (
         "What factors and processes affect household choices of where to live?"
         in script

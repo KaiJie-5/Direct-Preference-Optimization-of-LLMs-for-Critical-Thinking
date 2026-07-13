@@ -23,12 +23,11 @@ SCRATCH_DPO="${SCRATCH_DPO:-/iridisfs/scratch/kjl1a21/DPO}"
 MODEL_PATH="${MODEL_PATH:-${SCRATCH_DPO}/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B}"
 SEGMENTS_PATH="${SEGMENTS_PATH:-${SCRATCH_DPO}/data/UKDA-4688-rtf-preprocessed/segments_jsonl}"
 EXCLUDE_RECORDS_PATH="${EXCLUDE_RECORDS_PATH:-${SCRATCH_DPO}/data/UKDA-4688-rtf-preprocessed/enrichment_exclusions.jsonl}"
+CODEBOOK_PATH="${SCRATCH_DPO}/data/codebooks/example_codes_v1.json"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${SCRATCH_DPO}/data/UKDA-4688-rtf-enriched}"
 PROMPT_PATH="${PROMPT_PATH:-${PROJECT_DIR}/prompts/enrichment/self_consistency_four_codes.txt}"
 
-# The UKDA archive does not define this project's codebook, so it remains a
-# required submission-time input. Research questions are fixed for this run.
-CODEBOOK_PATH="${CODEBOOK_PATH:-}"
+# The codebook and research questions are fixed for this run.
 RESEARCH_QUESTIONS=(
     "What factors and processes affect household choices of where to live?"
     "How does employment shape family life?"
@@ -56,10 +55,6 @@ require_directory() {
     fi
 }
 
-if [[ -z "${CODEBOOK_PATH}" ]]; then
-    echo "CODEBOOK_PATH must be supplied when submitting this job." >&2
-    exit 2
-fi
 require_directory "${MODEL_PATH}"
 require_directory "${SEGMENTS_PATH}"
 require_file "${EXCLUDE_RECORDS_PATH}"
