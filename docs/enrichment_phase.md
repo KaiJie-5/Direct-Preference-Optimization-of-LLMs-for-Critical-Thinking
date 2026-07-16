@@ -212,6 +212,31 @@ to debate ranking, which requires at least two candidates.
 sbatch submit_job_enrichment_self_consistency_ukda4688.slurm
 ```
 
+If the UKDA job is interrupted, resume the exact run folder instead of creating
+a new timestamped run:
+
+```bash
+sbatch --export=ALL,RESUME_DIR=/iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-enriched/existing_run \
+  submit_job_enrichment_self_consistency_ukda4688.slurm
+```
+
+The original `command.txt` is preserved and each resubmission writes a separate
+`resume_command_<job>_<timestamp>.txt`. Logs continue to append. Before using a
+GPU allocation, the same command can be checked with `--resume-validate-only`;
+this validates inputs, configuration, prompt hashes, and checkpoints without
+changing the run or loading model weights.
+
+Native resume applies only to `single_pass`. A root `run_manifest.json` freezes
+the complete input, prompt, codebook, teacher/generation configuration, and
+record fingerprints. Strictly valid successful checkpoints are skipped. Failed
+and missing checkpoints are retried with attempt history preserved. Malformed
+expected checkpoint files are archived under `resume_invalid_checkpoints/`
+before regeneration, while identity or fingerprint mismatches abort the resume.
+Historical single-pass runs without the root manifest receive a validated legacy
+migration: all available interview manifests, source records, checkpoints, and
+rendered prompt hashes are checked before the current complete input fingerprint
+is frozen.
+
 New enrichment generations use `segment_enrichment_sample_v3`. Historical v1
 and v2 outputs remain readable. In `single_pass`, missing or malformed JSON,
 schema violations, and missing closed `<think>...</think>` blocks are retained
@@ -224,6 +249,7 @@ Outputs are grouped by interview:
 
 ```text
 outputs/enrichment/
+  run_manifest.json
   INT01_single_pass/
     run_manifest.json
     events.jsonl

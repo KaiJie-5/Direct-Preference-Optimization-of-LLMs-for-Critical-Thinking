@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from hashlib import sha256
@@ -20,10 +21,7 @@ class RunLogger:
         self.failures_path = self.output_dir / "failures.jsonl"
 
     def write_manifest(self, manifest: dict[str, Any]) -> None:
-        (self.output_dir / "run_manifest.json").write_text(
-            json.dumps(manifest, indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        self._write_json_atomic(self.output_dir / "run_manifest.json", manifest)
 
     def event(self, payload: dict[str, Any]) -> None:
         self._append_jsonl(self.events_path, self._with_timestamp(payload))
@@ -34,14 +32,22 @@ class RunLogger:
     def enriched_segment(self, record_id: str, payload: dict[str, Any]) -> Path:
         self.segments_dir.mkdir(parents=True, exist_ok=True)
         path = self.segments_dir / f"{record_id}.json"
-        path.write_text(
-            json.dumps(self._with_timestamp(payload), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
+        self._write_json_atomic(path, self._with_timestamp(payload))
         return path
 
     def failure(self, payload: dict[str, Any]) -> None:
         self._append_jsonl(self.failures_path, self._with_timestamp(payload))
+
+    def replace_failures(self, payloads: list[dict[str, Any]]) -> None:
+        """Atomically replace the current failure index for this interview."""
+
+        temporary = self.failures_path.with_name(f".{self.failures_path.name}.tmp")
+        with temporary.open("w", encoding="utf-8") as handle:
+            for payload in payloads:
+                handle.write(
+                    json.dumps(self._with_timestamp(payload), ensure_ascii=False) + "\n"
+                )
+        os.replace(temporary, self.failures_path)
 
     def prompt_snapshot(
         self,
@@ -88,7 +94,9 @@ class RunLogger:
             f"attempt{attempt_index}.txt"
         )
         path = artifact_dir / filename
-        path.write_text(raw_text, encoding="utf-8")
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(raw_text, encoding="utf-8")
+        os.replace(temporary, path)
         return {
             "raw_decoded_artifact_path": str(path.relative_to(self.output_dir)),
             "raw_decoded_artifact_sha256": sha256(
@@ -104,3 +112,12 @@ class RunLogger:
     def _append_jsonl(path: Path, payload: dict[str, Any]) -> None:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+
+    @staticmethod
+    def _write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
+        temporary = path.with_name(f".{path.name}.tmp")
+        temporary.write_text(
+            json.dumps(payload, indent=2, ensure_ascii=False),
+            encoding="utf-8",
+        )
+        os.replace(temporary, path)

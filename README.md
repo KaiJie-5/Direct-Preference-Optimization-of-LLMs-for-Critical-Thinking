@@ -91,6 +91,20 @@ The preprocessing CLI also includes an isolated `rtf --profile ukda-4688`
 workflow for the UKDA 4688 interview archive and enrichment supports centered
 complete-turn context windows without changing the existing defaults.
 
+Strict single-pass runs can be resumed in their original output directory:
+
+```bash
+dpo-enrich [the original arguments] \
+  --output-dir /path/to/existing_run \
+  --resume /path/to/existing_run
+```
+
+Resume validates the full input/configuration fingerprint and every saved
+checkpoint before loading model weights. Only strictly valid successes are
+skipped; failed, missing, or interrupted records are retried. Add
+`--resume-validate-only` for a read-only preflight. Resume is intentionally not
+available for the historical self-consistency or self-refine layouts.
+
 ## Multi-agent debate ranking
 
 Start a debate ranking run with:

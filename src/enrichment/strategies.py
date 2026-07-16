@@ -31,17 +31,17 @@ def run_single_pass(
     context_scope: str = "immediate",
     context_turns_before: int = 20,
     context_turns_after: int = 20,
+    previous_attempts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    variables = {
-        **record.to_prompt_vars(
-            codebook,
-            context_scope=context_scope,
-            context_turns_before=context_turns_before,
-            context_turns_after=context_turns_after,
-        ),
-        **prompt_vars,
-    }
-    rendered_prompt = prompt.render(variables)
+    rendered_prompt = render_single_pass_prompt(
+        record=record,
+        prompt=prompt,
+        prompt_vars=prompt_vars,
+        codebook=codebook,
+        context_scope=context_scope,
+        context_turns_before=context_turns_before,
+        context_turns_after=context_turns_after,
+    )
     expected_codebook_version = _expected_codebook_version(record, codebook)
     sample = _generate_validated_sample(
         record=record,
@@ -55,6 +55,7 @@ def run_single_pass(
         strategy="single_pass",
         sample_index=1,
         strict_validation=True,
+        previous_attempts=previous_attempts,
     )
     is_valid = sample["final_parse_status"] == "valid"
     return {
@@ -80,6 +81,30 @@ def run_single_pass(
         "selected_json": sample["parsed_output"] if is_valid else None,
         "samples": [sample],
     }
+
+
+def render_single_pass_prompt(
+    *,
+    record: DatasetRecord,
+    prompt: PromptTemplate,
+    prompt_vars: dict[str, Any],
+    codebook: dict[str, Any] | None,
+    context_scope: str,
+    context_turns_before: int,
+    context_turns_after: int,
+) -> str:
+    """Render the model-independent single-pass prompt used for generation/resume."""
+
+    variables = {
+        **record.to_prompt_vars(
+            codebook,
+            context_scope=context_scope,
+            context_turns_before=context_turns_before,
+            context_turns_after=context_turns_after,
+        ),
+        **prompt_vars,
+    }
+    return prompt.render(variables)
 
 
 def run_self_consistency(
@@ -381,8 +406,10 @@ def _generate_validated_sample(
     sample_index: int,
     step: str = "sample",
     strict_validation: bool = False,
+    previous_attempts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    attempt_index = 1
+    attempts = list(previous_attempts or [])
+    attempt_index = len(attempts) + 1
     result = teacher.generate(prompt, generation_options)
     response_sections = split_response_sections(result.text)
     parse_result = parse_json_object_result(
@@ -484,7 +511,7 @@ def _generate_validated_sample(
     return {
         "sample_index": sample_index,
         "step": step,
-        "attempt_count": 1,
+        "attempt_count": len(attempts) + 1,
         "final_parse_status": parse_status,
         "validation_errors": validation_errors,
         "validation_warnings": validation_warnings,
@@ -493,7 +520,7 @@ def _generate_validated_sample(
         **response_sections,
         "json_extraction": json_extraction,
         "parsed_output": parsed,
-        "attempts": [attempt_payload],
+        "attempts": [*attempts, attempt_payload],
     }
 
 

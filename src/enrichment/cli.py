@@ -18,9 +18,25 @@ from .data import (
 )
 from .logging import RunLogger
 from .prompts import PromptTemplate, parse_prompt_vars
+from .resume import (
+    archive_corrupt_checkpoints,
+    audit_resume,
+    build_run_identity,
+    checkpoint_metadata,
+    mark_manifest_resumed,
+    new_run_manifest,
+    update_manifest_state,
+    write_run_manifest,
+)
 from .schema import SAMPLE_SCHEMA_VERSION
 from .strategies import run_self_consistency, run_self_refine, run_single_pass
-from .teachers import DEFAULT_MAX_NEW_TOKENS, GenerationOptions, Teacher, build_teacher
+from .teachers import (
+    DEFAULT_MAX_NEW_TOKENS,
+    GenerationOptions,
+    Teacher,
+    build_prompt_renderer,
+    build_teacher,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -31,6 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
     io_group = parser.add_argument_group("input/output")
     io_group.add_argument("--segments-path", required=True, type=Path)
     io_group.add_argument("--output-dir", required=True, type=Path)
+    io_group.add_argument(
+        "--resume",
+        type=Path,
+        metavar="RUN_DIR",
+        help="Resume a validated single-pass run in its existing output directory.",
+    )
+    io_group.add_argument(
+        "--resume-validate-only",
+        action="store_true",
+        help="Validate a --resume run without changing files or loading model weights.",
+    )
     io_group.add_argument(
         "--exclude-records-path",
         type=Path,
@@ -162,6 +189,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    _validate_resume_arguments(args)
     load_result = load_segment_records_with_report(
         args.segments_path,
         limit=args.limit,
@@ -207,7 +235,109 @@ def main(argv: list[str] | None = None) -> int:
         context_turns_before=args.context_turns_before,
         context_turns_after=args.context_turns_after,
     )
-    teacher = build_teacher(args)
+
+    checkpoints: dict[str, dict[str, Any]] = {}
+    root_manifest: dict[str, Any] | None = None
+    identity: dict[str, Any] | None = None
+    is_resume = args.resume is not None
+    if args.strategy == "single_pass":
+        current_args = _jsonable_args(args)
+        execution_config = {
+            key: value
+            for key, value in current_args.items()
+            if key
+            not in {
+                "output_dir",
+                "resume",
+                "resume_validate_only",
+                "continue_on_error",
+            }
+        }
+        execution_config["exclusion_filter"] = {
+            key: value
+            for key, value in load_result.exclusion_summary.items()
+            if key != "excluded_by_interview"
+        }
+        identity = build_run_identity(
+            records=records,
+            execution_config=execution_config,
+            prompt=prompt,
+            codebook=codebook,
+        )
+        if is_resume:
+            prompt_renderer = build_prompt_renderer(args)
+            audit = audit_resume(
+                run_dir=args.resume,
+                records=records,
+                identity=identity,
+                prompt=prompt,
+                prompt_vars=prompt_vars,
+                codebook=codebook,
+                research_questions=args.research_question,
+                context_scope=args.context_scope,
+                context_turns_before=args.context_turns_before,
+                context_turns_after=args.context_turns_after,
+                generation_options=asdict(generation_options),
+                current_args=current_args,
+                exclusion_summary=load_result.exclusion_summary,
+                model_prompt_renderer=prompt_renderer,
+            )
+            print(
+                "Resume validation complete: "
+                f"successful={audit.success_count} "
+                f"failed={audit.failed_count} "
+                f"missing={audit.missing_count} "
+                f"corrupt={len(audit.corrupt)} "
+                f"retry_or_missing={audit.retry_or_missing_count} "
+                f"total={audit.total_count}",
+                flush=True,
+            )
+            if args.resume_validate_only:
+                return 0
+            if audit.corrupt:
+                archived = archive_corrupt_checkpoints(audit.run_dir, audit.corrupt)
+                print(
+                    f"Archived {len(audit.corrupt)} malformed checkpoint(s) and "
+                    f"{len(archived) - len(audit.corrupt)} related artifact(s) "
+                    "before retry.",
+                    flush=True,
+                )
+            checkpoints = audit.checkpoints
+            root_manifest = audit.manifest
+            mark_manifest_resumed(
+                root_manifest,
+                legacy=audit.legacy_migration,
+            )
+            write_run_manifest(args.output_dir, root_manifest)
+        else:
+            if (args.output_dir / "run_manifest.json").exists():
+                raise FileExistsError(
+                    "Single-pass root run manifest already exists; use --resume to "
+                    f"continue safely: {args.output_dir / 'run_manifest.json'}"
+                )
+            existing = sorted(args.output_dir.glob("*_single_pass/segments/*.json"))
+            if existing:
+                raise FileExistsError(
+                    "Single-pass output checkpoints already exist; use --resume to "
+                    f"continue safely: {existing[0]}"
+                )
+            args.output_dir.mkdir(parents=True, exist_ok=True)
+            root_manifest = new_run_manifest(
+                identity=identity,
+                output_dir=args.output_dir.resolve(),
+                record_count=len(records),
+            )
+            write_run_manifest(args.output_dir, root_manifest)
+
+    remaining = (
+        len(records)
+        if args.strategy != "single_pass"
+        else sum(
+            checkpoints.get(record.record_id, {}).get("status") != "success"
+            for record in records
+        )
+    )
+    teacher: Teacher | None = build_teacher(args) if remaining else None
 
     grouped_records = group_records_by_interview(records)
     batch_summary = {
@@ -239,8 +369,21 @@ def main(argv: list[str] | None = None) -> int:
             records=interview_records,
             output_dir=interview_output_dir,
             exclusion_summary=load_result.exclusion_summary,
+            checkpoints=checkpoints,
+            execution_fingerprint=(
+                identity["execution_fingerprint"] if identity is not None else None
+            ),
+            is_resume=is_resume,
         )
         batch_summary["interviews"].append(summary)
+        if root_manifest is not None:
+            update_manifest_state(
+                root_manifest,
+                total_count=len(records),
+                checkpoints=checkpoints,
+                status="running",
+            )
+            write_run_manifest(args.output_dir, root_manifest)
 
     batch_summary["success_count"] = sum(
         item["success_count"] for item in batch_summary["interviews"]
@@ -248,6 +391,15 @@ def main(argv: list[str] | None = None) -> int:
     batch_summary["failure_count"] = sum(
         item["failure_count"] for item in batch_summary["interviews"]
     )
+    if root_manifest is not None:
+        final_state = "complete" if batch_summary["failure_count"] == 0 else "incomplete"
+        update_manifest_state(
+            root_manifest,
+            total_count=len(records),
+            checkpoints=checkpoints,
+            status=final_state,
+        )
+        write_run_manifest(args.output_dir, root_manifest)
     print(json.dumps(batch_summary, indent=2))
     return 0 if batch_summary["failure_count"] == 0 else 1
 
@@ -255,7 +407,7 @@ def main(argv: list[str] | None = None) -> int:
 def _run_interview(
     *,
     args: argparse.Namespace,
-    teacher: Teacher,
+    teacher: Teacher | None,
     codebook: dict[str, Any] | None,
     prompt: PromptTemplate,
     critique_prompt: PromptTemplate | None,
@@ -266,25 +418,53 @@ def _run_interview(
     records: list[DatasetRecord],
     output_dir: Path,
     exclusion_summary: dict[str, Any],
+    checkpoints: dict[str, dict[str, Any]],
+    execution_fingerprint: str | None,
+    is_resume: bool,
 ) -> dict[str, Any]:
     logger = RunLogger(output_dir)
-    manifest = _manifest(
-        args=args,
-        interview_id=interview_id,
-        record_count=len(records),
-        teacher_metadata=teacher.metadata(),
-        codebook=codebook,
-        generation_options=generation_options,
-        output_dir=output_dir,
-        exclusion_summary=exclusion_summary,
-    )
-    logger.write_manifest(manifest)
-    logger.event({"event": "run_started", "manifest": manifest})
+    manifest_path = output_dir / "run_manifest.json"
+    if not manifest_path.is_file():
+        if teacher is None:
+            raise RuntimeError("Teacher is required to start an unfinished interview.")
+        manifest = _manifest(
+            args=args,
+            interview_id=interview_id,
+            record_count=len(records),
+            teacher_metadata=teacher.metadata(),
+            codebook=codebook,
+            generation_options=generation_options,
+            output_dir=output_dir,
+            exclusion_summary=exclusion_summary,
+        )
+        logger.write_manifest(manifest)
+        logger.event({"event": "run_started", "manifest": manifest})
+    elif is_resume:
+        logger.event(
+            {
+                "event": "run_resumed",
+                "interview_id": interview_id,
+                "record_count": len(records),
+            }
+        )
 
     success_count = 0
     failure_count = 0
+    operational_failures: list[dict[str, Any]] = []
     started = time.perf_counter()
     for index, record in enumerate(records, start=1):
+        saved = checkpoints.get(record.record_id)
+        if args.strategy == "single_pass" and saved is not None:
+            if saved.get("status") == "success":
+                success_count += 1
+                print(
+                    f"Skipping validated checkpoint record={record.record_id} "
+                    f"index={index}/{len(records)}",
+                    flush=True,
+                )
+                continue
+        if teacher is None:
+            raise RuntimeError("Teacher was not loaded despite remaining records.")
         print(
             "Enriching "
             f"dataset={args.segments_path} "
@@ -317,6 +497,7 @@ def _run_interview(
                 prompt_vars=prompt_vars,
                 generation_options=generation_options,
                 logger=logger,
+                previous_attempts=_saved_attempts(saved),
             )
             if args.strategy == "self_consistency":
                 segment_path = logger.enriched_segment(
@@ -324,10 +505,20 @@ def _run_interview(
                     _focused_self_consistency_payload(enriched),
                 )
             elif args.strategy == "single_pass":
+                if execution_fingerprint is None:
+                    raise RuntimeError("Single-pass execution fingerprint is missing.")
+                focused = _focused_single_pass_payload(enriched)
+                focused.update(
+                    checkpoint_metadata(
+                        execution_fingerprint=execution_fingerprint,
+                        record=record,
+                    )
+                )
                 segment_path = logger.enriched_segment(
                     record.record_id,
-                    _focused_single_pass_payload(enriched),
+                    focused,
                 )
+                checkpoints[record.record_id] = focused
             else:
                 logger.enriched_record(enriched)
                 segment_path = None
@@ -361,15 +552,15 @@ def _run_interview(
             success_count += 1
         except Exception as exc:
             failure_count += 1
-            logger.failure(
-                {
-                    "event": "record_failed",
-                    "record_id": record.record_id,
-                    "interview_id": interview_id,
-                    "error_type": type(exc).__name__,
-                    "error": str(exc),
-                }
-            )
+            failure_payload = {
+                "event": "record_failed",
+                "record_id": record.record_id,
+                "interview_id": interview_id,
+                "error_type": type(exc).__name__,
+                "error": str(exc),
+            }
+            operational_failures.append(failure_payload)
+            logger.failure(failure_payload)
             print(
                 f"Completed record={record.record_id} status=failed "
                 f"error_type={type(exc).__name__}",
@@ -377,6 +568,30 @@ def _run_interview(
             )
             if not args.continue_on_error:
                 raise
+
+    if args.strategy == "single_pass":
+        operational_failure_ids = {
+            payload["record_id"] for payload in operational_failures
+        }
+        current_failures = [
+            {
+                "event": "record_failed",
+                "record_id": record.record_id,
+                "interview_id": interview_id,
+                "error_type": "ValidationError",
+                "error": "Single-pass generation failed strict validation.",
+                "validation_errors": checkpoints[record.record_id]["samples"][0][
+                    "validation_errors"
+                ],
+                "segment_path": str(
+                    output_dir / "segments" / f"{record.record_id}.json"
+                ),
+            }
+            for record in records
+            if checkpoints.get(record.record_id, {}).get("status") == "failed"
+            and record.record_id not in operational_failure_ids
+        ]
+        logger.replace_failures([*current_failures, *operational_failures])
 
     summary = {
         "event": "run_completed",
@@ -402,6 +617,7 @@ def _run_strategy(
     prompt_vars: dict[str, Any],
     generation_options: GenerationOptions,
     logger: RunLogger,
+    previous_attempts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     if args.strategy == "single_pass":
         return run_single_pass(
@@ -416,6 +632,7 @@ def _run_strategy(
             context_scope=args.context_scope,
             context_turns_before=args.context_turns_before,
             context_turns_after=args.context_turns_after,
+            previous_attempts=previous_attempts,
         )
 
     if args.strategy == "self_consistency":
@@ -500,6 +717,43 @@ def _manifest(
         "generation_options": asdict(generation_options),
         "output_schema_version": SAMPLE_SCHEMA_VERSION,
     }
+
+
+def _validate_resume_arguments(args: argparse.Namespace) -> None:
+    if args.resume_validate_only and args.resume is None:
+        raise ValueError("--resume-validate-only requires --resume RUN_DIR.")
+    if args.resume is None:
+        return
+    if args.strategy != "single_pass":
+        raise ValueError("--resume is supported only with --strategy single_pass.")
+    resume_dir = args.resume.expanduser().resolve()
+    output_dir = args.output_dir.expanduser().resolve()
+    if resume_dir != output_dir:
+        raise ValueError(
+            "--output-dir and --resume must identify the same run directory: "
+            f"output_dir={output_dir}, resume={resume_dir}."
+        )
+    args.resume = resume_dir
+    args.output_dir = output_dir
+
+
+def _jsonable_args(args: argparse.Namespace) -> dict[str, Any]:
+    return {
+        key: str(value) if isinstance(value, Path) else value
+        for key, value in vars(args).items()
+    }
+
+
+def _saved_attempts(
+    checkpoint: dict[str, Any] | None,
+) -> list[dict[str, Any]]:
+    if checkpoint is None or checkpoint.get("status") != "failed":
+        return []
+    samples = checkpoint.get("samples")
+    if not isinstance(samples, list) or len(samples) != 1:
+        return []
+    attempts = samples[0].get("attempts")
+    return list(attempts) if isinstance(attempts, list) else []
 
 
 def _load_runtime_codebook(

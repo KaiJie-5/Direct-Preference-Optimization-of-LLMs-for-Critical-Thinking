@@ -26,6 +26,7 @@ EXCLUDE_RECORDS_PATH="${EXCLUDE_RECORDS_PATH:-${SCRATCH_DPO}/data/UKDA-4688-rtf-
 CODEBOOK_PATH="${SCRATCH_DPO}/data/codebooks/example_codes_v1.json"
 OUTPUT_ROOT="${OUTPUT_ROOT:-${SCRATCH_DPO}/data/UKDA-4688-rtf-enriched}"
 PROMPT_PATH="${PROMPT_PATH:-${PROJECT_DIR}/prompts/enrichment/self_consistency_four_codes.txt}"
+RESUME_DIR="${RESUME_DIR:-}"
 
 # The codebook and research questions are fixed for this run.
 RESEARCH_QUESTIONS=(
@@ -62,9 +63,14 @@ require_file "${CODEBOOK_PATH}"
 require_file "${PROMPT_PATH}"
 
 TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
-RUN_ID="ukda4688_single_pass_four_codes_${SLURM_JOB_ID}_${TIMESTAMP}"
-RUN_DIR="${OUTPUT_ROOT}/${RUN_ID}"
-mkdir -p "${RUN_DIR}"
+if [[ -n "${RESUME_DIR}" ]]; then
+    require_directory "${RESUME_DIR}"
+    RUN_DIR="$(readlink -f "${RESUME_DIR}")"
+else
+    RUN_ID="ukda4688_single_pass_four_codes_${SLURM_JOB_ID}_${TIMESTAMP}"
+    RUN_DIR="${OUTPUT_ROOT}/${RUN_ID}"
+    mkdir -p "${RUN_DIR}"
+fi
 exec > >(tee -a "${RUN_DIR}/enrichment.log") 2> >(tee -a "${RUN_DIR}/enrichment.err" >&2)
 
 CONDA_BASE="${CONDA_BASE:-}"
@@ -120,8 +126,14 @@ for question in "${RESEARCH_QUESTIONS[@]}"; do
     ARGS+=(--research-question "${question}")
 done
 
-printf '%q ' python -m enrichment.cli "${ARGS[@]}" > "${RUN_DIR}/command.txt"
-printf '\n' >> "${RUN_DIR}/command.txt"
+if [[ -n "${RESUME_DIR}" ]]; then
+    ARGS+=(--resume "${RUN_DIR}")
+    COMMAND_PATH="${RUN_DIR}/resume_command_${SLURM_JOB_ID}_${TIMESTAMP}.txt"
+else
+    COMMAND_PATH="${RUN_DIR}/command.txt"
+fi
+printf '%q ' python -m enrichment.cli "${ARGS[@]}" > "${COMMAND_PATH}"
+printf '\n' >> "${COMMAND_PATH}"
 python -m enrichment.cli "${ARGS[@]}"
 
 echo "Enrichment complete: ${RUN_DIR}"

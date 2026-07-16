@@ -8,7 +8,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from hashlib import sha256
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 
 DEFAULT_MAX_NEW_TOKENS = 32768
@@ -353,6 +353,52 @@ def build_teacher(args: Any) -> Teacher:
             think_prefix=args.think_prefix,
         )
     raise ValueError(f"Unsupported teacher backend: {args.teacher_backend}")
+
+
+def build_prompt_renderer(args: Any) -> Callable[[str], str]:
+    """Build the lightweight renderer needed to validate saved prompt hashes.
+
+    The transformers path loads only tokenizer assets, never model weights.
+    Other backends store the unwrapped prompt as ``rendered_prompt``.
+    """
+
+    if args.teacher_backend != "transformers":
+        return lambda prompt: prompt
+    if not args.model_path:
+        raise ValueError("--model-path is required for --teacher-backend transformers")
+    try:
+        from transformers import AutoTokenizer
+    except ImportError as exc:
+        raise RuntimeError(
+            "Install transformers before validating transformer prompt checkpoints."
+        ) from exc
+    tokenizer = AutoTokenizer.from_pretrained(
+        args.model_path,
+        trust_remote_code=args.trust_remote_code,
+    )
+    chat_template_enabled = bool(
+        args.use_chat_template and getattr(tokenizer, "chat_template", None)
+    )
+
+    def render(prompt: str) -> str:
+        rendered = (
+            tokenizer.apply_chat_template(
+                [{"role": "user", "content": prompt}],
+                tokenize=False,
+                add_generation_prompt=True,
+            )
+            if chat_template_enabled
+            else prompt
+        )
+        if args.force_think_prefix and not rendered.endswith(args.think_prefix):
+            rendered += args.think_prefix
+        if args.force_think_prefix and rendered.endswith(
+            args.think_prefix + args.think_prefix
+        ):
+            raise ValueError("Rendered prompt contains a duplicated thinking prefix.")
+        return rendered
+
+    return render
 
 
 def normalize_decoded_text(text: str) -> DecodeNormalization:

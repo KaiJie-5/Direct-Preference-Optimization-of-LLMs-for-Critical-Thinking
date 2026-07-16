@@ -1468,6 +1468,176 @@ def test_single_pass_cli_saves_invalid_audit_and_returns_nonzero(
     assert failures[0]["error_type"] == "ValidationError"
 
 
+def test_single_pass_resume_retries_failed_and_preserves_attempts(
+    tmp_path: Path,
+) -> None:
+    args, output_dir = _single_pass_resume_fixture(tmp_path)
+
+    assert enrich_main(args) == 1
+    checkpoint_path = (
+        output_dir / "INT01_single_pass" / "segments" / "INT01_SEG001.json"
+    )
+    first = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    assert first["samples"][0]["attempt_count"] == 1
+
+    assert enrich_main([*args, "--resume", str(output_dir)]) == 1
+    resumed = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    manifest = json.loads(
+        (output_dir / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert resumed["samples"][0]["attempt_count"] == 2
+    assert [
+        attempt["attempt_index"] for attempt in resumed["samples"][0]["attempts"]
+    ] == [1, 2]
+    assert manifest["run_state"]["resume_count"] == 1
+
+
+def test_resume_cli_rejects_invalid_scope_and_paths(tmp_path: Path) -> None:
+    args, output_dir = _single_pass_resume_fixture(tmp_path)
+    with pytest.raises(ValueError, match="requires --resume"):
+        enrich_main([*args, "--resume-validate-only"])
+    with pytest.raises(ValueError, match="must identify the same run directory"):
+        enrich_main([*args, "--resume", str(tmp_path / "different")])
+    self_consistency_args = list(args)
+    self_consistency_args[self_consistency_args.index("single_pass")] = (
+        "self_consistency"
+    )
+    with pytest.raises(ValueError, match="supported only"):
+        enrich_main(
+            [*self_consistency_args, "--resume", str(output_dir)]
+        )
+
+
+def test_single_pass_resume_validation_only_is_read_only(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args, output_dir = _single_pass_resume_fixture(tmp_path)
+    assert enrich_main(args) == 1
+    checkpoint_path = (
+        output_dir / "INT01_single_pass" / "segments" / "INT01_SEG001.json"
+    )
+    before_checkpoint = checkpoint_path.read_bytes()
+    before_manifest = (output_dir / "run_manifest.json").read_bytes()
+
+    def forbidden_teacher(_args: Any) -> Any:
+        raise AssertionError("Validation-only resume must not load the teacher.")
+
+    monkeypatch.setattr("enrichment.cli.build_teacher", forbidden_teacher)
+    assert (
+        enrich_main(
+            [
+                *args,
+                "--resume",
+                str(output_dir),
+                "--resume-validate-only",
+            ]
+        )
+        == 0
+    )
+    assert checkpoint_path.read_bytes() == before_checkpoint
+    assert (output_dir / "run_manifest.json").read_bytes() == before_manifest
+
+
+def test_single_pass_resume_skips_strictly_valid_checkpoint(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args, output_dir = _single_pass_resume_fixture(tmp_path)
+    record = load_segment_records(Path(args[1]))[0]
+    valid_output = "<think>\nGrounded reasoning.\n</think>\n" + json.dumps(
+        _valid_v3_sample(record, codebook_version="v1"),
+        ensure_ascii=False,
+    )
+    queue = QueueTeacher([valid_output])
+    monkeypatch.setattr("enrichment.cli.build_teacher", lambda _args: queue)
+    assert enrich_main(args) == 0
+    checkpoint_path = (
+        output_dir / "INT01_single_pass" / "segments" / "INT01_SEG001.json"
+    )
+    before = checkpoint_path.read_bytes()
+
+    def forbidden_teacher(_args: Any) -> Any:
+        raise AssertionError("A completed resume must not load the teacher.")
+
+    monkeypatch.setattr("enrichment.cli.build_teacher", forbidden_teacher)
+    assert enrich_main([*args, "--resume", str(output_dir)]) == 0
+    assert checkpoint_path.read_bytes() == before
+
+
+def test_single_pass_resume_archives_malformed_checkpoint(
+    tmp_path: Path,
+) -> None:
+    args, output_dir = _single_pass_resume_fixture(tmp_path)
+    assert enrich_main(args) == 1
+    checkpoint_path = (
+        output_dir / "INT01_single_pass" / "segments" / "INT01_SEG001.json"
+    )
+    checkpoint_path.write_text("{truncated", encoding="utf-8")
+
+    assert enrich_main([*args, "--resume", str(output_dir)]) == 1
+    archived = list(
+        (output_dir / "resume_invalid_checkpoints").rglob("*INT01_SEG001.json")
+    )
+    assert len(archived) == 1
+    assert archived[0].read_text(encoding="utf-8") == "{truncated"
+    assert json.loads(checkpoint_path.read_text(encoding="utf-8"))["status"] == "failed"
+
+
+def test_single_pass_resume_rejects_prompt_drift_before_teacher_load(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    args, output_dir = _single_pass_resume_fixture(tmp_path)
+    assert enrich_main(args) == 1
+    prompt_path = Path(args[args.index("--prompt-path") + 1])
+    prompt_path.write_text(prompt_path.read_text(encoding="utf-8") + " changed", encoding="utf-8")
+
+    def forbidden_teacher(_args: Any) -> Any:
+        raise AssertionError("Resume drift must be rejected before teacher loading.")
+
+    monkeypatch.setattr("enrichment.cli.build_teacher", forbidden_teacher)
+    with pytest.raises(ValueError, match="Resume manifest mismatch"):
+        enrich_main([*args, "--resume", str(output_dir)])
+
+
+def test_single_pass_legacy_resume_migrates_after_read_only_validation(
+    tmp_path: Path,
+) -> None:
+    args, output_dir = _single_pass_resume_fixture(tmp_path)
+    assert enrich_main(args) == 1
+    checkpoint_path = (
+        output_dir / "INT01_single_pass" / "segments" / "INT01_SEG001.json"
+    )
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint.pop("checkpoint_schema_version")
+    checkpoint.pop("execution_fingerprint")
+    checkpoint.pop("record_input_sha256")
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    (output_dir / "run_manifest.json").unlink()
+    (output_dir / "command.txt").write_text("legacy command\n", encoding="utf-8")
+
+    assert (
+        enrich_main(
+            [
+                *args,
+                "--resume",
+                str(output_dir),
+                "--resume-validate-only",
+            ]
+        )
+        == 0
+    )
+    assert not (output_dir / "run_manifest.json").exists()
+
+    assert enrich_main([*args, "--resume", str(output_dir)]) == 1
+    manifest = json.loads(
+        (output_dir / "run_manifest.json").read_text(encoding="utf-8")
+    )
+    assert manifest["legacy_migration"]["status"] == "migrated"
+    assert manifest["run_state"]["resume_count"] == 1
+
+
 def test_ukda_slurm_uses_single_pass_four_code_prompt() -> None:
     script = Path("submit_job_enrichment_self_consistency_ukda4688.slurm").read_text(
         encoding="utf-8"
@@ -1485,6 +1655,10 @@ def test_ukda_slurm_uses_single_pass_four_code_prompt() -> None:
     )
     assert "How does employment shape family life?" in script
     assert "do not submit it to debate ranking" in script
+    assert 'RESUME_DIR="${RESUME_DIR:-}"' in script
+    assert 'ARGS+=(--resume "${RUN_DIR}")' in script
+    assert "resume_command_${SLURM_JOB_ID}_${TIMESTAMP}.txt" in script
+    assert 'COMMAND_PATH="${RUN_DIR}/command.txt"' in script
 
 
 def test_enrichment_cli_skips_approved_records_and_records_filter_manifest(
@@ -2326,6 +2500,41 @@ def _write_prompt(tmp_path: Path, text: str) -> Path:
     path = tmp_path / f"prompt_{len(list(tmp_path.glob('prompt_*')))}.txt"
     path.write_text(text, encoding="utf-8")
     return path
+
+
+def _single_pass_resume_fixture(tmp_path: Path) -> tuple[list[str], Path]:
+    segments_dir = tmp_path / "segments"
+    segments_dir.mkdir()
+    _write_jsonl(
+        segments_dir / "INT01_segments.jsonl",
+        [_segment("INT01", 1)],
+    )
+    prompt_path = _write_prompt(
+        tmp_path,
+        (
+            "{record_id} {interview_id} {segment_id} {speaker} "
+            "{codebook_version} {research_questions} {analysis_context} "
+            "{context_scope} {input_text} {candidate_example_codes_json}"
+        ),
+    )
+    output_dir = tmp_path / "resume_run"
+    args = [
+        "--segments-path",
+        str(segments_dir),
+        "--output-dir",
+        str(output_dir),
+        "--codebook-path",
+        str(_write_codebook(tmp_path)),
+        "--strategy",
+        "single_pass",
+        "--prompt-path",
+        str(prompt_path),
+        "--research-question",
+        "How do participants describe AI support?",
+        "--teacher-backend",
+        "dry-run",
+    ]
+    return args, output_dir
 
 
 def _write_jsonl(path: Path, records: list[dict[str, Any]]) -> Path:
