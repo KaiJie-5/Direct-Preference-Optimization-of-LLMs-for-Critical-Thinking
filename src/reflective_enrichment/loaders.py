@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from debate.schema import REVIEW_BLOCK_BY_ID
+from enrichment.schema import normalize_code_label
 
 from .schema import CATEGORY_ORDER
 
@@ -92,14 +93,27 @@ def load_reflective_inputs(
             mapping = matches[0]
             sample_index = int(mapping["original_sample_index"])
             code = _selected_code(source, sample_index, category, source_path)
-            selected.append(
-                {
-                    "hint": category,
-                    "selected_candidate_label": top_label,
-                    "original_sample_index": sample_index,
-                    "code": code,
-                }
-            )
+            selected_item: dict[str, Any] = {
+                "hint": category,
+                "selected_candidate_label": top_label,
+                "original_sample_index": sample_index,
+                "code": dict(code),
+            }
+            model_label = selected_item["code"].get("code_label")
+            if isinstance(model_label, str):
+                canonical_label = normalize_code_label(model_label)
+                if canonical_label != model_label:
+                    selected_item["code"]["code_label"] = canonical_label
+                    selected_item["canonical_corrections"] = [
+                        {
+                            "path": "code.code_label",
+                            "was_present": True,
+                            "model_value": model_label,
+                            "canonical_value": canonical_label,
+                            "correction_type": "underscore_to_space_code_label",
+                        }
+                    ]
+            selected.append(selected_item)
         records.append(
             ReflectiveInput(
                 dataset=dataset,

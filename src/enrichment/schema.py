@@ -291,8 +291,45 @@ def canonicalize_source_fields(
             )
 
     _canonicalize_structured_quotes(canonical, record.text, corrections)
+    canonicalize_code_quality_labels(canonical, corrections)
 
     return canonical, corrections
+
+
+def normalize_code_label(value: str) -> str:
+    """Return the human-facing form of a generated code label."""
+
+    return " ".join(re.sub(r"_+", " ", value).split())
+
+
+def canonicalize_code_quality_labels(
+    payload: dict[str, Any], corrections: list[dict[str, Any]]
+) -> None:
+    """Normalize generated code-quality labels while retaining model values."""
+
+    examples = payload.get("code_quality_examples")
+    if not isinstance(examples, dict):
+        return
+    for category in sorted(CODE_QUALITY_EXAMPLE_FIELDS):
+        example = examples.get(category)
+        if not isinstance(example, dict):
+            continue
+        model_value = example.get("code_label")
+        if not isinstance(model_value, str):
+            continue
+        canonical_value = normalize_code_label(model_value)
+        if canonical_value == model_value:
+            continue
+        corrections.append(
+            {
+                "path": f"code_quality_examples.{category}.code_label",
+                "was_present": True,
+                "model_value": model_value,
+                "canonical_value": canonical_value,
+                "correction_type": "underscore_to_space_code_label",
+            }
+        )
+        example["code_label"] = canonical_value
 
 
 def _set_canonical_field(
@@ -766,9 +803,9 @@ def validate_segment_enrichment_sample_result(
             nonmatching_is_error=False,
         )
         collapsed_paths = _collapsed_narrative_paths(payload)
-        if len(collapsed_paths) >= 3:
+        if collapsed_paths:
             errors.append(
-                "Generated analytical prose appears to have broadly collapsed "
+                "Generated analytical prose appears to have collapsed "
                 "whitespace in fields: " + ", ".join(collapsed_paths[:8])
             )
 

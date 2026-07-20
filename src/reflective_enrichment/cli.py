@@ -18,13 +18,27 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="RUN_DIR",
         help="Resume in an existing reflective-enrichment run directory.",
     )
+    parser.add_argument(
+        "--migrate-label-normalization",
+        action="store_true",
+        help=(
+            "Back up and narrowly migrate a v1 resume run to normalized code labels "
+            "before retrying unresolved records. Requires --resume."
+        ),
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     config = load_reflective_config(args.config)
-    run_dir = run_reflective_enrichment(config, resume_dir=args.resume)
+    if args.migrate_label_normalization and args.resume is None:
+        raise SystemExit("--migrate-label-normalization requires --resume")
+    run_dir = run_reflective_enrichment(
+        config,
+        resume_dir=args.resume,
+        migrate_label_normalization=args.migrate_label_normalization,
+    )
     manifest = run_dir / "run_manifest.json"
     import json
 

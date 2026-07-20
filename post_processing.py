@@ -3,13 +3,17 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
+import shutil
 import sys
 import time
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
 from enrichment.data import DatasetRecord
 from enrichment.schema import (
+    canonicalize_code_quality_labels,
     canonicalize_source_fields,
     parse_json_object,
     validate_segment_enrichment_sample_result,
@@ -36,20 +40,22 @@ def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
             "Post-process enrichment outputs. Use aggregate to collect failed "
-            "parsed samples; repair is reserved for a later replacement workflow."
+            "parsed samples, repair to apply prepared replacements, or "
+            "normalize-code-labels for dry-run-first label normalization."
         )
     )
     parser.add_argument(
         "--process",
         required=True,
-        choices=["aggregate", "repair"],
+        choices=["aggregate", "repair", "normalize-code-labels"],
         help="Top-level post-processing action to run.",
     )
     parser.add_argument(
         "--enriched-dir",
         type=Path,
         help=(
-            "Enriched output directory for --process aggregate. This may be a "
+            "Enriched output directory for --process aggregate or "
+            "normalize-code-labels. This may be a "
             "single run folder, an interview output folder, or a parent folder "
             "containing run folders."
         ),
@@ -110,7 +116,213 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="For --process repair, report planned changes without writing segment files.",
     )
+    parser.add_argument(
+        "--apply",
+        action="store_true",
+        help=(
+            "Apply --process normalize-code-labels in place after validation. "
+            "Without this flag the action is a read-only dry run."
+        ),
+    )
     return parser
+
+
+def normalize_existing_code_labels(
+    *,
+    enriched_dir: Path,
+    apply: bool = False,
+    segment_glob: str = "**/segments/*.json",
+) -> dict[str, Any]:
+    enriched_dir = enriched_dir.expanduser().resolve()
+    if not enriched_dir.is_dir():
+        raise FileNotFoundError(f"Enriched directory does not exist: {enriched_dir}")
+    planned: list[tuple[Path, str, int]] = []
+    counts = {
+        "segment_files_scanned": 0,
+        "segment_files_changed": 0,
+        "labels_normalized": 0,
+    }
+    for path in sorted(enriched_dir.glob(segment_glob), key=str):
+        counts["segment_files_scanned"] += 1
+        original_bytes = path.read_bytes()
+        payload = json.loads(original_bytes.decode("utf-8"))
+        if not isinstance(payload, dict):
+            raise ValueError(f"Segment JSON must contain an object: {path}")
+        migrated, correction_count = _normalize_segment_code_labels(payload, path)
+        if correction_count == 0:
+            continue
+        counts["segment_files_changed"] += 1
+        counts["labels_normalized"] += correction_count
+        planned.append((path, hashlib.sha256(original_bytes).hexdigest(), correction_count))
+
+    backup_dir: Path | None = None
+    changed_files: list[dict[str, Any]] = []
+    if apply and planned:
+        backup_dir = enriched_dir.with_name(
+            f"{enriched_dir.name}_label_normalization_backup_"
+            f"{time.strftime('%Y%m%d_%H%M%S', time.localtime())}"
+        )
+        if backup_dir.exists():
+            raise FileExistsError(f"Backup directory already exists: {backup_dir}")
+        changed_during_scan = [
+            path for path, before_hash, _ in planned if _sha256_path(path) != before_hash
+        ]
+        if changed_during_scan:
+            raise RuntimeError(
+                "A segment changed after validation; refusing to apply: "
+                f"{changed_during_scan[0]}"
+            )
+        for path, _, _ in planned:
+            destination = backup_dir / path.relative_to(enriched_dir)
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(path, destination)
+        for path, before_hash, correction_count in planned:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError(f"Segment JSON must contain an object: {path}")
+            migrated, applied_count = _normalize_segment_code_labels(payload, path)
+            if applied_count != correction_count:
+                raise RuntimeError(
+                    "Normalization plan changed between validation and apply for "
+                    f"{path}."
+                )
+            _write_json_atomic(path, migrated)
+            changed_files.append(
+                {
+                    "path": str(path.relative_to(enriched_dir)),
+                    "before_sha256": before_hash,
+                    "after_sha256": _sha256_path(path),
+                    "correction_count": correction_count,
+                }
+            )
+    else:
+        changed_files = [
+            {
+                "path": str(path.relative_to(enriched_dir)),
+                "before_sha256": before_hash,
+                "correction_count": correction_count,
+            }
+            for path, before_hash, correction_count in planned
+        ]
+
+    report = {
+        "schema_version": "code_label_normalization_report_v1",
+        "created_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        "enriched_dir": str(enriched_dir),
+        "applied": apply,
+        "backup_dir": str(backup_dir) if backup_dir is not None else None,
+        "counts": counts,
+        "changed_files": changed_files,
+    }
+    if apply:
+        _write_json_atomic(enriched_dir / "code_label_normalization_report.json", report)
+    return report
+
+
+def _normalize_segment_code_labels(
+    payload: dict[str, Any], path: Path
+) -> tuple[dict[str, Any], int]:
+    migrated = deepcopy(payload)
+    correction_count = 0
+    samples = migrated.get("samples")
+    if not isinstance(samples, list):
+        return migrated, 0
+    for sample in samples:
+        if not isinstance(sample, dict):
+            continue
+        correction_count += _normalize_parsed_container(sample, "parsed_output", path)
+        attempts = sample.get("attempts")
+        if isinstance(attempts, list):
+            for attempt in attempts:
+                if isinstance(attempt, dict):
+                    correction_count += _normalize_parsed_container(
+                        attempt, "parsed_output", path
+                    )
+    selected_index = migrated.get("selected_sample_index")
+    selected_matches = [
+        sample
+        for sample in samples
+        if isinstance(sample, dict) and sample.get("sample_index") == selected_index
+    ]
+    if len(selected_matches) == 1 and isinstance(
+        selected_matches[0].get("parsed_output"), dict
+    ):
+        migrated["selected_json"] = deepcopy(selected_matches[0]["parsed_output"])
+    elif isinstance(migrated.get("selected_json"), dict):
+        model_selected = deepcopy(migrated["selected_json"])
+        corrections: list[dict[str, Any]] = []
+        canonicalize_code_quality_labels(migrated["selected_json"], corrections)
+        if corrections:
+            migrated.setdefault("label_normalization_corrections", []).extend(corrections)
+            correction_count += len(corrections)
+        _reject_normalization_created_duplicates(
+            model_selected, migrated["selected_json"], path
+        )
+    return migrated, correction_count
+
+
+def _normalize_parsed_container(
+    container: dict[str, Any], field: str, path: Path
+) -> int:
+    parsed = container.get(field)
+    if not isinstance(parsed, dict):
+        return 0
+    model_parsed = deepcopy(parsed)
+    corrections: list[dict[str, Any]] = []
+    canonicalize_code_quality_labels(parsed, corrections)
+    _reject_normalization_created_duplicates(model_parsed, parsed, path)
+    if not corrections:
+        return 0
+    existing = container.setdefault("canonical_corrections", [])
+    for correction in corrections:
+        if correction not in existing:
+            existing.append(correction)
+    return len(corrections)
+
+
+def _reject_normalization_created_duplicates(
+    before: dict[str, Any], after: dict[str, Any], path: Path
+) -> None:
+    before_examples = before.get("code_quality_examples")
+    after_examples = after.get("code_quality_examples")
+    if not isinstance(before_examples, dict) or not isinstance(after_examples, dict):
+        return
+    grouped: dict[str, list[tuple[str, str]]] = {}
+    for category, example in after_examples.items():
+        model_example = before_examples.get(category)
+        if (
+            not isinstance(example, dict)
+            or not isinstance(model_example, dict)
+            or not isinstance(example.get("code_label"), str)
+            or not isinstance(model_example.get("code_label"), str)
+        ):
+            continue
+        canonical_key = " ".join(example["code_label"].split()).casefold()
+        model_key = " ".join(model_example["code_label"].split()).casefold()
+        grouped.setdefault(canonical_key, []).append((str(category), model_key))
+    for matches in grouped.values():
+        if len(matches) > 1 and len({model_key for _, model_key in matches}) > 1:
+            categories = ", ".join(category for category, _ in matches)
+            raise ValueError(
+                f"Normalization would create duplicate code labels in {path}: "
+                f"{categories}."
+            )
+
+
+def _write_json_atomic(path: Path, payload: Any) -> None:
+    temporary = path.with_name(f".{path.name}.tmp")
+    temporary.write_text(
+        json.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+    os.replace(temporary, path)
+
+
+def _sha256_path(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def collect_failed_outputs(
@@ -446,6 +658,33 @@ def repair_failed_outputs(
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.process == "normalize-code-labels":
+        if args.enriched_dir is None:
+            print(
+                "post_processing.py: error: --enriched-dir is required for "
+                "--process normalize-code-labels",
+                file=sys.stderr,
+            )
+            return 1
+        try:
+            report = normalize_existing_code_labels(
+                enriched_dir=args.enriched_dir,
+                apply=args.apply,
+                segment_glob=args.segment_glob,
+            )
+        except Exception as exc:
+            print(f"post_processing.py: error: {exc}", file=sys.stderr)
+            return 1
+        counts = report["counts"]
+        mode = "Applied" if report["applied"] else "Dry run"
+        print(
+            f"{mode}: {counts['labels_normalized']} labels in "
+            f"{counts['segment_files_changed']} of "
+            f"{counts['segment_files_scanned']} segment files."
+        )
+        if report["backup_dir"]:
+            print(f"Backup: {report['backup_dir']}")
+        return 0
     if args.process == "repair":
         if args.failed_path is None:
             print(

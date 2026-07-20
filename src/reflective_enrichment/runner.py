@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import os
 import platform
+import shutil
 import sys
 import time
+from copy import deepcopy
 from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
@@ -12,11 +14,12 @@ from types import SimpleNamespace
 from typing import Any, Callable
 
 from enrichment.prompts import PromptTemplate
+from enrichment.schema import normalize_code_label
 from enrichment.teachers import GenerationOptions, Teacher, build_teacher
 
 from .config import ReflectiveConfig, config_to_jsonable
 from .loaders import ReflectiveInput, load_reflective_inputs
-from .schema import parse_and_validate_response, required_output, validate_payload
+from .schema import parse_response_result, required_output, validate_payload
 
 
 TeacherFactory = Callable[[ReflectiveConfig], Teacher]
@@ -26,6 +29,7 @@ def run_reflective_enrichment(
     config: ReflectiveConfig,
     *,
     resume_dir: Path | None = None,
+    migrate_label_normalization: bool = False,
     teacher_factory: TeacherFactory | None = None,
 ) -> Path:
     loaded = load_reflective_inputs(
@@ -38,7 +42,18 @@ def run_reflective_enrichment(
     execution_fingerprint = _execution_fingerprint(config, loaded.fingerprint, prompt_sha256)
 
     is_resume = resume_dir is not None
+    if migrate_label_normalization and not is_resume:
+        raise ValueError("migrate_label_normalization requires resume_dir.")
     if is_resume:
+        if migrate_label_normalization:
+            _migrate_label_normalization(
+                resume_dir=resume_dir,
+                records=loaded.records,
+                config=config,
+                input_fingerprint=loaded.fingerprint,
+                prompt_sha256=prompt_sha256,
+                execution_fingerprint=execution_fingerprint,
+            )
         run_dir, manifest = _open_resume(
             resume_dir,
             config=config,
@@ -161,6 +176,7 @@ def _generate_record(
         "reasoning_parse_status": "not_generated",
     }
     output_text = ""
+    model_parsed: dict[str, Any] | None = None
     max_attempts = config.generation.json_repair_attempts + 1
     for current_index in range(1, max_attempts + 1):
         is_repair = current_index > 1
@@ -183,7 +199,11 @@ def _generate_record(
             errors = [f"{type(exc).__name__}: {exc}"]
             break
         output_text = result.text
-        parsed, sections, errors = parse_and_validate_response(output_text, selected_codes)
+        parse_result = parse_response_result(output_text, selected_codes)
+        model_parsed = parse_result.model_parsed_output
+        parsed = parse_result.parsed_output
+        sections = parse_result.sections
+        errors = parse_result.errors
         attempts.append(
             {
                 "attempt_index": len(attempts) + 1,
@@ -195,7 +215,9 @@ def _generate_record(
                 "rendered_prompt": result.rendered_prompt,
                 "raw_output_text": output_text,
                 **sections,
+                "model_parsed_output": parse_result.model_parsed_output,
                 "parsed_output": parsed,
+                "canonical_corrections": parse_result.canonical_corrections,
                 "validation_errors": errors,
                 "raw_response": result.raw,
                 "elapsed_seconds": result.elapsed_seconds,
@@ -223,7 +245,11 @@ def _generate_record(
             "attempts": attempts,
             "raw_output_text": output_text,
             **sections,
+            "model_parsed_output": model_parsed,
             "parsed_output": parsed,
+            "canonical_corrections": (
+                attempts[-1].get("canonical_corrections", []) if attempts else []
+            ),
             "validation_errors": errors,
             "reflective_questions": (
                 parsed["reflective_questions"] if status == "success" else None
@@ -294,7 +320,7 @@ def _default_teacher_factory(config: ReflectiveConfig) -> Teacher:
 
 def _checkpoint_base(record: ReflectiveInput, execution_fingerprint: str) -> dict[str, Any]:
     return {
-        "schema_version": "reflective_question_enrichment_v1",
+        "schema_version": "reflective_question_enrichment_v2",
         "created_at_utc": _timestamp(),
         "execution_fingerprint": execution_fingerprint,
         "record_input_sha256": _record_sha256(record),
@@ -331,7 +357,7 @@ def _load_checkpoints(
         if not isinstance(payload, dict):
             raise ValueError(f"Checkpoint must be an object: {path}")
         expected_fields = {
-            "schema_version": "reflective_question_enrichment_v1",
+            "schema_version": "reflective_question_enrichment_v2",
             "execution_fingerprint": execution_fingerprint,
             "record_input_sha256": _record_sha256(record),
             "dataset": record.dataset,
@@ -367,7 +393,7 @@ def _new_manifest(
     execution_fingerprint: str,
 ) -> dict[str, Any]:
     return {
-        "schema_version": "reflective_question_run_v1",
+        "schema_version": "reflective_question_run_v2",
         "created_at_utc": _timestamp(),
         "python": sys.version,
         "platform": platform.platform(),
@@ -409,7 +435,7 @@ def _open_resume(
     if not isinstance(manifest, dict):
         raise ValueError(f"Resume manifest must be an object: {path}")
     expected = {
-        "schema_version": "reflective_question_run_v1",
+        "schema_version": "reflective_question_run_v2",
         "input_fingerprint": input_fingerprint,
         "prompt_sha256": prompt_sha256,
         "execution_fingerprint": execution_fingerprint,
@@ -427,6 +453,281 @@ def _open_resume(
     if not isinstance(manifest.get("run_state"), dict):
         raise ValueError("Resume manifest run_state must be an object.")
     return run_dir, manifest
+
+
+def _migrate_label_normalization(
+    *,
+    resume_dir: Path,
+    records: tuple[ReflectiveInput, ...],
+    config: ReflectiveConfig,
+    input_fingerprint: str,
+    prompt_sha256: str,
+    execution_fingerprint: str,
+) -> None:
+    run_dir = resume_dir.expanduser().resolve()
+    manifest_path = run_dir / "run_manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if manifest.get("schema_version") == "reflective_question_run_v2":
+        expected = {
+            "input_fingerprint": input_fingerprint,
+            "prompt_sha256": prompt_sha256,
+            "execution_fingerprint": execution_fingerprint,
+        }
+        mismatches = [key for key, value in expected.items() if manifest.get(key) != value]
+        if mismatches:
+            raise ValueError(
+                "Existing v2 label migration does not match current inputs at: "
+                + ", ".join(mismatches)
+            )
+        return
+    if manifest.get("schema_version") != "reflective_question_run_v1":
+        raise ValueError("Label migration only supports reflective run schema v1.")
+    if manifest.get("prompt_sha256") != prompt_sha256:
+        raise ValueError("Label migration refuses unrelated prompt changes.")
+    if _resume_relevant_config(manifest.get("config")) != _resume_relevant_config(
+        config_to_jsonable(config)
+    ):
+        raise ValueError("Label migration refuses unrelated configuration changes.")
+
+    record_by_key = {(record.dataset, record.record_id): record for record in records}
+    trace_paths = sorted((run_dir / "segment_traces").rglob("*.json"), key=str)
+    if len(trace_paths) != len(record_by_key):
+        raise ValueError(
+            "Label migration requires one existing checkpoint for every current record."
+        )
+    loaded: list[tuple[Path, dict[str, Any], ReflectiveInput]] = []
+    for path in trace_paths:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        key = (str(payload.get("dataset")), str(payload.get("record_id")))
+        record = record_by_key.get(key)
+        if record is None:
+            raise ValueError(f"Unknown checkpoint during label migration: {path}")
+        _verify_label_only_record_migration(payload, record, path)
+        loaded.append((path, payload, record))
+
+    backup_dir = run_dir.with_name(
+        f"{run_dir.name}_label_normalization_backup_{time.strftime('%Y%m%d_%H%M%S', time.localtime())}"
+    )
+    if backup_dir.exists():
+        raise FileExistsError(f"Migration backup already exists: {backup_dir}")
+    shutil.copytree(run_dir, backup_dir)
+
+    report: dict[str, Any] = {
+        "schema_version": "reflective_label_normalization_report_v1",
+        "created_at_utc": _timestamp(),
+        "run_dir": str(run_dir),
+        "backup_dir": str(backup_dir),
+        "changed_files": [],
+        "repaired_records": [],
+        "unresolved_records": [],
+        "correction_count": 0,
+    }
+    checkpoints: list[dict[str, Any]] = []
+    for path, payload, record in loaded:
+        before_hash = _file_sha256(path)
+        migrated = _migrate_checkpoint_payload(
+            payload, record=record, execution_fingerprint=execution_fingerprint
+        )
+        _write_json(path, migrated)
+        after_hash = _file_sha256(path)
+        report["changed_files"].append(
+            {
+                "path": str(path.relative_to(run_dir)),
+                "before_sha256": before_hash,
+                "after_sha256": after_hash,
+                "correction_count": sum(
+                    len(attempt.get("canonical_corrections", []))
+                    for attempt in migrated.get("attempts", [])
+                    if isinstance(attempt, dict)
+                    and isinstance(attempt.get("canonical_corrections"), list)
+                ),
+            }
+        )
+        report["correction_count"] += report["changed_files"][-1][
+            "correction_count"
+        ]
+        destination = (
+            report["repaired_records"]
+            if migrated["status"] == "success"
+            else report["unresolved_records"]
+        )
+        destination.append({"dataset": record.dataset, "record_id": record.record_id})
+        checkpoints.append(migrated)
+
+    manifest["schema_version"] = "reflective_question_run_v2"
+    manifest["input_fingerprint"] = input_fingerprint
+    manifest["execution_fingerprint"] = execution_fingerprint
+    manifest.setdefault("migrations", []).append(
+        {
+            "type": "code_label_normalization_v1_to_v2",
+            "migrated_at_utc": _timestamp(),
+            "backup_dir": str(backup_dir),
+            "report": "label_normalization_migration_report.json",
+        }
+    )
+    success_count = sum(item["status"] == "success" for item in checkpoints)
+    failure_count = len(checkpoints) - success_count
+    manifest["run_state"].update(
+        {
+            "status": "complete" if not failure_count else "incomplete",
+            "updated_at_utc": _timestamp(),
+            "success_count": success_count,
+            "failure_count": failure_count,
+        }
+    )
+    success_rows = [item for item in checkpoints if item["status"] == "success"]
+    failure_rows = [item for item in checkpoints if item["status"] != "success"]
+    aggregate_paths = (
+        run_dir / "reflective_questions.jsonl",
+        run_dir / "failures.jsonl",
+        manifest_path,
+    )
+    aggregate_before = {
+        path: _file_sha256(path) if path.is_file() else None for path in aggregate_paths
+    }
+    _write_jsonl(run_dir / "reflective_questions.jsonl", success_rows)
+    _write_jsonl(run_dir / "failures.jsonl", failure_rows)
+    _write_json(manifest_path, manifest)
+    for path in aggregate_paths:
+        report["changed_files"].append(
+            {
+                "path": str(path.relative_to(run_dir)),
+                "before_sha256": aggregate_before[path],
+                "after_sha256": _file_sha256(path),
+            }
+        )
+    _write_json(run_dir / "label_normalization_migration_report.json", report)
+
+
+def _verify_label_only_record_migration(
+    checkpoint: dict[str, Any], record: ReflectiveInput, path: Path
+) -> None:
+    if checkpoint.get("schema_version") != "reflective_question_enrichment_v1":
+        raise ValueError(f"Expected a v1 checkpoint for migration: {path}")
+    old_record = {
+        field: checkpoint.get(field)
+        for field in (
+            "dataset",
+            "record_id",
+            "transcript_id",
+            "segment_id",
+            "target_segment",
+            "research_questions",
+            "full_interview_context",
+            "selected_codes",
+            "source_segment_path",
+        )
+    }
+    expected_old_hash = sha256(
+        json.dumps(
+            old_record, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+    ).hexdigest()
+    if checkpoint.get("record_input_sha256") != expected_old_hash:
+        raise ValueError(f"Checkpoint input hash is invalid before migration: {path}")
+    current = json.loads(json.dumps(record.jsonable(), ensure_ascii=False))
+    old_comparable = deepcopy(old_record)
+    new_comparable = deepcopy(current)
+    _strip_allowed_label_migration(old_comparable)
+    _strip_allowed_label_migration(new_comparable)
+    if old_comparable != new_comparable:
+        raise ValueError(f"Checkpoint contains changes beyond label normalization: {path}")
+
+
+def _strip_allowed_label_migration(record: dict[str, Any]) -> None:
+    selected = record.get("selected_codes")
+    if not isinstance(selected, list):
+        return
+    for item in selected:
+        if not isinstance(item, dict):
+            continue
+        item.pop("canonical_corrections", None)
+        code = item.get("code")
+        if isinstance(code, dict) and isinstance(code.get("code_label"), str):
+            code["code_label"] = normalize_code_label(code["code_label"])
+
+
+def _migrate_checkpoint_payload(
+    payload: dict[str, Any], *, record: ReflectiveInput, execution_fingerprint: str
+) -> dict[str, Any]:
+    migrated = deepcopy(payload)
+    selected_codes = list(record.selected_codes)
+    migrated["schema_version"] = "reflective_question_enrichment_v2"
+    migrated["execution_fingerprint"] = execution_fingerprint
+    migrated["record_input_sha256"] = _record_sha256(record)
+    migrated["selected_codes"] = selected_codes
+    valid_attempts: list[dict[str, Any]] = []
+    for attempt in migrated.get("attempts", []):
+        raw_output = attempt.get("raw_output_text")
+        if not isinstance(raw_output, str):
+            continue
+        previous_status = attempt.get("status")
+        previous_errors = deepcopy(attempt.get("validation_errors"))
+        old_parsed = deepcopy(
+            attempt.get("model_parsed_output", attempt.get("parsed_output"))
+        )
+        result = parse_response_result(raw_output, selected_codes)
+        attempt["model_parsed_output"] = old_parsed
+        attempt["parsed_output"] = result.parsed_output
+        attempt["canonical_corrections"] = result.canonical_corrections
+        attempt["validation_errors"] = result.errors
+        attempt["status"] = "valid" if not result.errors else "invalid"
+        attempt.update(result.sections)
+        attempt.setdefault("migrations", []).append(
+            {
+                "type": "code_label_normalization_v1_to_v2",
+                "migrated_at_utc": _timestamp(),
+                "previous_status": previous_status,
+                "previous_validation_errors": previous_errors,
+            }
+        )
+        if not result.errors and result.parsed_output is not None:
+            valid_attempts.append(attempt)
+    final_attempt = valid_attempts[-1] if valid_attempts else _last_generated_attempt(migrated)
+    if final_attempt is not None:
+        for field in (
+            "raw_output_text",
+            "reasoning_text",
+            "reasoning_block",
+            "json_text",
+            "reasoning_parse_status",
+            "model_parsed_output",
+            "parsed_output",
+            "canonical_corrections",
+            "validation_errors",
+        ):
+            migrated[field] = deepcopy(final_attempt.get(field))
+    migrated["status"] = "success" if valid_attempts else "failed"
+    migrated["reflective_questions"] = (
+        migrated["parsed_output"]["reflective_questions"]
+        if migrated["status"] == "success"
+        else None
+    )
+    migrated["attempt_count"] = len(migrated.get("attempts", []))
+    migrated["updated_at_utc"] = _timestamp()
+    migrated.setdefault("migrations", []).append(
+        {
+            "type": "code_label_normalization_v1_to_v2",
+            "migrated_at_utc": _timestamp(),
+        }
+    )
+    return migrated
+
+
+def _last_generated_attempt(payload: dict[str, Any]) -> dict[str, Any] | None:
+    attempts = payload.get("attempts")
+    if not isinstance(attempts, list):
+        return None
+    generated = [item for item in attempts if isinstance(item, dict) and "raw_output_text" in item]
+    return generated[-1] if generated else None
+
+
+def _file_sha256(path: Path) -> str:
+    digest = sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _resume_relevant_config(value: Any) -> dict[str, Any]:

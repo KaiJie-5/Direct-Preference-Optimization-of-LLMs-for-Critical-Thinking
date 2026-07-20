@@ -322,3 +322,30 @@ dpo-reflective-enrich \
 Only strictly validated successful checkpoints are skipped. Failed, invalid,
 and interrupted segments are retried, while prior saved attempts remain in the
 segment audit trace.
+
+Runs created before code-label normalization use reflective schema v1. Migrate
+one of those runs during resume with:
+
+```bash
+dpo-reflective-enrich \
+  --config configs/reflective_questions_enrichment.json \
+  --resume /path/to/existing/run \
+  --migrate-label-normalization
+```
+
+The migration first creates a timestamped sibling backup, validates that input
+changes are limited to human-facing code-label normalization, upgrades the run
+and checkpoint schemas to v2, rebuilds both aggregate JSONL files, and retries
+only records that remain unresolved.
+
+Existing enrichment output labels can be inspected without writing anything:
+
+```bash
+python post_processing.py \
+  --process normalize-code-labels \
+  --enriched-dir /path/to/enrichment/run
+```
+
+After reviewing the dry-run totals, repeat with `--apply`. The applied action
+backs up every changed segment file in a timestamped sibling directory, writes
+atomically, and emits `code_label_normalization_report.json`.

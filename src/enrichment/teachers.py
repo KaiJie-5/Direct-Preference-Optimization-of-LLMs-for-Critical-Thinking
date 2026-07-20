@@ -8,6 +8,7 @@ import urllib.error
 import urllib.request
 from dataclasses import asdict, dataclass
 from hashlib import sha256
+from importlib import metadata as importlib_metadata
 from typing import Any, Callable, Protocol
 
 
@@ -112,6 +113,14 @@ class TransformersTeacher:
         self.tokenizer = AutoTokenizer.from_pretrained(
             model_path, trust_remote_code=trust_remote_code
         )
+        self.transformers_version = _package_version("transformers")
+        self.tokenizers_version = _package_version("tokenizers")
+        self.tokenizer_round_trip = tokenizer_round_trip_diagnostic(self.tokenizer)
+        if not self.tokenizer_round_trip["normalized_matches_probe"]:
+            raise RuntimeError(
+                "Tokenizer decoding preflight could not reproduce ordinary spaces "
+                "and newlines even after boundary-marker normalization."
+            )
         self.tokenizer_context_window = _tokenizer_context_window(self.tokenizer)
         self.model = AutoModelForCausalLM.from_pretrained(
             model_path,
@@ -197,6 +206,9 @@ class TransformersTeacher:
             "decode_artifact_marker_counts": decoded_normalization.marker_counts,
             "raw_decoded_sha256": decoded_normalization.raw_sha256,
             "normalized_decoded_sha256": decoded_normalization.normalized_sha256,
+            "transformers_version": getattr(self, "transformers_version", "unknown"),
+            "tokenizers_version": getattr(self, "tokenizers_version", "unknown"),
+            "tokenizer_round_trip": getattr(self, "tokenizer_round_trip", None),
             "tokenizer_context_window": self.tokenizer_context_window,
             "model_context_window": self.model_context_window,
             "effective_context_window": self.effective_context_window,
@@ -226,6 +238,9 @@ class TransformersTeacher:
             "use_chat_template": self.use_chat_template,
             "force_think_prefix": self.force_think_prefix,
             "think_prefix": self.think_prefix,
+            "transformers_version": getattr(self, "transformers_version", "unknown"),
+            "tokenizers_version": getattr(self, "tokenizers_version", "unknown"),
+            "tokenizer_round_trip": getattr(self, "tokenizer_round_trip", None),
             "tokenizer_context_window": self.tokenizer_context_window,
             "model_context_window": self.model_context_window,
             "effective_context_window": self.effective_context_window,
@@ -439,6 +454,36 @@ def normalize_decoded_text(text: str) -> DecodeNormalization:
         raw_sha256=raw_hash,
         normalized_sha256=normalized_hash,
     )
+
+
+def tokenizer_round_trip_diagnostic(tokenizer: Any) -> dict[str, Any]:
+    """Verify that tokenizer decoding preserves ordinary word boundaries."""
+
+    probe = "alpha beta\ngamma delta"
+    encoded = tokenizer(probe, add_special_tokens=False)
+    input_ids = encoded["input_ids"]
+    raw_decoded = tokenizer.decode(
+        input_ids,
+        skip_special_tokens=False,
+        clean_up_tokenization_spaces=False,
+    )
+    normalization = normalize_decoded_text(raw_decoded)
+    return {
+        "probe_sha256": sha256(probe.encode("utf-8")).hexdigest(),
+        "raw_decoded_sha256": normalization.raw_sha256,
+        "normalized_decoded_sha256": normalization.normalized_sha256,
+        "raw_matches_probe": raw_decoded == probe,
+        "normalized_matches_probe": normalization.text == probe,
+        "normalization_applied": normalization.normalized,
+        "marker_counts": normalization.marker_counts or {},
+    }
+
+
+def _package_version(distribution: str) -> str:
+    try:
+        return importlib_metadata.version(distribution)
+    except importlib_metadata.PackageNotFoundError:
+        return "unknown"
 
 
 def _resolve_torch_dtype(torch: Any, torch_dtype: str) -> Any:

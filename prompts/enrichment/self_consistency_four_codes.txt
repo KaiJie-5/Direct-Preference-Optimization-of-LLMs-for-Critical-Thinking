@@ -4,6 +4,7 @@ Central task:
 Generate exactly four controlled code-quality examples for the same target participant segment and return one structured JSON object.
 
 The four examples have distinct purposes:
+- Write every human-facing code_label with ordinary literal ASCII spaces between words. Never use underscores as word separators in a code_label.
 - wrong_code is plausible for the wider dataset but unsupported by this target segment.
 - descriptive_not_answering_research_question is true at a surface level but analytically unhelpful for the supplied research questions.
 - too_broad_code is relevant but hides the segment's specific meaning.
