@@ -1,3 +1,4 @@
+conda init
 conda activate dpo
 cd /iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking
 
