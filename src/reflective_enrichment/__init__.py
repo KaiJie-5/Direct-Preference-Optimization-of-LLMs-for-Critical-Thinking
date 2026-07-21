@@ -1,4 +1,4 @@
-"""Stage-two reflective-question enrichment from debate-ranked codes."""
+"""Stage-two reflective-question enrichment from selected code examples."""
 
 from .config import ReflectiveConfig, load_reflective_config
 from .runner import run_reflective_enrichment

@@ -1,0 +1,32 @@
+{
+  "input_mode": "single_pass",
+  "single_pass_run_dir": "/iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-enriched/ukda4688_single_pass_four_codes_1228874_20260713_235755",
+  "input_status_policy": "successful_only",
+  "context_scope": "turn_window",
+  "context_turns_before": 20,
+  "context_turns_after": 20,
+  "output_root": "/iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-reflective-questions-enriched",
+  "prompt_path": "/iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking/prompts/enrichment/reflective_questions_enrichment_ukda4688.txt",
+  "run_name": "ukda4688_four_codes_reflective_questions",
+  "limit": null,
+  "teacher": {
+    "backend": "transformers",
+    "model_path": "/iridisfs/scratch/kjl1a21/DPO/models/teacher/deepseek-ai__DeepSeek-R1-Distill-Llama-70B",
+    "torch_dtype": "auto",
+    "device_map": "auto",
+    "trust_remote_code": false,
+    "use_chat_template": true,
+    "force_think_prefix": true,
+    "think_prefix": "<think>\n"
+  },
+  "generation": {
+    "max_new_tokens": 8192,
+    "temperature": 0.6,
+    "top_p": 0.95,
+    "top_k": null,
+    "repetition_penalty": null,
+    "seed": null,
+    "stop": [],
+    "json_repair_attempts": 2
+  }
+}

@@ -1,0 +1,74 @@
+You are assisting a reflexive qualitative researcher using reflexive thematic analysis. Your task is to generate reflective questions about four coding decisions for one target participant segment.
+
+Analysis unit and evidential boundary
+- The Target segment is the primary evidence for every judgement and every question.
+- The supplied centered interview-context window may clarify language, sequence, or ambiguity, but it must not turn material from another turn into evidence for the target segment.
+- The context window contains up to 20 normalized turns before and 20 normalized turns after the complete target exchange. Omission notices identify interview material outside that window.
+- The Research questions guide analytical relevance. Do not force relevance when the target segment does not support it.
+- The supplied hint for each code is a provisional judgement, not ground truth. It may be wrong, including useful_analytical_code.
+- Work as a Socratic and devil's-advocate partner, not as an objective adjudicator of a single correct interpretation.
+
+Hint meanings
+1. wrong_code: a poor interpretation that may sound plausible in the wider dataset but is unsupported, contradicted, or materially misaligned with this target segment.
+2. descriptive_not_answering_research_question: a surface-true description that contributes little to answering, refining, questioning, or complicating the supplied research questions. Its weakness is analytical relevance, not factual accuracy or breadth.
+3. too_broad_code: a relevant and at least partly supported code that loses the segment's distinctive experience, interaction, barrier, tension, motivation, mechanism, or implication through excessive generality.
+4. useful_analytical_code: a specific, grounded interpretation that appears analytically useful for at least one research question while preserving participant meaning. This positive hint must still be tested for overreach, premature closure, or a defensible alternative interpretation.
+
+DeepSeek-R1 response contract
+Begin the response with exactly one <think> block. Inside it, complete this CAT-CoT procedure concisely and separately for each of the four codes, in the supplied order.
+
+CAT-CoT procedure for each code
+A. Code and evidence
+- State the code label and provisional hint.
+- Identify the exact target-segment wording that supports, contradicts, or fails to support the code.
+- State only what the supplied interview-context window clarifies; identify any interpretation that depends on context outside the target segment.
+
+B. Research-question relationship
+- Identify the specific supplied research question that the code helps answer, refine, question, or complicate, if any.
+- Distinguish surface truth from analytical relevance.
+- Do not claim generic relevance to "the research questions".
+
+C. Hint test
+- Apply the relevant hint definition and explain the strongest reason it may fit.
+- Treat the hint as fallible and identify the strongest evidence or methodological reason it may not fit.
+- Check for category leakage: unsupported is not merely broad; descriptive irrelevance is not necessarily false; broadness is not the same as irrelevance; usefulness does not make a code unquestionably correct.
+
+D. Alternative and reflexive risk
+- Formulate one plausible alternative code, narrower interpretation, or competing reading grounded in the target segment.
+- Consider whether the coding decision suppresses ambiguity, participant voice, contradiction, context, or the researcher's own assumptions.
+
+E. Question design
+- Design one question addressed to the researcher that tests this particular code and hint.
+- Make it open-ended, specific to the code, target evidence, research questions, or a grounded alternative interpretation.
+- The question must allow the researcher to defend, revise, narrow, replace, or retain the code.
+
+Before closing </think>, verify all four questions against these rules:
+- Generate exactly one question for each supplied code: four questions total.
+- Ask the qualitative researcher to reflect on coding; do not ask the participant an interview follow-up question.
+- Do not merely restate the hint or ask a generic question such as "Could this code be more specific?"
+- Do not lead the researcher toward accepting the hint as correct.
+- Do not invent participant motives, experiences, causal mechanisms, service interactions, or research-question relevance.
+- Keep each question focused and readable. Use a single question mark at the end.
+- Ensure the four questions are meaningfully distinct.
+
+After </think>, return exactly one strict JSON object matching Required output JSON. Copy every code label and hint exactly as supplied. Replace only each question placeholder. Each question object must contain exactly code, hint, and question. Do not add record identifiers, explanations, confidence scores, markdown fences, or trailing prose to the final JSON.
+
+Dataset: {dataset}
+Record ID: {record_id}
+Transcript ID: {transcript_id}
+Segment ID: {segment_id}
+
+Research questions:
+{research_questions}
+
+Target segment:
+{target_segment}
+
+Centered interview-context window (20 turns before and 20 turns after the target exchange):
+{full_interview_context}
+
+Selected stage-one codes and provenance:
+{selected_codes_json}
+
+Required output JSON:
+{required_output_json}

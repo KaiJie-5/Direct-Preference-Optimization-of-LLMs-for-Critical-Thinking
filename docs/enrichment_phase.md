@@ -349,3 +349,39 @@ python post_processing.py \
 After reviewing the dry-run totals, repeat with `--apply`. The applied action
 backs up every changed segment file in a timestamped sibling directory, writes
 atomically, and emits `code_label_normalization_report.json`.
+
+### UKDA 4688 Reflective Questions From Direct Four-Code Output
+
+UKDA 4688 bypasses debate ranking because its stage-one single-pass output already
+contains one selected example in each of the four code-quality categories. Its
+reflective configuration therefore uses `input_mode: "single_pass"` and reads the
+selected sample directly from each successful stage-one checkpoint.
+
+The configured source run contains 6,454 checkpoints: 6,315 successful and 139
+failed strict validation. `input_status_policy: "successful_only"` deliberately
+freezes the 6,315 successful records into the reflective run manifest and records
+the 139 skipped IDs and their validation errors. A later repair of those skipped
+stage-one records does not add them to an existing reflective resume; use a new
+reflective run if they should be included later.
+
+Submit the configured UKDA run with:
+
+```bash
+sbatch submit_job_reflective_questions_enrichment_ukda4688.slurm
+```
+
+The UKDA prompt receives the same centered window as stage one: up to 20 complete
+normalized turns before and after the multi-turn target exchange. Every retained
+target turn is explicitly marked in that context.
+
+Resume an interrupted or partially failed reflective run by supplying its exact
+run directory:
+
+```bash
+sbatch --export=ALL,RESUME_RUN_DIR=/iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-reflective-questions-enriched/existing_run \
+  submit_job_reflective_questions_enrichment_ukda4688.slurm
+```
+
+Resume skips strictly valid successes, retries failed and missing reflective
+checkpoints, and preserves prior attempt history. It rejects changes to any of
+the frozen 6,315 inputs, the prompt, or execution-relevant generation settings.

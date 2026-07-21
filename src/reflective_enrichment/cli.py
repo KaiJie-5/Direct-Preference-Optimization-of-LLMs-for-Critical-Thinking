@@ -9,7 +9,10 @@ from .runner import run_reflective_enrichment
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Generate reflective questions from debate-ranked code examples."
+        description=(
+            "Generate reflective questions from debate-ranked or direct single-pass "
+            "code examples."
+        )
     )
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument(
@@ -34,6 +37,10 @@ def main(argv: list[str] | None = None) -> int:
     config = load_reflective_config(args.config)
     if args.migrate_label_normalization and args.resume is None:
         raise SystemExit("--migrate-label-normalization requires --resume")
+    if args.migrate_label_normalization and config.input_mode != "ranked":
+        raise SystemExit(
+            "--migrate-label-normalization applies only to historical ranked-input runs"
+        )
     run_dir = run_reflective_enrichment(
         config,
         resume_dir=args.resume,

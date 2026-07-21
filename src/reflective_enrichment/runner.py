@@ -32,9 +32,21 @@ def run_reflective_enrichment(
     migrate_label_normalization: bool = False,
     teacher_factory: TeacherFactory | None = None,
 ) -> Path:
+    snapshot_record_ids = (
+        _resume_snapshot_record_ids(resume_dir, config)
+        if resume_dir is not None
+        else None
+    )
     loaded = load_reflective_inputs(
+        input_mode=config.input_mode,
         ranking_run_dir=config.ranking_run_dir,
         review_pack_path=config.review_pack_path,
+        single_pass_run_dir=config.single_pass_run_dir,
+        input_status_policy=config.input_status_policy,
+        context_scope=config.context_scope,
+        context_turns_before=config.context_turns_before,
+        context_turns_after=config.context_turns_after,
+        snapshot_record_ids=snapshot_record_ids,
         limit=config.limit,
     )
     prompt_template = PromptTemplate(config.prompt_path)
@@ -71,6 +83,7 @@ def run_reflective_enrichment(
             input_fingerprint=loaded.fingerprint,
             prompt_sha256=prompt_sha256,
             execution_fingerprint=execution_fingerprint,
+            input_snapshot=loaded.input_snapshot,
         )
         _write_json(run_dir / "run_manifest.json", manifest)
 
@@ -391,6 +404,7 @@ def _new_manifest(
     input_fingerprint: str,
     prompt_sha256: str,
     execution_fingerprint: str,
+    input_snapshot: dict[str, Any],
 ) -> dict[str, Any]:
     return {
         "schema_version": "reflective_question_run_v2",
@@ -402,6 +416,7 @@ def _new_manifest(
         "input_fingerprint": input_fingerprint,
         "prompt_sha256": prompt_sha256,
         "execution_fingerprint": execution_fingerprint,
+        "input_snapshot": input_snapshot,
         "output_layout": {
             "segment_traces": "segment_traces/{dataset}/{record_id}.json",
             "final_jsonl": "reflective_questions.jsonl",
@@ -414,6 +429,42 @@ def _new_manifest(
             "resume_count": 0,
         },
     }
+
+
+def _resume_snapshot_record_ids(
+    resume_dir: Path, config: ReflectiveConfig
+) -> tuple[str, ...] | None:
+    if config.input_mode != "single_pass":
+        return None
+    run_dir = resume_dir.expanduser().resolve()
+    path = run_dir / "run_manifest.json"
+    try:
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"Could not read resume manifest {path}: {exc}") from exc
+    snapshot = manifest.get("input_snapshot") if isinstance(manifest, dict) else None
+    if not isinstance(snapshot, dict) or snapshot.get("input_mode") != "single_pass":
+        raise ValueError("Single-pass resume manifest is missing its frozen input_snapshot.")
+    accepted = snapshot.get("accepted_records")
+    if not isinstance(accepted, list) or not accepted:
+        raise ValueError("Single-pass resume input_snapshot has no accepted records.")
+    record_ids: list[str] = []
+    for index, item in enumerate(accepted):
+        if not isinstance(item, dict):
+            raise ValueError(
+                f"Single-pass resume accepted_records[{index}] must be an object."
+            )
+        record_id = item.get("record_id")
+        if not isinstance(record_id, str) or not record_id.strip():
+            raise ValueError(
+                f"Single-pass resume accepted_records[{index}].record_id is invalid."
+            )
+        record_ids.append(record_id)
+    if len(record_ids) != len(set(record_ids)):
+        raise ValueError("Single-pass resume input_snapshot has duplicate record IDs.")
+    if snapshot.get("accepted_count") != len(record_ids):
+        raise ValueError("Single-pass resume input_snapshot accepted_count is inconsistent.")
+    return tuple(record_ids)
 
 
 def _open_resume(

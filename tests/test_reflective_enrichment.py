@@ -12,6 +12,8 @@ from reflective_enrichment.config import (
     GenerationConfig,
     ReflectiveConfig,
     TeacherConfig,
+    config_to_jsonable,
+    load_reflective_config,
 )
 from reflective_enrichment.loaders import load_reflective_inputs
 from reflective_enrichment.runner import run_reflective_enrichment
@@ -209,6 +211,169 @@ def test_resume_rejects_prompt_drift_and_unknown_checkpoint(tmp_path: Path) -> N
         run_reflective_enrichment(config, resume_dir=run_dir)
 
 
+def test_single_pass_loader_accepts_successes_skips_failures_and_renders_window(
+    tmp_path: Path,
+) -> None:
+    config, source_run = _single_pass_fixture(tmp_path)
+    loaded = load_reflective_inputs(
+        input_mode=config.input_mode,
+        single_pass_run_dir=config.single_pass_run_dir,
+        input_status_policy=config.input_status_policy,
+        context_scope=config.context_scope,
+        context_turns_before=config.context_turns_before,
+        context_turns_after=config.context_turns_after,
+    )
+
+    assert len(loaded.records) == 1
+    record = loaded.records[0]
+    assert record.record_id == "int001t_SEG001"
+    assert record.research_questions == ("How does employment shape family life?",)
+    assert record.full_interview_context.count("[TARGET SEGMENT SEG001]") == 2
+    assert "Context scope: centered turn window" in record.full_interview_context
+    assert [item["hint"] for item in record.selected_codes] == list(CATEGORY_ORDER)
+    assert all(item["source_strategy"] == "single_pass" for item in record.selected_codes)
+    snapshot = loaded.input_snapshot
+    assert snapshot["accepted_count"] == 1
+    assert snapshot["skipped_count"] == 1
+    assert snapshot["skipped_records"][0]["record_id"] == "int001t_SEG002"
+    assert snapshot["skipped_records"][0]["validation_errors"] == ["invalid output"]
+    assert snapshot["source_run_dir"] == str(source_run)
+
+
+def test_single_pass_loader_rejects_manifest_count_drift(tmp_path: Path) -> None:
+    config, source_run = _single_pass_fixture(tmp_path)
+    manifest_path = source_run / "run_manifest.json"
+    manifest = _read_json(manifest_path)
+    manifest["run_state"]["success_count"] = 2
+    _write_json(manifest_path, manifest)
+
+    with pytest.raises(ValueError, match="do not add up"):
+        load_reflective_inputs(
+            input_mode="single_pass",
+            single_pass_run_dir=config.single_pass_run_dir,
+            context_scope="turn_window",
+        )
+
+
+def test_single_pass_loader_rejects_malformed_success(tmp_path: Path) -> None:
+    config, source_run = _single_pass_fixture(tmp_path)
+    path = source_run / "int001t_single_pass" / "segments" / "int001t_SEG001.json"
+    payload = _read_json(path)
+    payload["selected_json"]["code_quality_examples"].pop("too_broad_code")
+    payload["samples"][0]["parsed_output"] = payload["selected_json"]
+    _write_json(path, payload)
+
+    with pytest.raises(ValueError, match="Invalid successful single-pass checkpoint"):
+        load_reflective_inputs(
+            input_mode="single_pass",
+            single_pass_run_dir=config.single_pass_run_dir,
+            context_scope="turn_window",
+        )
+
+
+def test_single_pass_resume_keeps_frozen_success_snapshot(tmp_path: Path) -> None:
+    config, source_run = _single_pass_fixture(tmp_path)
+    loaded = load_reflective_inputs(
+        input_mode="single_pass",
+        single_pass_run_dir=source_run,
+        context_scope="turn_window",
+    )
+    selected = list(loaded.records[0].selected_codes)
+    run_dir = run_reflective_enrichment(
+        config, teacher_factory=lambda _config: QueueTeacher([_response(selected)])
+    )
+
+    failed_path = source_run / "int001t_single_pass" / "segments" / "int001t_SEG002.json"
+    repaired = _single_pass_checkpoint("int001t_SEG002", "SEG002")
+    _write_json(failed_path, repaired)
+    manifest_path = source_run / "run_manifest.json"
+    manifest = _read_json(manifest_path)
+    manifest["run_state"].update({"status": "complete", "success_count": 2, "failure_count": 0})
+    _write_json(manifest_path, manifest)
+
+    def forbidden(_config: ReflectiveConfig) -> QueueTeacher:
+        raise AssertionError("Frozen completed resume must not load the teacher")
+
+    assert run_reflective_enrichment(
+        config, resume_dir=run_dir, teacher_factory=forbidden
+    ) == run_dir.resolve()
+    reflective_manifest = _read_json(run_dir / "run_manifest.json")
+    assert reflective_manifest["record_count"] == 1
+    assert reflective_manifest["input_snapshot"]["accepted_count"] == 1
+    assert len((run_dir / "reflective_questions.jsonl").read_text().splitlines()) == 1
+
+
+def test_single_pass_resume_rejects_accepted_record_drift(tmp_path: Path) -> None:
+    config, source_run = _single_pass_fixture(tmp_path)
+    loaded = load_reflective_inputs(
+        input_mode="single_pass",
+        single_pass_run_dir=source_run,
+        context_scope="turn_window",
+    )
+    selected = list(loaded.records[0].selected_codes)
+    run_dir = run_reflective_enrichment(
+        config, teacher_factory=lambda _config: QueueTeacher([_response(selected)])
+    )
+    source_path = source_run / "int001t_single_pass" / "segments" / "int001t_SEG001.json"
+    payload = _read_json(source_path)
+    code = payload["selected_json"]["code_quality_examples"]["wrong_code"]
+    code["code_label"] = "Different unsupported code"
+    payload["samples"][0]["parsed_output"] = payload["selected_json"]
+    _write_json(source_path, payload)
+
+    with pytest.raises(ValueError, match="input_fingerprint"):
+        run_reflective_enrichment(config, resume_dir=run_dir)
+
+
+def test_single_pass_config_and_legacy_serialization(tmp_path: Path) -> None:
+    config, _ = _single_pass_fixture(tmp_path)
+    config_path = tmp_path / "single_pass_config.json"
+    _write_json(config_path, config_to_jsonable(config))
+    loaded = load_reflective_config(config_path)
+    assert loaded.input_mode == "single_pass"
+    assert loaded.context_turns_before == 20
+    assert loaded.context_turns_after == 20
+
+    legacy = _fixture(tmp_path / "legacy")
+    serialized = config_to_jsonable(legacy)
+    assert "input_mode" not in serialized
+    assert "single_pass_run_dir" not in serialized
+    assert serialized["ranking_run_dir"] == str(legacy.ranking_run_dir)
+
+
+def test_ukda_reflective_assets_are_consistent() -> None:
+    root = Path(__file__).parents[1]
+    config = json.loads(
+        (root / "configs" / "reflective_questions_enrichment_ukda4688.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert config["input_mode"] == "single_pass"
+    assert config["input_status_policy"] == "successful_only"
+    assert config["context_scope"] == "turn_window"
+    assert config["context_turns_before"] == config["context_turns_after"] == 20
+    assert config["generation"]["max_new_tokens"] == 8192
+    assert "UKDA-4688-rtf-reflective-questions-enriched" in config["output_root"]
+
+    prompt = (
+        root / "prompts" / "enrichment" / "reflective_questions_enrichment_ukda4688.txt"
+    ).read_text(encoding="utf-8")
+    assert "Centered interview-context window" in prompt
+    assert "Selected stage-one codes and provenance" in prompt
+    assert "Full interview context:" not in prompt
+
+    script = (
+        root / "submit_job_reflective_questions_enrichment_ukda4688.slurm"
+    ).read_text(encoding="utf-8")
+    assert "#SBATCH --partition=quad_h200" in script
+    assert "#SBATCH --gres=gpu:2" in script
+    assert "#SBATCH --cpus-per-task=12" in script
+    assert "#SBATCH --mem=200G" in script
+    assert "#SBATCH --time=2-12:00:00" in script
+    assert 'RESUME_RUN_DIR="${RESUME_RUN_DIR:-}"' in script
+    assert 'ARGS+=(--resume "${RESUME_RUN_DIR}")' in script
+
+
 def _fixture(tmp_path: Path, *, candidate_count: int = 5) -> ReflectiveConfig:
     ranking = tmp_path / "ranking"
     review = tmp_path / "review"
@@ -329,6 +494,198 @@ def _fixture(tmp_path: Path, *, candidate_count: int = 5) -> ReflectiveConfig:
         generation=GenerationConfig(json_repair_attempts=2),
         run_name="test_reflective",
     )
+
+
+def _single_pass_fixture(tmp_path: Path) -> tuple[ReflectiveConfig, Path]:
+    source_run = tmp_path / "single_pass_source"
+    segments = source_run / "int001t_single_pass" / "segments"
+    segments.mkdir(parents=True)
+    _write_json(
+        segments / "int001t_SEG001.json",
+        _single_pass_checkpoint("int001t_SEG001", "SEG001"),
+    )
+    failed = _single_pass_checkpoint("int001t_SEG002", "SEG002")
+    failed.update(
+        {
+            "status": "failed",
+            "selected_sample_index": None,
+            "selected_output": None,
+            "selected_json": None,
+        }
+    )
+    failed["samples"][0].update(
+        {
+            "final_parse_status": "invalid",
+            "validation_errors": ["invalid output"],
+            "parsed_output": None,
+        }
+    )
+    _write_json(segments / "int001t_SEG002.json", failed)
+    _write_json(
+        source_run / "run_manifest.json",
+        {
+            "schema_version": "single_pass_enrichment_run_v1",
+            "record_count": 2,
+            "execution_fingerprint": "single-pass-source-fingerprint",
+            "execution_config": {
+                "strategy": "single_pass",
+                "research_question": ["How does employment shape family life?"],
+            },
+            "run_state": {
+                "status": "incomplete",
+                "success_count": 1,
+                "failure_count": 1,
+                "missing_count": 0,
+            },
+        },
+    )
+    prompt = tmp_path / "single_pass_prompt.txt"
+    prompt.write_text(
+        "Record {record_id}\nQuestions {research_questions}\nTarget {target_segment}\n"
+        "Context {full_interview_context}\nCodes {selected_codes_json}\n"
+        "Output {required_output_json}",
+        encoding="utf-8",
+    )
+    output = tmp_path / "single_pass_output"
+    output.mkdir()
+    config = ReflectiveConfig(
+        ranking_run_dir=None,
+        review_pack_path=None,
+        output_root=output,
+        prompt_path=prompt,
+        teacher=TeacherConfig(backend="dry-run"),
+        input_mode="single_pass",
+        single_pass_run_dir=source_run,
+        input_status_policy="successful_only",
+        context_scope="turn_window",
+        context_turns_before=20,
+        context_turns_after=20,
+        generation=GenerationConfig(json_repair_attempts=2),
+        run_name="test_single_pass_reflective",
+    )
+    return config, source_run
+
+
+def _single_pass_checkpoint(record_id: str, segment_id: str) -> dict[str, Any]:
+    target_text = "Female: first target words\nFemale: second target words"
+    metadata = {
+        "interview_id": "int001t",
+        "segment_id": segment_id,
+        "speaker": "participant",
+        "turn_index": 2,
+        "target_turn_indexes": [2, 4],
+        "dataset_id": "ukda-4688",
+        "interview_turns": [
+            {
+                "turn_index": 1,
+                "speaker": "interviewer",
+                "speaker_label": "Interviewer",
+                "text": "opening question",
+                "paragraph_index": 1,
+            },
+            {
+                "turn_index": 2,
+                "speaker": "participant",
+                "speaker_label": "Female",
+                "text": "first target words",
+                "paragraph_index": 2,
+            },
+            {
+                "turn_index": 3,
+                "speaker": "interviewer",
+                "speaker_label": "Interviewer",
+                "text": "brief prompt",
+                "paragraph_index": 3,
+            },
+            {
+                "turn_index": 4,
+                "speaker": "participant",
+                "speaker_label": "Female",
+                "text": "second target words",
+                "paragraph_index": 4,
+            },
+            {
+                "turn_index": 5,
+                "speaker": "interviewer",
+                "speaker_label": "Interviewer",
+                "text": "follow up",
+                "paragraph_index": 5,
+            },
+        ],
+    }
+    selected = _single_pass_selected_json(record_id, segment_id, target_text)
+    sample = {
+        "sample_index": 1,
+        "attempt_count": 1,
+        "final_parse_status": "valid",
+        "validation_errors": [],
+        "validation_warnings": [],
+        "parsed_output": selected,
+        "output_text": "<think>source reasoning</think>\n{}",
+        "attempts": [{}],
+    }
+    return {
+        "record_id": record_id,
+        "interview_id": "int001t",
+        "segment_id": segment_id,
+        "input_text": target_text,
+        "metadata": metadata,
+        "source": {"segments_path": "source.jsonl", "segments_line": 1},
+        "strategy": "single_pass",
+        "status": "success",
+        "context_scope": "turn_window",
+        "context_turns_before": 20,
+        "context_turns_after": 20,
+        "selected_sample_index": 1,
+        "selected_output": sample["output_text"],
+        "selected_json": selected,
+        "samples": [sample],
+    }
+
+
+def _single_pass_selected_json(
+    record_id: str, segment_id: str, target_text: str
+) -> dict[str, Any]:
+    examples = {
+        category: _code(category, 1)
+        for category in CATEGORY_ORDER
+    }
+    examples["wrong_code"]["actual_segment_quote"] = "first target words"
+    for category in (
+        "descriptive_not_answering_research_question",
+        "too_broad_code",
+        "useful_analytical_code",
+    ):
+        examples[category]["evidence_quote"] = "second target words"
+    return {
+        "schema_version": "segment_enrichment_sample_v3",
+        "record_id": record_id,
+        "codebook_version": "v1",
+        "analysis_unit": {
+            "interview_id": "int001t",
+            "segment_id": segment_id,
+            "speaker": "participant",
+            "target_text": target_text,
+            "analysis_context_used": True,
+            "analysis_context_scope": "turn_window",
+            "context_warning": "",
+        },
+        "research_question_relevance": {
+            "relevant_research_questions": ["How does employment shape family life?"],
+            "segment_relevance_summary": "The segment contains relevant family-life evidence.",
+            "is_segment_analytically_useful": True,
+            "why_or_why_not": "It provides evidence relevant to the supplied question.",
+        },
+        "code_quality_examples": examples,
+        "quality_control": {
+            "hallucination_risk": "low",
+            "over_generalisation_risk": "low",
+            "participant_voice_loss_risk": "low",
+            "needs_human_review": True,
+            "review_reason": "Manual review is required.",
+            "overall_confidence": 8,
+        },
+    }
 
 
 def _code(category: str, sample_index: int) -> dict[str, str]:
