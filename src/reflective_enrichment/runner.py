@@ -188,6 +188,12 @@ def _generate_record(
         "json_text": "",
         "reasoning_parse_status": "not_generated",
     }
+    validation_warnings: list[str] = []
+    json_extraction: dict[str, Any] = {
+        "method": "none",
+        "recovered_from_format_deviation": False,
+        "valid_fenced_object_count": 0,
+    }
     output_text = ""
     model_parsed: dict[str, Any] | None = None
     max_attempts = config.generation.json_repair_attempts + 1
@@ -217,6 +223,8 @@ def _generate_record(
         parsed = parse_result.parsed_output
         sections = parse_result.sections
         errors = parse_result.errors
+        validation_warnings = parse_result.validation_warnings
+        json_extraction = parse_result.json_extraction
         attempts.append(
             {
                 "attempt_index": len(attempts) + 1,
@@ -232,6 +240,8 @@ def _generate_record(
                 "parsed_output": parsed,
                 "canonical_corrections": parse_result.canonical_corrections,
                 "validation_errors": errors,
+                "validation_warnings": validation_warnings,
+                "json_extraction": json_extraction,
                 "raw_response": result.raw,
                 "elapsed_seconds": result.elapsed_seconds,
             }
@@ -264,6 +274,8 @@ def _generate_record(
                 attempts[-1].get("canonical_corrections", []) if attempts else []
             ),
             "validation_errors": errors,
+            "validation_warnings": validation_warnings,
+            "json_extraction": json_extraction,
             "reflective_questions": (
                 parsed["reflective_questions"] if status == "success" else None
             ),
@@ -301,7 +313,9 @@ def _repair_prompt(
         original_prompt
         + "\n\nYour previous response was invalid. Correct only the response contract while "
         "preserving grounded reasoning. Return a fresh closed <think>...</think> block "
-        "followed by exactly one strict JSON object.\nValidation errors:\n"
+        "followed by exactly one strict JSON object. Do not use triple backticks, "
+        "Markdown fences, surrounding prose, multiple objects, or trailing text.\n"
+        "Validation errors:\n"
         + "\n".join(f"- {error}" for error in errors)
         + "\nRequired JSON shape and exact code/hint values:\n"
         + json.dumps(expected, ensure_ascii=False, indent=2)
@@ -722,6 +736,8 @@ def _migrate_checkpoint_payload(
         attempt["parsed_output"] = result.parsed_output
         attempt["canonical_corrections"] = result.canonical_corrections
         attempt["validation_errors"] = result.errors
+        attempt["validation_warnings"] = result.validation_warnings
+        attempt["json_extraction"] = result.json_extraction
         attempt["status"] = "valid" if not result.errors else "invalid"
         attempt.update(result.sections)
         attempt.setdefault("migrations", []).append(
@@ -746,6 +762,8 @@ def _migrate_checkpoint_payload(
             "parsed_output",
             "canonical_corrections",
             "validation_errors",
+            "validation_warnings",
+            "json_extraction",
         ):
             migrated[field] = deepcopy(final_attempt.get(field))
     migrated["status"] = "success" if valid_attempts else "failed"

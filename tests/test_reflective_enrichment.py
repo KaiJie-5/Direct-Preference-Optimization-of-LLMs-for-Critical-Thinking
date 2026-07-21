@@ -17,7 +17,11 @@ from reflective_enrichment.config import (
 )
 from reflective_enrichment.loaders import load_reflective_inputs
 from reflective_enrichment.runner import run_reflective_enrichment
-from reflective_enrichment.schema import CATEGORY_ORDER, validate_payload
+from reflective_enrichment.schema import (
+    CATEGORY_ORDER,
+    parse_response_result,
+    validate_payload,
+)
 
 
 class QueueTeacher:
@@ -89,6 +93,113 @@ def test_schema_requires_exact_order_values_fields_and_distinct_questions(
     duplicate = json.loads(json.dumps(valid))
     duplicate["reflective_questions"][1]["question"] = duplicate["reflective_questions"][0]["question"]
     assert any("distinct" in error for error in validate_payload(duplicate, selected))
+
+
+def test_parser_accepts_strict_json_without_format_recovery(tmp_path: Path) -> None:
+    config = _fixture(tmp_path)
+    selected = list(
+        load_reflective_inputs(
+            ranking_run_dir=config.ranking_run_dir,
+            review_pack_path=config.review_pack_path,
+        ).records[0].selected_codes
+    )
+
+    result = parse_response_result(_response(selected), selected)
+
+    assert result.errors == []
+    assert result.validation_warnings == []
+    assert result.parsed_output == _payload(selected)
+    assert result.json_extraction == {
+        "method": "strict_json",
+        "recovered_from_format_deviation": False,
+        "valid_fenced_object_count": 0,
+    }
+
+
+@pytest.mark.parametrize("fence_label", ["json", ""])
+def test_parser_accepts_one_exact_json_fence_with_audit_warning(
+    tmp_path: Path, fence_label: str
+) -> None:
+    config = _fixture(tmp_path)
+    selected = list(
+        load_reflective_inputs(
+            ranking_run_dir=config.ranking_run_dir,
+            review_pack_path=config.review_pack_path,
+        ).records[0].selected_codes
+    )
+    response = _fenced_response(selected, fence_label=fence_label)
+
+    result = parse_response_result(response, selected)
+
+    assert result.errors == []
+    assert result.parsed_output == _payload(selected)
+    assert result.sections["json_text"].startswith("```")
+    assert result.json_extraction == {
+        "method": "exact_single_fenced_json",
+        "recovered_from_format_deviation": True,
+        "valid_fenced_object_count": 1,
+    }
+    assert len(result.validation_warnings) == 1
+    assert "required JSON-only format" in result.validation_warnings[0]
+
+
+@pytest.mark.parametrize(
+    "json_remainder",
+    [
+        "Before\n```json\n{payload}\n```",
+        "```json\n{payload}\n```\nAfter",
+        "```json\n{payload}\n```\n```json\n{payload}\n```",
+        "```json\n{{not valid JSON}}\n```",
+        "```yaml\n{payload}\n```",
+        "```json{payload}```",
+        "{payload}\nTrailing text",
+        "[1, 2, 3]",
+    ],
+)
+def test_parser_rejects_ambiguous_or_non_contract_json_remainders(
+    tmp_path: Path, json_remainder: str
+) -> None:
+    config = _fixture(tmp_path)
+    selected = list(
+        load_reflective_inputs(
+            ranking_run_dir=config.ranking_run_dir,
+            review_pack_path=config.review_pack_path,
+        ).records[0].selected_codes
+    )
+    payload = json.dumps(_payload(selected))
+    response = "<think>grounded category checks</think>\n" + json_remainder.format(
+        payload=payload
+    )
+
+    result = parse_response_result(response, selected)
+
+    assert result.errors
+    assert result.parsed_output is None
+    assert result.json_extraction["method"] == "none"
+    assert result.validation_warnings == []
+
+
+def test_parser_still_validates_schema_inside_exact_fence(tmp_path: Path) -> None:
+    config = _fixture(tmp_path)
+    selected = list(
+        load_reflective_inputs(
+            ranking_run_dir=config.ranking_run_dir,
+            review_pack_path=config.review_pack_path,
+        ).records[0].selected_codes
+    )
+    invalid = _payload(selected)
+    invalid["reflective_questions"].pop()
+    response = (
+        "<think>grounded category checks</think>\n```json\n"
+        + json.dumps(invalid)
+        + "\n```"
+    )
+
+    result = parse_response_result(response, selected)
+
+    assert any("exactly four" in error for error in result.errors)
+    assert result.json_extraction["method"] == "exact_single_fenced_json"
+    assert result.validation_warnings
 
 
 def test_runner_repairs_with_temperature_zero_and_writes_auditable_output(
@@ -166,6 +277,54 @@ def test_resume_retries_failed_trace_and_preserves_attempt_history(tmp_path: Pat
     assert len(resumed["attempts"]) == 4
     assert resumed["attempts"][:3] == failed["attempts"]
     assert (run_dir / "failures.jsonl").read_text(encoding="utf-8") == ""
+
+
+def test_resume_generates_again_for_historical_recoverable_fenced_attempts(
+    tmp_path: Path,
+) -> None:
+    config = _fixture(tmp_path)
+    loaded = load_reflective_inputs(
+        ranking_run_dir=config.ranking_run_dir,
+        review_pack_path=config.review_pack_path,
+    )
+    selected = list(loaded.records[0].selected_codes)
+    run_dir = run_reflective_enrichment(
+        config, teacher_factory=lambda _config: QueueTeacher(["bad", "bad", "bad"])
+    )
+    trace_path = run_dir / "segment_traces" / "energy" / "INT01_SEG001.json"
+    failed = _read_json(trace_path)
+    fenced = _fenced_response(selected)
+    fenced_json_text = fenced.split("</think>", 1)[1].strip()
+    for attempt in failed["attempts"]:
+        attempt["raw_output_text"] = fenced
+        attempt["reasoning_text"] = "grounded category checks"
+        attempt["reasoning_block"] = "<think>grounded category checks</think>"
+        attempt["json_text"] = fenced_json_text
+        attempt["reasoning_parse_status"] = "found_closed_think_block"
+    _write_json(trace_path, failed)
+    historical_attempts = json.loads(json.dumps(failed["attempts"]))
+
+    succeeding = QueueTeacher([_fenced_response(selected)])
+    run_reflective_enrichment(
+        config, resume_dir=run_dir, teacher_factory=lambda _config: succeeding
+    )
+
+    resumed = _read_json(trace_path)
+    assert len(succeeding.calls) == 1
+    assert resumed["status"] == "success"
+    assert resumed["attempt_count"] == 4
+    assert resumed["attempts"][:3] == historical_attempts
+    assert resumed["attempts"][3]["status"] == "valid"
+    assert resumed["attempts"][3]["json_extraction"] == {
+        "method": "exact_single_fenced_json",
+        "recovered_from_format_deviation": True,
+        "valid_fenced_object_count": 1,
+    }
+    assert resumed["json_extraction"] == resumed["attempts"][3]["json_extraction"]
+    assert resumed["validation_warnings"] == resumed["attempts"][3][
+        "validation_warnings"
+    ]
+    assert len(resumed["reflective_questions"]) == 4
 
 
 def test_resume_regenerates_a_missing_interrupted_checkpoint(tmp_path: Path) -> None:
@@ -714,6 +873,15 @@ def _payload(selected: list[dict[str, Any]]) -> dict[str, Any]:
 
 def _response(selected: list[dict[str, Any]]) -> str:
     return "<think>grounded category checks</think>\n" + json.dumps(_payload(selected))
+
+
+def _fenced_response(
+    selected: list[dict[str, Any]], *, fence_label: str = "json"
+) -> str:
+    return (
+        "<think>grounded category checks</think>\n"
+        f"```{fence_label}\n{json.dumps(_payload(selected))}\n```"
+    )
 
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:

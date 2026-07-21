@@ -23,6 +23,8 @@ class ReflectiveParseResult:
     parsed_output: dict[str, Any] | None
     sections: dict[str, str]
     errors: list[str]
+    validation_warnings: list[str]
+    json_extraction: dict[str, Any]
     canonical_corrections: list[dict[str, Any]]
 
 
@@ -60,19 +62,21 @@ def parse_response_result(
     if sections["reasoning_parse_status"] != "found_closed_think_block":
         errors.append("Response must contain one closed <think>...</think> block.")
     model_parsed: dict[str, Any] | None = None
+    validation_warnings: list[str] = []
+    json_extraction = _json_extraction_audit("none")
     json_text = sections["json_text"]
     if not json_text:
         errors.append("Response must contain a JSON object after </think>.")
     else:
-        try:
-            candidate = json.loads(json_text)
-        except json.JSONDecodeError as exc:
-            errors.append(f"Invalid strict JSON after </think>: {exc}")
+        candidate, parse_error, json_extraction, format_warning = (
+            _parse_reflective_json_object(json_text)
+        )
+        if parse_error:
+            errors.append(parse_error)
         else:
-            if isinstance(candidate, dict):
-                model_parsed = candidate
-            else:
-                errors.append("The final JSON value must be an object.")
+            model_parsed = candidate
+        if format_warning:
+            validation_warnings.append(format_warning)
     parsed, corrections = canonicalize_reflective_payload(model_parsed, selected_codes)
     if parsed is not None:
         errors.extend(validate_payload(parsed, selected_codes))
@@ -81,8 +85,90 @@ def parse_response_result(
         parsed_output=parsed,
         sections=sections,
         errors=errors,
+        validation_warnings=validation_warnings,
+        json_extraction=json_extraction,
         canonical_corrections=corrections,
     )
+
+
+def _parse_reflective_json_object(
+    json_text: str,
+) -> tuple[dict[str, Any] | None, str | None, dict[str, Any], str | None]:
+    """Parse strict JSON or one exact enclosing JSON fence.
+
+    The fenced fallback is intentionally narrower than the general enrichment
+    extractor: surrounding prose, trailing content, unsupported fence labels,
+    multiple fences, and malformed fenced JSON remain invalid.
+    """
+
+    stripped = json_text.strip()
+    try:
+        candidate = json.loads(stripped)
+    except json.JSONDecodeError as strict_exc:
+        fenced_match = re.fullmatch(
+            r"```(?:json)?[ \t]*\r?\n(?P<body>.*?)\r?\n```",
+            stripped,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if fenced_match is None:
+            return (
+                None,
+                "Invalid strict JSON after </think>: "
+                f"{strict_exc}. Expected one JSON object with no surrounding prose, "
+                "or one exact enclosing ```json ... ``` fence.",
+                _json_extraction_audit("none"),
+                None,
+            )
+        fenced_body = fenced_match.group("body").strip()
+        try:
+            candidate = json.loads(fenced_body)
+        except json.JSONDecodeError as fenced_exc:
+            return (
+                None,
+                "Invalid JSON inside the exact enclosing fence after </think>: "
+                f"{fenced_exc}",
+                _json_extraction_audit("none"),
+                None,
+            )
+        if not isinstance(candidate, dict):
+            return (
+                None,
+                "The final JSON value inside the exact enclosing fence must be an object.",
+                _json_extraction_audit("none"),
+                None,
+            )
+        return (
+            candidate,
+            None,
+            _json_extraction_audit(
+                "exact_single_fenced_json",
+                recovered_from_format_deviation=True,
+                valid_fenced_object_count=1,
+            ),
+            "Recovered one valid JSON object from an exact enclosing Markdown fence; "
+            "the response did not follow the required JSON-only format.",
+        )
+    if not isinstance(candidate, dict):
+        return (
+            None,
+            "The final JSON value must be an object.",
+            _json_extraction_audit("none"),
+            None,
+        )
+    return candidate, None, _json_extraction_audit("strict_json"), None
+
+
+def _json_extraction_audit(
+    method: str,
+    *,
+    recovered_from_format_deviation: bool = False,
+    valid_fenced_object_count: int = 0,
+) -> dict[str, Any]:
+    return {
+        "method": method,
+        "recovered_from_format_deviation": recovered_from_format_deviation,
+        "valid_fenced_object_count": valid_fenced_object_count,
+    }
 
 
 def canonicalize_reflective_payload(
