@@ -1,5 +1,15 @@
-conda init
+#!/bin/bash
+set -eo pipefail
+set +u
+
+CONDA_BASE="$(conda info --base)"
+source "${CONDA_BASE}/etc/profile.d/conda.sh"
 conda activate dpo
+
+echo "Active environment: ${CONDA_DEFAULT_ENV}"
+echo "Python: $(which python)"
+python --version
+
 cd /iridisfs/home/kjl1a21/Direct-Preference-Optimization-of-LLMs-for-Critical-Thinking
 
 export PYTHONPATH="$PWD/src:${PYTHONPATH:-}"
