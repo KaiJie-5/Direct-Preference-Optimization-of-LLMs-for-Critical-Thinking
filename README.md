@@ -163,3 +163,38 @@ The constructor uses strict successful traces, reports failed and missing
 records as skips, and writes line-aligned training and audit JSONL files under a
 timestamped scratch run directory. See `docs/enrichment_phase.md` for the
 formats, validation policy, and expected record totals.
+
+## DPO training
+
+Install the dedicated training dependencies into the existing `dpo`
+environment:
+
+```bash
+python -m pip install -e ".[training]"
+```
+
+Run tokenizer-only validation and length profiling with:
+
+```bash
+dpo-train \
+  --config configs/dpo_training_smollm3_3b.json \
+  --dataset-version category_evidence \
+  --preflight-only
+```
+
+The SmolLM3 evidence-rich and question-only experiments are submitted as
+separate one-H200 jobs:
+
+```bash
+sbatch --export=ALL,DATASET_VERSION=category_evidence \
+  submit_job_dpo_training.slurm
+
+sbatch --export=ALL,DATASET_VERSION=question_only \
+  submit_job_dpo_training.slurm
+```
+
+The workflow validates all source hashes and aligned audit rows, creates a
+deterministic transcript-level 90/10 split, refuses truncation, evaluates
+before and after DPO, and writes timestamped full-model runs under scratch
+storage. See `docs/dpo_training.md` for the configuration, outputs, metrics,
+and explicit resume command.

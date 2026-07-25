@@ -20,12 +20,20 @@ transformers = [
   "gptqmodel",
   "torchvision",
 ]
+training = [
+  "torch>=2.8.0",
+  "transformers>=4.56.1,<6",
+  "trl==1.9.0",
+  "datasets>=4.1.0",
+  "accelerate>=1.10.1",
+]
 legacy-gptq = ["auto-gptq"]
 
 [project.scripts]
 dpo-enrich = "enrichment.cli:main"
 dpo-reflective-enrich = "reflective_enrichment.cli:main"
 dpo-build-preferences = "preference_pairs.cli:main"
+dpo-train = "dpo_training.cli:main"
 dpo-preprocess = "preprocessing.cli:main"
 dpo-debate = "debate.cli:main"
 
@@ -37,4 +45,5 @@ include = [
   "debate*",
   "reflective_enrichment*",
   "preference_pairs*",
+  "dpo_training*",
 ]
