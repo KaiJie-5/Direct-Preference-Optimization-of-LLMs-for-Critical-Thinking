@@ -149,3 +149,17 @@ Resume validates the ranking-to-sample mapping, selected code payloads, full
 interview context, prompt, execution config, and saved segment checkpoints
 before loading the teacher. Valid successful segments are skipped; failed or
 interrupted segments are regenerated.
+
+## DPO preference-pair construction
+
+After reflective-question enrichment, construct the evidence-rich and
+question-only conversational DPO datasets with:
+
+```bash
+dpo-build-preferences --config configs/dpo_preference_pairs.json
+```
+
+The constructor uses strict successful traces, reports failed and missing
+records as skips, and writes line-aligned training and audit JSONL files under a
+timestamped scratch run directory. See `docs/enrichment_phase.md` for the
+formats, validation policy, and expected record totals.

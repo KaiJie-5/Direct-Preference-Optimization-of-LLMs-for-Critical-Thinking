@@ -1,0 +1,32 @@
+{
+  "sources": [
+    {
+      "name": "energy_and_sexual_health_reflective_questions",
+      "trace_root": "/iridisfs/scratch/kjl1a21/DPO/data/reflective_questions_enrichment/deepseek_r1_ranked_codes_reflective_questions_20260713_144547/segment_traces",
+      "manifest_path": "/iridisfs/scratch/kjl1a21/DPO/data/reflective_questions_enrichment/deepseek_r1_ranked_codes_reflective_questions_20260713_144547/run_manifest.json",
+      "datasets": [
+        "energy",
+        "sexual-health"
+      ],
+      "context_scope": "full_interview"
+    },
+    {
+      "name": "ukda_4688_reflective_questions",
+      "trace_root": "/iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-reflective-questions-enriched/ukda4688_four_codes_reflective_questions_20260721_150618/segment_traces/ukda-4688",
+      "manifest_path": "/iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-rtf-reflective-questions-enriched/ukda4688_four_codes_reflective_questions_20260721_150618/run_manifest.json",
+      "datasets": [
+        "ukda-4688"
+      ],
+      "context_scope": "turn_window",
+      "context_turns_before": 20,
+      "context_turns_after": 20
+    }
+  ],
+  "output_root": "/iridisfs/scratch/kjl1a21/DPO/data/dpo_preference_pairs",
+  "run_name": "reflective_question_dpo_pairs",
+  "expected_record_counts": {
+    "energy": 104,
+    "sexual-health": 117,
+    "ukda-4688": 6315
+  }
+}

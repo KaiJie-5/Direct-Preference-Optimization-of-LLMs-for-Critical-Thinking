@@ -385,3 +385,75 @@ sbatch --export=ALL,RESUME_RUN_DIR=/iridisfs/scratch/kjl1a21/DPO/data/UKDA-4688-
 Resume skips strictly valid successes, retries failed and missing reflective
 checkpoints, and preserves prior attempt history. It rejects changes to any of
 the frozen 6,315 inputs, the prompt, or execution-relevant generation settings.
+
+## Constructing Conversational DPO Preference Pairs
+
+After reflective-question enrichment has been repaired or reviewed, build both
+preference-pair versions with:
+
+```bash
+dpo-build-preferences --config configs/dpo_preference_pairs.json
+```
+
+The checked-in config reads the energy/sexual-health full-interview traces and
+the UKDA 4688 traces containing the centered 20-turn context window. It writes
+a new timestamped run below:
+
+```text
+/iridisfs/scratch/kjl1a21/DPO/data/dpo_preference_pairs
+```
+
+Every successful segment contributes four rows, one for each selected code.
+The aligned code/question entry is the chosen response. One of the other three
+complete same-segment entries is selected with unseeded system randomness as
+the rejected response. A selection is made once and reused in both output
+versions, so their row order and negative provenance remain aligned.
+
+The model-visible prompt contains all research questions, the stored interview
+context, the target segment, and only the target code label. Dataset and record
+identifiers remain in the audit output. The target segment is explicitly
+identified as the evidence unit; interview context is supplied only for
+clarification.
+
+The evidence-rich output asks for and returns a readable category, every field
+from the category-specific code object, and the aligned reflective question.
+The question-only output contains the reflective question verbatim. Both use
+the conversational DPO representation:
+
+```json
+{
+  "prompt": [{"role": "user", "content": "..."}],
+  "chosen": [{"role": "assistant", "content": "..."}],
+  "rejected": [{"role": "assistant", "content": "..."}]
+}
+```
+
+Each run contains:
+
+```text
+preference_pairs_category_evidence.jsonl
+preference_pairs_question_only.jsonl
+preference_pair_audit.jsonl
+run_manifest.json
+```
+
+Training rows contain exactly `prompt`, `chosen`, and `rejected`. The
+line-aligned audit records source identities, selected categories and code
+labels, both questions, source trace paths, and hashes of both rendered rows.
+The manifest records source status, accepted/failed/missing counts, per-dataset
+pair counts, the rejected-category sampling matrix, audit alignment, and output
+checksums.
+
+Traces with `status: failed` are skipped and reported. A manifest-level shortage
+of trace files is also reported as missing. Invalid JSON, duplicate identities,
+or malformed/misaligned records marked successful stop the run rather than
+silently producing questionable training data.
+
+With all reflective traces repaired successfully, expected totals are:
+
+| Dataset | Records | Pairs per version |
+| --- | ---: | ---: |
+| energy | 104 | 416 |
+| sexual-health | 117 | 468 |
+| ukda-4688 | 6,315 | 25,260 |
+| **Total** | **6,536** | **26,144** |
