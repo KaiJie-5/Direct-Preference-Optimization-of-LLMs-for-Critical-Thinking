@@ -533,6 +533,41 @@ def test_ukda_reflective_assets_are_consistent() -> None:
     assert 'ARGS+=(--resume "${RESUME_RUN_DIR}")' in script
 
 
+def test_ranked_reflective_slurm_defaults_to_label_migration_resume() -> None:
+    root = Path(__file__).parents[1]
+    script = (
+        root / "submit_job_reflective_questions_enrichment.slurm"
+    ).read_text(encoding="utf-8")
+    expected_run = (
+        "/iridisfs/scratch/kjl1a21/DPO/data/reflective_questions_enrichment/"
+        "deepseek_r1_ranked_codes_reflective_questions_20260713_144547"
+    )
+
+    assert f'DEFAULT_RESUME_RUN_DIR="{expected_run}"' in script
+    assert 'RESUME_RUN_DIR="${RESUME_RUN_DIR:-${DEFAULT_RESUME_RUN_DIR}}"' in script
+    assert 'MIGRATE_LABEL_NORMALIZATION="${MIGRATE_LABEL_NORMALIZATION:-true}"' in script
+    assert 'require_directory "${PROJECT_DIR}"' in script
+    assert 'require_file "${CONFIG_PATH}"' in script
+    assert 'require_directory "${RESUME_RUN_DIR}"' in script
+    assert 'require_file "${RESUME_RUN_DIR}/run_manifest.json"' in script
+    assert 'RESUME_RUN_DIR="$(readlink -f "${RESUME_RUN_DIR}")"' in script
+    assert '--resume "${RESUME_RUN_DIR}"' in script
+    assert 'ARGS+=(--migrate-label-normalization)' in script
+    assert 'if [[ "${MIGRATE_LABEL_NORMALIZATION}" == "true" ]]' in script
+    assert "printf '%q ' python -m reflective_enrichment.cli" in script
+
+    unrelated_scripts = [
+        "submit_job_enrichment_self_consistency.slurm",
+        "submit_job_enrichment_self_consistency_sexual_health.slurm",
+        "submit_job_enrichment_self_consistency_ukda4688.slurm",
+        "submit_job_multi_agent_debate_llama_qwen.slurm",
+        "submit_job_reflective_questions_enrichment_ukda4688.slurm",
+    ]
+    for filename in unrelated_scripts:
+        content = (root / filename).read_text(encoding="utf-8")
+        assert "--migrate-label-normalization" not in content
+
+
 def _fixture(tmp_path: Path, *, candidate_count: int = 5) -> ReflectiveConfig:
     ranking = tmp_path / "ranking"
     review = tmp_path / "review"

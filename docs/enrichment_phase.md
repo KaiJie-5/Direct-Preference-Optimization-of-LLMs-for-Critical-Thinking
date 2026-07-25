@@ -338,6 +338,27 @@ changes are limited to human-facing code-label normalization, upgrades the run
 and checkpoint schemas to v2, rebuilds both aggregate JSONL files, and retries
 only records that remain unresolved.
 
+For the historical energy/sexual-health reflective run, the ranked reflective
+Slurm script defaults to the required run directory and enables label migration.
+Submit it directly:
+
+```bash
+sbatch submit_job_reflective_questions_enrichment.slurm
+```
+
+The script validates the run directory and manifest before loading the model,
+prints the resolved command, and then performs migration plus resume. To use the
+same script for an ordinary schema-v2 resume without requesting migration:
+
+```bash
+sbatch --export=ALL,MIGRATE_LABEL_NORMALIZATION=false,RESUME_RUN_DIR=/path/to/run \
+  submit_job_reflective_questions_enrichment.slurm
+```
+
+Leaving migration enabled on a later submission is also supported: an existing
+schema-v2 migration is fingerprint-validated before unresolved records are
+retried.
+
 Existing enrichment output labels can be inspected without writing anything:
 
 ```bash
