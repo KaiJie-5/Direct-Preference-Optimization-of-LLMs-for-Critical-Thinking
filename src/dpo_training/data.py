@@ -267,16 +267,16 @@ def split_examples(
 
 
 def add_system_message(
-    row: dict[str, Any], system_message: str
+    row: dict[str, Any], system_message: str | None
 ) -> dict[str, list[dict[str, str]]]:
+    prompt = [
+        {"role": message["role"], "content": message["content"]}
+        for message in row["prompt"]
+    ]
+    if system_message is not None:
+        prompt.insert(0, {"role": "system", "content": system_message})
     return {
-        "prompt": [
-            {"role": "system", "content": system_message},
-            *[
-                {"role": message["role"], "content": message["content"]}
-                for message in row["prompt"]
-            ],
-        ],
+        "prompt": prompt,
         "chosen": [
             {"role": message["role"], "content": message["content"]}
             for message in row["chosen"]

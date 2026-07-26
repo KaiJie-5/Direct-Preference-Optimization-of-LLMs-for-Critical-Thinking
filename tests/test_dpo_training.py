@@ -16,6 +16,7 @@ from dpo_training.config import (
     ModelConfig,
     SplitConfig,
     TrainerConfig,
+    config_to_jsonable,
     load_training_config,
 )
 from dpo_training.data import (
@@ -90,6 +91,66 @@ def test_checked_in_smollm3_config_contains_approved_recipe() -> None:
     assert config.trainer.push_to_hub is False
 
 
+def test_checked_in_qwen3_config_contains_approved_recipe() -> None:
+    root = Path(__file__).resolve().parents[1]
+    config = load_training_config(
+        root / "configs" / "dpo_training_qwen3_4b_instruct_2507.json"
+    )
+    smol_config = load_training_config(
+        root / "configs" / "dpo_training_smollm3_3b.json"
+    )
+
+    assert config.run_name == "qwen3_4b_instruct_2507_reflective_dpo"
+    assert config.model.path == Path(
+        "/iridisfs/scratch/kjl1a21/DPO/models/student/"
+        "Qwen__Qwen3-4B-Instruct-2507"
+    )
+    assert config.model.local_files_only is True
+    assert config.model.trust_remote_code is False
+    assert config.model.dtype == "bfloat16"
+    assert config.model.max_position_embeddings == 262144
+    assert config.chat.system_message is None
+    assert config.chat.native_date_metadata is False
+    assert config_to_jsonable(config)["chat"] == {
+        "system_message": None,
+        "native_date_metadata": False,
+    }
+    assert config.input_run_dir == smol_config.input_run_dir
+    assert config.output_root == smol_config.output_root
+    assert config.dataset_files == smol_config.dataset_files
+    assert config.split == smol_config.split
+    assert config.trainer == smol_config.trainer
+    assert config.trainer.loss_type == "sigmoid"
+    assert config.trainer.beta == 0.1
+    assert config.trainer.learning_rate == 5e-7
+    assert config.trainer.num_train_epochs == 1.0
+    assert config.trainer.per_device_train_batch_size == 1
+    assert config.trainer.gradient_accumulation_steps == 8
+    assert config.trainer.lr_scheduler_type == "cosine"
+    assert config.trainer.precompute_ref_log_probs is False
+    assert config.trainer.max_length is None
+
+
+@pytest.mark.parametrize("system_message", ["", "   ", 123])
+def test_config_rejects_invalid_non_null_system_message(
+    tmp_path: Path, system_message: Any
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    payload = json.loads(
+        (
+            root
+            / "configs"
+            / "dpo_training_qwen3_4b_instruct_2507.json"
+        ).read_text(encoding="utf-8")
+    )
+    payload["chat"]["system_message"] = system_message
+    path = tmp_path / "config.json"
+    _write_json(path, payload)
+
+    with pytest.raises(ValueError, match="null or a non-empty string"):
+        load_training_config(path)
+
+
 @pytest.mark.parametrize(
     ("mutation", "error"),
     [
@@ -132,19 +193,22 @@ def test_config_rejects_unsupported_or_unsafe_settings(
         load_training_config(path)
 
 
-def test_cli_requires_supported_dataset_version_and_exposes_resume() -> None:
+@pytest.mark.parametrize("dataset_version", ["category_evidence", "question_only"])
+def test_cli_requires_supported_dataset_version_and_exposes_resume(
+    dataset_version: str,
+) -> None:
     parser = build_parser()
     args = parser.parse_args(
         [
             "--config",
             "config.json",
             "--dataset-version",
-            "question_only",
+            dataset_version,
             "--resume",
             "run",
         ]
     )
-    assert args.dataset_version == "question_only"
+    assert args.dataset_version == dataset_version
     assert args.resume == Path("run")
     with pytest.raises(SystemExit):
         parser.parse_args(
@@ -355,6 +419,22 @@ def test_no_think_injection_preserves_source_answers() -> None:
     assert row["prompt"][0]["role"] == "user"
 
 
+def test_null_system_message_preserves_source_row_without_mutation() -> None:
+    row = _conversation_row("Prompt", "Chosen", "Rejected")
+    original = json.loads(json.dumps(row))
+
+    transformed = add_system_message(row, None)
+
+    assert transformed == original
+    assert transformed is not row
+    assert transformed["prompt"] is not row["prompt"]
+    assert transformed["chosen"] is not row["chosen"]
+    assert transformed["rejected"] is not row["rejected"]
+    transformed["prompt"][0]["content"] = "changed"
+    transformed["chosen"][0]["content"] = "changed"
+    assert row == original
+
+
 def test_render_profile_is_exact_prefix_preserving_and_never_truncates(
     tmp_path: Path,
 ) -> None:
@@ -387,6 +467,46 @@ def test_render_profile_is_exact_prefix_preserving_and_never_truncates(
     assert profile["statistics"]["energy"]["maximum_sequence"]["count"] == 1
     assert profile["over_limit_count"] == 0
     assert_within_context_limit(profile)
+
+
+def test_qwen_template_preserves_prefix_and_completion_content(
+    tmp_path: Path,
+) -> None:
+    config = _config(
+        tmp_path,
+        model_limit=262144,
+        system_message=None,
+        native_date_metadata=False,
+        expected_test={"energy": 1},
+        train_records=1,
+        test_records=1,
+        train_pairs=4,
+        test_pairs=4,
+    )
+    example = _examples([("energy", "E1", ("record",))])[0]
+    tokenizer = FakeQwenTokenizer()
+
+    rendered, profile = render_and_profile(
+        [example],
+        tokenizer=tokenizer,
+        config=config,
+        dataset_version="category_evidence",
+    )
+
+    source_prompt = example.row["prompt"][0]["content"]
+    source_chosen = example.row["chosen"][0]["content"]
+    source_rejected = example.row["rejected"][0]["content"]
+    assert rendered[0].row["prompt"] == (
+        f"<|im_start|>user\n{source_prompt}<|im_end|>\n"
+        "<|im_start|>assistant\n"
+    )
+    assert "<|im_start|>system\n" not in rendered[0].row["prompt"]
+    assert rendered[0].row["chosen"] == f"{source_chosen}<|im_end|>\n"
+    assert rendered[0].row["rejected"] == f"{source_rejected}<|im_end|>\n"
+    assert profile["system_message"] is None
+    assert profile["native_date_metadata"] is False
+    assert profile["enforced_model_limit"] == 262144
+    assert example.row["prompt"][0]["content"] == source_prompt
 
 
 def test_over_limit_profile_names_identity_and_fails(tmp_path: Path) -> None:
@@ -791,6 +911,42 @@ def test_slurm_uses_one_h200_guards_inputs_and_submits_one_version() -> None:
     assert "python -m dpo_training.cli" in script
 
 
+def test_qwen_slurm_uses_approved_resources_config_and_command() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (
+        root / "submit_job_dpo_training_qwen3_4b_instruct_2507.slurm"
+    ).read_text(encoding="utf-8")
+
+    assert "#SBATCH --job-name=dpo_qwen3_4b_instruct_2507" in script
+    assert "#SBATCH --partition=quad_h200" in script
+    assert "#SBATCH --account=ecs" in script
+    assert "#SBATCH --nodes=1" in script
+    assert "#SBATCH --ntasks-per-node=1" in script
+    assert "#SBATCH --gres=gpu:1" in script
+    assert "#SBATCH --cpus-per-task=12" in script
+    assert "#SBATCH --mem=200G" in script
+    assert "#SBATCH --time=2-12:00:00" in script
+    assert "#SBATCH --output=dpo_qwen3_4b_instruct_2507_%j.out" in script
+    assert "#SBATCH --error=dpo_qwen3_4b_instruct_2507_%j.err" in script
+    assert (
+        'CONFIG_PATH="${CONFIG_PATH:-${PROJECT_DIR}/configs/'
+        'dpo_training_qwen3_4b_instruct_2507.json}"'
+    ) in script
+    assert 'DATASET_VERSION="${DATASET_VERSION:-}"' in script
+    assert "category_evidence|question_only" in script
+    assert 'PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"' in script
+    assert 'RESUME_RUN_DIR="${RESUME_RUN_DIR:-}"' in script
+    assert 'require_file "${CONFIG_PATH}"' in script
+    assert 'require_file "${RESUME_RUN_DIR}/run_manifest.json"' in script
+    assert "PREFLIGHT_ONLY=true cannot be combined with RESUME_RUN_DIR" in script
+    assert "--config \"${CONFIG_PATH}\"" in script
+    assert "--dataset-version \"${DATASET_VERSION}\"" in script
+    assert "ARGS+=(--preflight-only)" in script
+    assert "ARGS+=(--resume \"${RESUME_RUN_DIR}\")" in script
+    assert "printf '%q ' python -m dpo_training.cli" in script
+    assert 'python -m dpo_training.cli "${ARGS[@]}"' in script
+
+
 def test_pyproject_registers_cli_package_and_pinned_training_dependencies() -> None:
     root = Path(__file__).resolve().parents[1]
     text = (root / "pyproject.toml").read_text(encoding="utf-8")
@@ -844,10 +1000,44 @@ class FakeTokenizer:
         return {"input_ids": list(range(len(text.split())))}
 
 
+class FakeQwenTokenizer:
+    chat_template = "fake-native-qwen-chatml-template"
+    model_max_length = 1010000
+    pad_token = "<|endoftext|>"
+    eos_token = "<|im_end|>"
+    padding_side = "right"
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+    ) -> str:
+        assert tokenize is False
+        rendered = "".join(
+            f"<|im_start|>{message['role']}\n"
+            f"{message['content']}<|im_end|>\n"
+            for message in messages
+        )
+        if add_generation_prompt:
+            rendered += "<|im_start|>assistant\n"
+        return rendered
+
+    def __call__(
+        self, text: str, *, add_special_tokens: bool, truncation: bool
+    ) -> dict[str, list[int]]:
+        assert add_special_tokens is False
+        assert truncation is False
+        return {"input_ids": list(range(len(text)))}
+
+
 def _config(
     tmp_path: Path,
     *,
     model_limit: int = 65536,
+    system_message: str | None = "/no_think",
+    native_date_metadata: bool = True,
     expected_test: dict[str, int] | None = None,
     train_records: int = 1,
     test_records: int = 1,
@@ -867,7 +1057,10 @@ def _config(
             dtype="bfloat16",
             max_position_embeddings=model_limit,
         ),
-        chat=ChatConfig(system_message="/no_think", native_date_metadata=True),
+        chat=ChatConfig(
+            system_message=system_message,
+            native_date_metadata=native_date_metadata,
+        ),
         split=SplitConfig(
             test_fraction=0.1,
             seed=42,

@@ -20,7 +20,7 @@ class ModelConfig:
 
 @dataclass(frozen=True, slots=True)
 class ChatConfig:
-    system_message: str
+    system_message: str | None
     native_date_metadata: bool
 
 
@@ -161,7 +161,7 @@ def load_training_config(path: Path) -> DPOTrainingConfig:
         chat_payload, {"system_message", "native_date_metadata"}, "chat"
     )
     chat = ChatConfig(
-        system_message=_string(chat_payload, "system_message"),
+        system_message=_optional_string(chat_payload, "system_message"),
         native_date_metadata=_bool(chat_payload, "native_date_metadata"),
     )
 
@@ -388,6 +388,17 @@ def _string(payload: dict[str, Any], key: str) -> str:
     value = payload.get(key)
     if not isinstance(value, str) or not value.strip():
         raise ValueError(f"Config field {key!r} must be a non-empty string.")
+    return value
+
+
+def _optional_string(payload: dict[str, Any], key: str) -> str | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(
+            f"Config field {key!r} must be null or a non-empty string."
+        )
     return value
 
 

@@ -4,10 +4,23 @@ The `dpo-train` command trains a local causal language model with TRL's
 `DPOTrainer` using one of the two conversational preference datasets produced
 by `dpo-build-preferences`.
 
-The checked-in SmolLM3 configuration uses full-parameter BF16 training on one
-H200. Model, data, split, chat-template, optimizer, and checkpoint settings are
-all configuration values so the same Python workflow can be used for another
-student model.
+The checked-in SmolLM3 and Qwen3-4B-Instruct-2507 configurations use
+full-parameter BF16 training on one H200. Model, data, split, chat-template,
+optimizer, and checkpoint settings are configuration values shared by the
+same Python workflow.
+
+The Qwen checkpoint was downloaded locally to:
+
+```text
+X:\DPO\models\student\Qwen__Qwen3-4B-Instruct-2507
+```
+
+It is Hugging Face revision `cdbee75f17c01a7cc42f958dc650907174af0554`.
+The cluster configuration uses the corresponding path:
+
+```text
+/iridisfs/scratch/kjl1a21/DPO/models/student/Qwen__Qwen3-4B-Instruct-2507
+```
 
 ## Environment
 
@@ -55,10 +68,16 @@ split manifest and copied into every training run.
 
 ## Token preflight
 
-SmolLM3's native `/no_think` system message is inserted in memory. The original
-preference JSONL files are never modified. The native template includes its
-current-date metadata, so each new run renders once and saves immutable,
-checksummed train/test snapshots. A resumed run reuses those snapshots.
+SmolLM3's `/no_think` system message is inserted in memory and its native
+current-date metadata remains enabled. Qwen3-4B-Instruct-2507 uses
+`system_message: null` and `native_date_metadata: false`, so the original user
+message stays first. The Qwen tokenizer's native ChatML template renders the
+prompt through `<|im_start|>assistant\n`; each chosen or rejected completion
+preserves its source text and ends with `<|im_end|>\n`.
+
+The original preference JSONL files are never modified. Each new run renders
+once and saves immutable, checksummed train/test snapshots. A resumed run
+reuses those snapshots.
 
 Run a CPU/tokenizer-only validation if desired:
 
@@ -69,14 +88,24 @@ dpo-train \
   --preflight-only
 ```
 
+For Qwen, select its dedicated configuration:
+
+```bash
+dpo-train \
+  --config configs/dpo_training_qwen3_4b_instruct_2507.json \
+  --dataset-version category_evidence \
+  --preflight-only
+```
+
 The profile reports prompt, chosen-sequence, rejected-sequence, and maximum
 sequence token lengths for each source dataset and overall, including minimum,
 50th, 90th, 95th, 99th percentile, and maximum.
 
 `max_length` is `null`; training never truncates an interview or completion.
-The command fails before training if any rendered sequence exceeds the model
-configuration's 65,536-token limit. This deliberately uses the model limit
-rather than the tokenizer's larger advertised limit.
+The command fails before training if any rendered sequence exceeds the selected
+model configuration's limit: 65,536 tokens for SmolLM3 or 262,144 tokens for
+Qwen3-4B-Instruct-2507. This deliberately uses the model limit rather than a
+tokenizer's larger advertised limit.
 
 ## Training
 
@@ -97,7 +126,7 @@ history, dependency/hardware information, and checksums.
 
 ## Slurm submissions
 
-Submit the two dataset versions as separate one-H200 jobs:
+Submit the two dataset versions for SmolLM3 as separate one-H200 jobs:
 
 ```bash
 sbatch --export=ALL,DATASET_VERSION=category_evidence \
@@ -105,6 +134,16 @@ sbatch --export=ALL,DATASET_VERSION=category_evidence \
 
 sbatch --export=ALL,DATASET_VERSION=question_only \
   submit_job_dpo_training.slurm
+```
+
+Use the dedicated Qwen launcher for Qwen3-4B-Instruct-2507:
+
+```bash
+sbatch --export=ALL,DATASET_VERSION=category_evidence \
+  submit_job_dpo_training_qwen3_4b_instruct_2507.slurm
+
+sbatch --export=ALL,DATASET_VERSION=question_only \
+  submit_job_dpo_training_qwen3_4b_instruct_2507.slurm
 ```
 
 To perform only validation, splitting, rendering, and token profiling in the
@@ -115,6 +154,12 @@ sbatch --export=ALL,DATASET_VERSION=category_evidence,PREFLIGHT_ONLY=true \
   submit_job_dpo_training.slurm
 ```
 
+Replace the script name with
+`submit_job_dpo_training_qwen3_4b_instruct_2507.slurm` to run the same optional
+preflight for Qwen. A full job already performs input validation, split
+verification, template rendering, token profiling, and context-limit checks
+before it loads model weights.
+
 An interrupted training run resumes only when its directory is named
 explicitly:
 
@@ -123,6 +168,8 @@ sbatch \
   --export=ALL,DATASET_VERSION=category_evidence,RESUME_RUN_DIR=/iridisfs/scratch/kjl1a21/DPO/models/student/dpo_runs/existing_run \
   submit_job_dpo_training.slurm
 ```
+
+Resume a Qwen run with the same variables and the dedicated Qwen script.
 
 Resume recomputes the model, source-data, configuration, template, and split
 fingerprints, validates the rendered snapshots, and selects the latest numeric
