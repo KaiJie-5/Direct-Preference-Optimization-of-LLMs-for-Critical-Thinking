@@ -13,6 +13,10 @@ mkdir -p "$PROJECT_SCRATCH/models/teacher"
 mkdir -p "$PROJECT_SCRATCH/hf_cache"
 mkdir -p "$PROJECT_SCRATCH/logs/downloads"
 
+echo "Downloading Qwen3-4B-Instruct-2507 student model..."
+hf download Qwen/Qwen3-4B-Instruct-2507 \
+  --local-dir "$PROJECT_SCRATCH/models/student/Qwen__Qwen3-4B-Instruct-2507"
+
 # echo "Downloading SmolLM3-3B student model..."
 # hf download HuggingFaceTB/SmolLM3-3B \
 #   --local-dir "$PROJECT_SCRATCH/models/student/HuggingFaceTB__SmolLM3-3B"
@@ -33,9 +37,9 @@ mkdir -p "$PROJECT_SCRATCH/logs/downloads"
 # hf download meta-llama/Llama-3.3-70B-Instruct \
 #   --local-dir "$PROJECT_SCRATCH/models/teacher/Llama-3.3-70B-Instruct"
 
-echo "Downloading Qwen2.5-72B-Instruct-GPTQ-Int8 teacher/ranking-agent model..."
-hf download Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8 \
-  --local-dir "$PROJECT_SCRATCH/models/teacher/Qwen__Qwen2.5-72B-Instruct-GPTQ-Int8"
+# echo "Downloading Qwen2.5-72B-Instruct-GPTQ-Int8 teacher/ranking-agent model..."
+# hf download Qwen/Qwen2.5-72B-Instruct-GPTQ-Int8 \
+#   --local-dir "$PROJECT_SCRATCH/models/teacher/Qwen__Qwen2.5-72B-Instruct-GPTQ-Int8"
 
 echo "Download completed."
 echo "Models saved in:"
