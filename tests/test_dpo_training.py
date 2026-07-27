@@ -131,6 +131,46 @@ def test_checked_in_qwen3_config_contains_approved_recipe() -> None:
     assert config.trainer.max_length is None
 
 
+def test_checked_in_llama3_config_contains_approved_recipe() -> None:
+    root = Path(__file__).resolve().parents[1]
+    config = load_training_config(
+        root / "configs" / "dpo_training_llama_3_2_3b_instruct.json"
+    )
+    smol_config = load_training_config(
+        root / "configs" / "dpo_training_smollm3_3b.json"
+    )
+
+    assert config.run_name == "llama_3_2_3b_instruct_reflective_dpo"
+    assert config.model.path == Path(
+        "/iridisfs/scratch/kjl1a21/DPO/models/student/"
+        "meta-llama__Llama-3.2-3B-Instruct"
+    )
+    assert config.model.local_files_only is True
+    assert config.model.trust_remote_code is False
+    assert config.model.dtype == "bfloat16"
+    assert config.model.max_position_embeddings == 131072
+    assert config.chat.system_message is None
+    assert config.chat.native_date_metadata is True
+    assert config_to_jsonable(config)["chat"] == {
+        "system_message": None,
+        "native_date_metadata": True,
+    }
+    assert config.input_run_dir == smol_config.input_run_dir
+    assert config.output_root == smol_config.output_root
+    assert config.dataset_files == smol_config.dataset_files
+    assert config.split == smol_config.split
+    assert config.trainer == smol_config.trainer
+    assert config.trainer.loss_type == "sigmoid"
+    assert config.trainer.beta == 0.1
+    assert config.trainer.learning_rate == 5e-7
+    assert config.trainer.num_train_epochs == 1.0
+    assert config.trainer.per_device_train_batch_size == 1
+    assert config.trainer.gradient_accumulation_steps == 8
+    assert config.trainer.lr_scheduler_type == "cosine"
+    assert config.trainer.precompute_ref_log_probs is False
+    assert config.trainer.max_length is None
+
+
 @pytest.mark.parametrize("system_message", ["", "   ", 123])
 def test_config_rejects_invalid_non_null_system_message(
     tmp_path: Path, system_message: Any
@@ -507,6 +547,55 @@ def test_qwen_template_preserves_prefix_and_completion_content(
     assert profile["native_date_metadata"] is False
     assert profile["enforced_model_limit"] == 262144
     assert example.row["prompt"][0]["content"] == source_prompt
+
+
+def test_llama_template_preserves_native_metadata_prefix_and_completions(
+    tmp_path: Path,
+) -> None:
+    config = _config(
+        tmp_path,
+        model_limit=131072,
+        system_message=None,
+        native_date_metadata=True,
+        expected_test={"energy": 1},
+        train_records=1,
+        test_records=1,
+        train_pairs=4,
+        test_pairs=4,
+    )
+    example = _examples([("energy", "E1", ("record",))])[0]
+    tokenizer = FakeLlamaTokenizer()
+
+    rendered, profile = render_and_profile(
+        [example],
+        tokenizer=tokenizer,
+        config=config,
+        dataset_version="question_only",
+    )
+
+    source_prompt = example.row["prompt"][0]["content"]
+    source_chosen = example.row["chosen"][0]["content"]
+    source_rejected = example.row["rejected"][0]["content"]
+    expected_prompt = (
+        "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+        "Cutting Knowledge Date: December 2023\n"
+        "Today Date: 27 Jul 2026\n\n"
+        "<|eot_id|><|start_header_id|>user<|end_header_id|>\n\n"
+        f"{source_prompt}<|eot_id|>"
+        "<|start_header_id|>assistant<|end_header_id|>\n\n"
+    )
+    assert rendered[0].row["prompt"] == expected_prompt
+    assert "/no_think" not in rendered[0].row["prompt"]
+    assert rendered[0].row["chosen"] == f"{source_chosen}<|eot_id|>"
+    assert rendered[0].row["rejected"] == f"{source_rejected}<|eot_id|>"
+    assert profile["system_message"] is None
+    assert profile["native_date_metadata"] is True
+    assert profile["enforced_model_limit"] == 131072
+    assert profile["max_length"] is None
+    assert profile["truncation"] is False
+    assert example.row["prompt"][0]["content"] == source_prompt
+    assert example.row["chosen"][0]["content"] == source_chosen
+    assert example.row["rejected"][0]["content"] == source_rejected
 
 
 def test_over_limit_profile_names_identity_and_fails(tmp_path: Path) -> None:
@@ -947,6 +1036,42 @@ def test_qwen_slurm_uses_approved_resources_config_and_command() -> None:
     assert 'python -m dpo_training.cli "${ARGS[@]}"' in script
 
 
+def test_llama_slurm_uses_approved_resources_config_and_command() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (
+        root / "submit_job_dpo_training_llama_3_2_3b_instruct.slurm"
+    ).read_text(encoding="utf-8")
+
+    assert "#SBATCH --job-name=dpo_llama_3_2_3b_instruct" in script
+    assert "#SBATCH --partition=quad_h200" in script
+    assert "#SBATCH --account=ecs" in script
+    assert "#SBATCH --nodes=1" in script
+    assert "#SBATCH --ntasks-per-node=1" in script
+    assert "#SBATCH --gres=gpu:1" in script
+    assert "#SBATCH --cpus-per-task=12" in script
+    assert "#SBATCH --mem=200G" in script
+    assert "#SBATCH --time=2-12:00:00" in script
+    assert "#SBATCH --output=dpo_llama_3_2_3b_instruct_%j.out" in script
+    assert "#SBATCH --error=dpo_llama_3_2_3b_instruct_%j.err" in script
+    assert (
+        'CONFIG_PATH="${CONFIG_PATH:-${PROJECT_DIR}/configs/'
+        'dpo_training_llama_3_2_3b_instruct.json}"'
+    ) in script
+    assert 'DATASET_VERSION="${DATASET_VERSION:-}"' in script
+    assert "category_evidence|question_only" in script
+    assert 'PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"' in script
+    assert 'RESUME_RUN_DIR="${RESUME_RUN_DIR:-}"' in script
+    assert 'require_file "${CONFIG_PATH}"' in script
+    assert 'require_file "${RESUME_RUN_DIR}/run_manifest.json"' in script
+    assert "PREFLIGHT_ONLY=true cannot be combined with RESUME_RUN_DIR" in script
+    assert "--config \"${CONFIG_PATH}\"" in script
+    assert "--dataset-version \"${DATASET_VERSION}\"" in script
+    assert "ARGS+=(--preflight-only)" in script
+    assert "ARGS+=(--resume \"${RESUME_RUN_DIR}\")" in script
+    assert "printf '%q ' python -m dpo_training.cli" in script
+    assert 'python -m dpo_training.cli "${ARGS[@]}"' in script
+
+
 def test_pyproject_registers_cli_package_and_pinned_training_dependencies() -> None:
     root = Path(__file__).resolve().parents[1]
     text = (root / "pyproject.toml").read_text(encoding="utf-8")
@@ -1022,6 +1147,51 @@ class FakeQwenTokenizer:
         )
         if add_generation_prompt:
             rendered += "<|im_start|>assistant\n"
+        return rendered
+
+    def __call__(
+        self, text: str, *, add_special_tokens: bool, truncation: bool
+    ) -> dict[str, list[int]]:
+        assert add_special_tokens is False
+        assert truncation is False
+        return {"input_ids": list(range(len(text)))}
+
+
+class FakeLlamaTokenizer:
+    chat_template = "fake-native-llama-template-with-cutoff-and-date"
+    model_max_length = 131072
+    pad_token = None
+    eos_token = "<|eot_id|>"
+    padding_side = "right"
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+    ) -> str:
+        assert tokenize is False
+        values = list(messages)
+        system_message = ""
+        if values and values[0]["role"] == "system":
+            system_message = values[0]["content"].strip()
+            values = values[1:]
+        rendered = (
+            "<|begin_of_text|><|start_header_id|>system<|end_header_id|>\n\n"
+            "Cutting Knowledge Date: December 2023\n"
+            "Today Date: 27 Jul 2026\n\n"
+            f"{system_message}<|eot_id|>"
+        )
+        rendered += "".join(
+            f"<|start_header_id|>{message['role']}<|end_header_id|>\n\n"
+            f"{message['content'].strip()}<|eot_id|>"
+            for message in values
+        )
+        if add_generation_prompt:
+            rendered += (
+                "<|start_header_id|>assistant<|end_header_id|>\n\n"
+            )
         return rendered
 
     def __call__(

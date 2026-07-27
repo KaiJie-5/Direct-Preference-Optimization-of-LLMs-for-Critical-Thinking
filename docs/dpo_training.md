@@ -4,10 +4,10 @@ The `dpo-train` command trains a local causal language model with TRL's
 `DPOTrainer` using one of the two conversational preference datasets produced
 by `dpo-build-preferences`.
 
-The checked-in SmolLM3 and Qwen3-4B-Instruct-2507 configurations use
-full-parameter BF16 training on one H200. Model, data, split, chat-template,
-optimizer, and checkpoint settings are configuration values shared by the
-same Python workflow.
+The checked-in SmolLM3, Qwen3-4B-Instruct-2507, and
+Llama-3.2-3B-Instruct configurations use full-parameter BF16 training on one
+H200. Model, data, split, chat-template, optimizer, and checkpoint settings
+are configuration values shared by the same Python workflow.
 
 The Qwen checkpoint was downloaded locally to:
 
@@ -20,6 +20,19 @@ The cluster configuration uses the corresponding path:
 
 ```text
 /iridisfs/scratch/kjl1a21/DPO/models/student/Qwen__Qwen3-4B-Instruct-2507
+```
+
+The Llama checkpoint was downloaded locally to:
+
+```text
+X:\DPO\models\student\meta-llama__Llama-3.2-3B-Instruct
+```
+
+It is Hugging Face revision `0cb88a4f764b7a12671c53f0838cd831a0843b95`.
+The cluster configuration uses:
+
+```text
+/iridisfs/scratch/kjl1a21/DPO/models/student/meta-llama__Llama-3.2-3B-Instruct
 ```
 
 ## Environment
@@ -75,6 +88,13 @@ message stays first. The Qwen tokenizer's native ChatML template renders the
 prompt through `<|im_start|>assistant\n`; each chosen or rejected completion
 preserves its source text and ends with `<|im_end|>\n`.
 
+Llama-3.2-3B-Instruct also uses `system_message: null`, so no custom system
+instruction or `/no_think` is inserted. Its native template still emits a
+system header containing its December 2023 knowledge cutoff and the current
+date. The prompt ends with
+`<|start_header_id|>assistant<|end_header_id|>\n\n`; chosen and rejected
+completions preserve their source text and end with `<|eot_id|>`.
+
 The original preference JSONL files are never modified. Each new run renders
 once and saves immutable, checksummed train/test snapshots. A resumed run
 reuses those snapshots.
@@ -97,15 +117,25 @@ dpo-train \
   --preflight-only
 ```
 
+For Llama, use:
+
+```bash
+dpo-train \
+  --config configs/dpo_training_llama_3_2_3b_instruct.json \
+  --dataset-version category_evidence \
+  --preflight-only
+```
+
 The profile reports prompt, chosen-sequence, rejected-sequence, and maximum
 sequence token lengths for each source dataset and overall, including minimum,
 50th, 90th, 95th, 99th percentile, and maximum.
 
 `max_length` is `null`; training never truncates an interview or completion.
 The command fails before training if any rendered sequence exceeds the selected
-model configuration's limit: 65,536 tokens for SmolLM3 or 262,144 tokens for
-Qwen3-4B-Instruct-2507. This deliberately uses the model limit rather than a
-tokenizer's larger advertised limit.
+model configuration's limit: 65,536 tokens for SmolLM3, 131,072 tokens for
+Llama-3.2-3B-Instruct, or 262,144 tokens for Qwen3-4B-Instruct-2507. This
+deliberately uses the model limit rather than a tokenizer's larger advertised
+limit.
 
 ## Training
 
@@ -146,6 +176,16 @@ sbatch --export=ALL,DATASET_VERSION=question_only \
   submit_job_dpo_training_qwen3_4b_instruct_2507.slurm
 ```
 
+Use the dedicated Llama launcher for Llama-3.2-3B-Instruct:
+
+```bash
+sbatch --export=ALL,DATASET_VERSION=category_evidence \
+  submit_job_dpo_training_llama_3_2_3b_instruct.slurm
+
+sbatch --export=ALL,DATASET_VERSION=question_only \
+  submit_job_dpo_training_llama_3_2_3b_instruct.slurm
+```
+
 To perform only validation, splitting, rendering, and token profiling in the
 same Slurm environment:
 
@@ -156,9 +196,10 @@ sbatch --export=ALL,DATASET_VERSION=category_evidence,PREFLIGHT_ONLY=true \
 
 Replace the script name with
 `submit_job_dpo_training_qwen3_4b_instruct_2507.slurm` to run the same optional
-preflight for Qwen. A full job already performs input validation, split
-verification, template rendering, token profiling, and context-limit checks
-before it loads model weights.
+preflight for Qwen, or
+`submit_job_dpo_training_llama_3_2_3b_instruct.slurm` for Llama. A full job
+already performs input validation, split verification, template rendering,
+token profiling, and context-limit checks before it loads model weights.
 
 An interrupted training run resumes only when its directory is named
 explicitly:
@@ -169,7 +210,7 @@ sbatch \
   submit_job_dpo_training.slurm
 ```
 
-Resume a Qwen run with the same variables and the dedicated Qwen script.
+Resume a Qwen or Llama run with the same variables and its dedicated script.
 
 Resume recomputes the model, source-data, configuration, template, and split
 fingerprints, validates the rendered snapshots, and selects the latest numeric
