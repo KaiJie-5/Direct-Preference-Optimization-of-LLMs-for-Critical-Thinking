@@ -4,10 +4,11 @@ The `dpo-train` command trains a local causal language model with TRL's
 `DPOTrainer` using one of the two conversational preference datasets produced
 by `dpo-build-preferences`.
 
-The checked-in SmolLM3, Qwen3-4B-Instruct-2507, and
-Llama-3.2-3B-Instruct configurations use full-parameter BF16 training on one
-H200. Model, data, split, chat-template, optimizer, and checkpoint settings
-are configuration values shared by the same Python workflow.
+The checked-in SmolLM3, Qwen3-4B-Instruct-2507,
+Llama-3.2-3B-Instruct, Ministral-3-3B-Instruct-2512, and
+Phi-4-mini-instruct configurations use BF16 training on one H200. Model, data,
+split, chat-template, optimizer, and checkpoint settings are configuration
+values shared by the same Python workflow.
 
 The Qwen checkpoint was downloaded locally to:
 
@@ -35,6 +36,32 @@ The cluster configuration uses:
 /iridisfs/scratch/kjl1a21/DPO/models/student/meta-llama__Llama-3.2-3B-Instruct
 ```
 
+The Ministral checkpoint was downloaded locally to:
+
+```text
+X:\DPO\models\student\mistralai__Ministral-3-3B-Instruct-2512
+```
+
+It is Hugging Face revision
+`b35d4dfe56c142746f54dbd64f579faab2744308`. The cluster path is:
+
+```text
+/iridisfs/scratch/kjl1a21/DPO/models/student/mistralai__Ministral-3-3B-Instruct-2512
+```
+
+The Phi checkpoint was downloaded locally to:
+
+```text
+X:\DPO\models\student\microsoft__Phi-4-mini-instruct
+```
+
+It is Hugging Face revision
+`cfbefacb99257ffa30c83adab238a50856ac3083`. The cluster path is:
+
+```text
+/iridisfs/scratch/kjl1a21/DPO/models/student/microsoft__Phi-4-mini-instruct
+```
+
 ## Environment
 
 Activate the existing environment and install the training dependency group
@@ -47,6 +74,19 @@ python -m pip install -e ".[training]"
 
 The Slurm job validates the installed versions but deliberately does not
 install or upgrade packages inside a GPU allocation.
+
+Ministral additionally requires its native tokenizer for strict prompt-token
+verification. Install the dedicated dependency group before submitting its
+array tasks:
+
+```bash
+conda activate dpo
+python -m pip install -e ".[training-ministral]"
+```
+
+This accepts Transformers versions from 5.14.1 up to, but not including, 6
+and installs `mistral-common>=1.8.6`. The audited environment uses
+Transformers 5.14.1.
 
 ## Data validation and split
 
@@ -95,6 +135,33 @@ date. The prompt ends with
 `<|start_header_id|>assistant<|end_header_id|>\n\n`; chosen and rejected
 completions preserve their source text and end with `<|eot_id|>`.
 
+Ministral uses its official `SYSTEM_PROMPT.txt` with the placeholders resolved
+to `today=2026-07-29` and `yesterday=2026-07-28`. The fully resolved value is
+stored in the configuration, and `native_date_metadata` is false because these
+dates are explicit rather than generated dynamically. It does not receive
+`/no_think`. Its text-only prompt is:
+
+```text
+<s>[SYSTEM_PROMPT]{resolved official system prompt}[/SYSTEM_PROMPT][INST]{original user text}[/INST]
+```
+
+Each completion is the unchanged source assistant text followed by `</s>`.
+For every real prompt, chosen sequence, and rejected sequence, preflight
+requires identical token IDs from direct Hugging Face template tokenization,
+rendered-string tokenization, and `MistralCommonBackend`. The run records the
+verification count, backend version, and aggregate token-ID hashes.
+
+Phi uses `system_message: null`, `native_date_metadata: false`, and the
+integrated Transformers implementation with `trust_remote_code=false`. It
+does not receive `/no_think`. Its prompt is:
+
+```text
+<|user|>{original user text}<|end|><|assistant|>
+```
+
+Chosen and rejected completions preserve the source text and end with
+`<|end|><|endoftext|>`.
+
 The original preference JSONL files are never modified. Each new run renders
 once and saves immutable, checksummed train/test snapshots. A resumed run
 reuses those snapshots.
@@ -133,20 +200,31 @@ sequence token lengths for each source dataset and overall, including minimum,
 `max_length` is `null`; training never truncates an interview or completion.
 The command fails before training if any rendered sequence exceeds the selected
 model configuration's limit: 65,536 tokens for SmolLM3, 131,072 tokens for
-Llama-3.2-3B-Instruct, or 262,144 tokens for Qwen3-4B-Instruct-2507. This
-deliberately uses the model limit rather than a tokenizer's larger advertised
-limit.
+Llama-3.2-3B-Instruct and Phi-4-mini-instruct, or 262,144 tokens for
+Qwen3-4B-Instruct-2507 and Ministral-3-3B-Instruct-2512. Ministral's limit is
+read from `text_config.max_position_embeddings`; the other models use the
+top-level value. This deliberately uses the model limit rather than a
+tokenizer's larger advertised limit.
 
 ## Training
 
 The selected recipe is standard sigmoid DPO:
 
-- full-parameter BF16 policy and resident frozen reference model;
+- BF16 policy with all selected language parameters trainable and a resident
+  frozen reference model;
 - beta 0.1 and learning rate `5e-7`;
 - cosine schedule with 10% warmup;
 - one epoch, device batch size 1, and gradient accumulation 8;
 - gradient checkpointing, fused AdamW, and gradient clipping at 1.0;
 - natural source frequencies and no external experiment tracker.
+
+Ministral's checkpoint contains fine-grained FP8 language projection weights.
+The model is loaded through
+`FineGrainedFP8Config(dequantize=True)` so training uses BF16. The full
+multimodal checkpoint remains resident, but `vision_tower` and
+`multi_modal_projector` are frozen and the runner asserts that only the
+language model and language-model head remain trainable. Phi and all earlier
+models continue using the standard loader without this profile.
 
 The trainer evaluates its built-in DPO metrics before the first update and
 after the epoch. It saves checkpoints every 250 optimizer steps and retains the
@@ -185,6 +263,48 @@ sbatch --export=ALL,DATASET_VERSION=category_evidence \
 sbatch --export=ALL,DATASET_VERSION=question_only \
   submit_job_dpo_training_llama_3_2_3b_instruct.slurm
 ```
+
+Ministral and Phi share a four-task array. The checked-in `%1` concurrency
+limit runs one task at a time:
+
+| Task ID | Model | Dataset |
+| ---: | --- | --- |
+| 0 | Ministral-3-3B-Instruct-2512 | category-evidence |
+| 1 | Ministral-3-3B-Instruct-2512 | question-only |
+| 2 | Phi-4-mini-instruct | category-evidence |
+| 3 | Phi-4-mini-instruct | question-only |
+
+Submit all four experiments:
+
+```bash
+sbatch submit_job_dpo_training_ministral_phi_array.slurm
+```
+
+Run validation, rendering, and token profiling for all four tasks without
+loading model weights:
+
+```bash
+sbatch --export=ALL,PREFLIGHT_ONLY=true \
+  submit_job_dpo_training_ministral_phi_array.slurm
+```
+
+Submit one task by overriding the array selection, for example Phi
+category-evidence:
+
+```bash
+sbatch --array=2 submit_job_dpo_training_ministral_phi_array.slurm
+```
+
+Resume exactly one interrupted task by selecting its original task ID:
+
+```bash
+sbatch --array=0 \
+  --export=ALL,RESUME_RUN_DIR=/iridisfs/scratch/kjl1a21/DPO/models/student/dpo_runs/existing_ministral_run \
+  submit_job_dpo_training_ministral_phi_array.slurm
+```
+
+Array-wide resume is rejected because one `RESUME_RUN_DIR` cannot identify
+four independent runs. `PREFLIGHT_ONLY=true` cannot be combined with resume.
 
 To perform only validation, splitting, rendering, and token profiling in the
 same Slurm environment:

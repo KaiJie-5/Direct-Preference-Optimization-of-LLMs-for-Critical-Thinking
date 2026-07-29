@@ -7,6 +7,7 @@ from typing import Any
 
 
 DATASET_VERSIONS = ("category_evidence", "question_only")
+MINISTRAL_TRAINING_PROFILE = "ministral3_fp8_text_dpo"
 
 
 @dataclass(frozen=True, slots=True)
@@ -16,6 +17,7 @@ class ModelConfig:
     trust_remote_code: bool
     dtype: str
     max_position_embeddings: int
+    training_profile: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -132,20 +134,29 @@ def load_training_config(path: Path) -> DPOTrainingConfig:
     output_root = _path(payload, "output_root", base_dir)
 
     model_payload = _object(payload, "model")
-    _require_exact_keys(
+    required_model_keys = {
+        "path",
+        "local_files_only",
+        "trust_remote_code",
+        "dtype",
+        "max_position_embeddings",
+    }
+    _require_required_and_allowed_keys(
         model_payload,
-        {
-            "path",
-            "local_files_only",
-            "trust_remote_code",
-            "dtype",
-            "max_position_embeddings",
-        },
-        "model",
+        required=required_model_keys,
+        allowed=required_model_keys | {"training_profile"},
+        label="model",
     )
     dtype = _string(model_payload, "dtype")
     if dtype != "bfloat16":
         raise ValueError("Full-model training currently requires model.dtype='bfloat16'.")
+    training_profile = model_payload.get("training_profile")
+    if training_profile is not None:
+        training_profile = _choice(
+            model_payload,
+            "training_profile",
+            {MINISTRAL_TRAINING_PROFILE},
+        )
     model = ModelConfig(
         path=_path(model_payload, "path", base_dir),
         local_files_only=_bool(model_payload, "local_files_only"),
@@ -154,7 +165,15 @@ def load_training_config(path: Path) -> DPOTrainingConfig:
         max_position_embeddings=_positive_int(
             model_payload, "max_position_embeddings"
         ),
+        training_profile=training_profile,
     )
+    if (
+        model.training_profile == MINISTRAL_TRAINING_PROFILE
+        and model.trust_remote_code
+    ):
+        raise ValueError(
+            "The Ministral training profile requires trust_remote_code=false."
+        )
 
     chat_payload = _object(payload, "chat")
     _require_exact_keys(
@@ -354,6 +373,8 @@ def config_to_jsonable(config: DPOTrainingConfig) -> dict[str, Any]:
     payload["input_run_dir"] = str(config.input_run_dir)
     payload["output_root"] = str(config.output_root)
     payload["model"]["path"] = str(config.model.path)
+    if config.model.training_profile is None:
+        payload["model"].pop("training_profile")
     payload["split"]["group_fields"] = list(config.split.group_fields)
     payload["split"]["expected_test_record_counts"] = (
         config.split.expected_test_counts()
@@ -375,6 +396,25 @@ def _require_exact_keys(
     actual = set(payload)
     missing = sorted(expected - actual)
     unknown = sorted(actual - expected)
+    if missing or unknown:
+        details: list[str] = []
+        if missing:
+            details.append(f"missing={missing}")
+        if unknown:
+            details.append(f"unknown={unknown}")
+        raise ValueError(f"{label} fields are invalid: {', '.join(details)}.")
+
+
+def _require_required_and_allowed_keys(
+    payload: dict[str, Any],
+    *,
+    required: set[str],
+    allowed: set[str],
+    label: str,
+) -> None:
+    actual = set(payload)
+    missing = sorted(required - actual)
+    unknown = sorted(actual - allowed)
     if missing or unknown:
         details: list[str] = []
         if missing:

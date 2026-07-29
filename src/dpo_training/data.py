@@ -9,7 +9,11 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import Any, Iterable
 
-from .config import DATASET_VERSIONS, DPOTrainingConfig
+from .config import (
+    DATASET_VERSIONS,
+    DPOTrainingConfig,
+    MINISTRAL_TRAINING_PROFILE,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -305,7 +309,11 @@ def ensure_shared_split(
     return path
 
 
-def model_file_hashes(model_path: Path) -> dict[str, dict[str, Any]]:
+def model_file_hashes(
+    model_path: Path,
+    *,
+    training_profile: str | None = None,
+) -> dict[str, dict[str, Any]]:
     index_path = next(
         (
             model_path / name
@@ -354,6 +362,14 @@ def model_file_hashes(model_path: Path) -> dict[str, dict[str, Any]]:
     ):
         if (model_path / optional_name).is_file():
             names.add(optional_name)
+    if training_profile == MINISTRAL_TRAINING_PROFILE:
+        for profile_name in (
+            "SYSTEM_PROMPT.txt",
+            "params.json",
+            "processor_config.json",
+            "tekken.json",
+        ):
+            names.add(profile_name)
     result: dict[str, dict[str, Any]] = {}
     for name in sorted(names):
         path = model_path / name

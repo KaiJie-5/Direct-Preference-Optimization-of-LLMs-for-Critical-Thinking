@@ -13,6 +13,7 @@ from dpo_training.cli import build_parser
 from dpo_training.config import (
     ChatConfig,
     DPOTrainingConfig,
+    MINISTRAL_TRAINING_PROFILE,
     ModelConfig,
     SplitConfig,
     TrainerConfig,
@@ -35,10 +36,12 @@ from dpo_training.preflight import (
     assert_within_context_limit,
     render_and_profile,
     validate_model_context_limit,
+    verify_saved_native_token_profile,
 )
 from dpo_training.runner import (
     RENDERED_TEST_FILENAME,
     _create_trainer,
+    _freeze_ministral_text_only_components,
     _latest_checkpoint,
     _read_rendered_snapshot,
     _read_token_profile,
@@ -171,6 +174,69 @@ def test_checked_in_llama3_config_contains_approved_recipe() -> None:
     assert config.trainer.max_length is None
 
 
+@pytest.mark.parametrize(
+    ("filename", "run_name", "model_path", "model_limit", "training_profile"),
+    [
+        (
+            "dpo_training_ministral_3_3b_instruct_2512.json",
+            "ministral_3_3b_instruct_2512_reflective_dpo",
+            "/iridisfs/scratch/kjl1a21/DPO/models/student/"
+            "mistralai__Ministral-3-3B-Instruct-2512",
+            262144,
+            MINISTRAL_TRAINING_PROFILE,
+        ),
+        (
+            "dpo_training_phi_4_mini_instruct.json",
+            "phi_4_mini_instruct_reflective_dpo",
+            "/iridisfs/scratch/kjl1a21/DPO/models/student/"
+            "microsoft__Phi-4-mini-instruct",
+            131072,
+            None,
+        ),
+    ],
+)
+def test_checked_in_ministral_and_phi_configs_reuse_approved_recipe(
+    filename: str,
+    run_name: str,
+    model_path: str,
+    model_limit: int,
+    training_profile: str | None,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    config = load_training_config(root / "configs" / filename)
+    smol_config = load_training_config(
+        root / "configs" / "dpo_training_smollm3_3b.json"
+    )
+
+    assert config.run_name == run_name
+    assert config.model.path == Path(model_path)
+    assert config.model.local_files_only is True
+    assert config.model.trust_remote_code is False
+    assert config.model.dtype == "bfloat16"
+    assert config.model.max_position_embeddings == model_limit
+    assert config.model.training_profile == training_profile
+    assert config.chat.native_date_metadata is False
+    assert config.input_run_dir == smol_config.input_run_dir
+    assert config.output_root == smol_config.output_root
+    assert config.dataset_files == smol_config.dataset_files
+    assert config.split == smol_config.split
+    assert config.trainer == smol_config.trainer
+
+    if training_profile == MINISTRAL_TRAINING_PROFILE:
+        assert config.chat.system_message is not None
+        assert "The current date is 2026-07-29." in config.chat.system_message
+        assert '"yesterday" is 2026-07-28' in config.chat.system_message
+        assert "{today}" not in config.chat.system_message
+        assert "{yesterday}" not in config.chat.system_message
+        assert (
+            config_to_jsonable(config)["model"]["training_profile"]
+            == MINISTRAL_TRAINING_PROFILE
+        )
+    else:
+        assert config.chat.system_message is None
+        assert "training_profile" not in config_to_jsonable(config)["model"]
+
+
 @pytest.mark.parametrize("system_message", ["", "   ", 123])
 def test_config_rejects_invalid_non_null_system_message(
     tmp_path: Path, system_message: Any
@@ -282,6 +348,38 @@ def test_dependency_guard_enforces_pinned_trl_and_transformers_upper_bound(
     versions["transformers"] = "6.0.0"
     with pytest.raises(RuntimeError, match="pinned version 1.9.0"):
         _validate_training_dependencies()
+
+
+def test_ministral_dependency_guard_requires_new_transformers_and_mistral_common(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(
+        tmp_path,
+        training_profile=MINISTRAL_TRAINING_PROFILE,
+        system_message="Resolved system message.",
+        native_date_metadata=False,
+    )
+    versions = {
+        "trl": "1.9.0",
+        "transformers": "5.14.1",
+        "datasets": "4.1.0",
+        "accelerate": "1.10.1",
+        "torch": "2.8.0",
+        "mistral-common": "1.8.6",
+    }
+    monkeypatch.setattr(
+        runner_module.importlib.metadata,
+        "version",
+        lambda package: versions[package],
+    )
+
+    _validate_training_dependencies(config)
+
+    versions["transformers"] = "5.13.0"
+    versions["mistral-common"] = "1.8.5"
+    with pytest.raises(RuntimeError, match="transformers 5.13.0 is older"):
+        _validate_training_dependencies(config)
 
 
 def test_validate_inputs_preserves_unicode_and_checks_every_aligned_hash(
@@ -598,6 +696,127 @@ def test_llama_template_preserves_native_metadata_prefix_and_completions(
     assert example.row["rejected"][0]["content"] == source_rejected
 
 
+def test_phi_template_has_no_system_message_and_preserves_completions(
+    tmp_path: Path,
+) -> None:
+    config = _config(
+        tmp_path,
+        model_limit=131072,
+        system_message=None,
+        native_date_metadata=False,
+    )
+    example = _examples([("energy", "E1", ("record",))])[0]
+    original = json.loads(json.dumps(example.row))
+
+    rendered, profile = render_and_profile(
+        [example],
+        tokenizer=FakePhiTokenizer(),
+        config=config,
+        dataset_version="category_evidence",
+    )
+
+    source_prompt = example.row["prompt"][0]["content"]
+    source_chosen = example.row["chosen"][0]["content"]
+    source_rejected = example.row["rejected"][0]["content"]
+    assert rendered[0].row["prompt"] == (
+        f"<|user|>{source_prompt}<|end|><|assistant|>"
+    )
+    assert rendered[0].row["chosen"] == (
+        f"{source_chosen}<|end|><|endoftext|>"
+    )
+    assert rendered[0].row["rejected"] == (
+        f"{source_rejected}<|end|><|endoftext|>"
+    )
+    assert "<|system|>" not in rendered[0].row["prompt"]
+    assert "/no_think" not in rendered[0].row["prompt"]
+    assert profile["system_message"] is None
+    assert profile["native_date_metadata"] is False
+    assert example.row == original
+
+
+def test_ministral_template_and_three_way_native_token_verification(
+    tmp_path: Path,
+) -> None:
+    system_message = (
+        "Official Ministral system. The current date is 2026-07-29. "
+        '"yesterday" is 2026-07-28.'
+    )
+    config = _config(
+        tmp_path,
+        model_limit=262144,
+        system_message=system_message,
+        native_date_metadata=False,
+        training_profile=MINISTRAL_TRAINING_PROFILE,
+    )
+    example = _examples([("energy", "E1", ("record",))])[0]
+    original = json.loads(json.dumps(example.row))
+
+    rendered, profile = render_and_profile(
+        [example],
+        tokenizer=FakeMinistralTokenizer(),
+        native_tokenizer=FakeMistralCommonBackend(),
+        config=config,
+        dataset_version="question_only",
+    )
+
+    source_prompt = example.row["prompt"][0]["content"]
+    source_chosen = example.row["chosen"][0]["content"]
+    source_rejected = example.row["rejected"][0]["content"]
+    assert rendered[0].row["prompt"] == (
+        f"<s>[SYSTEM_PROMPT]{system_message}[/SYSTEM_PROMPT]"
+        f"[INST]{source_prompt}[/INST]"
+    )
+    assert rendered[0].row["chosen"] == f"{source_chosen}</s>"
+    assert rendered[0].row["rejected"] == f"{source_rejected}</s>"
+    assert "/no_think" not in rendered[0].row["prompt"]
+    assert "{today}" not in rendered[0].row["prompt"]
+    assert "{yesterday}" not in rendered[0].row["prompt"]
+    assert profile["prompt_policy"] == {
+        "training_profile": MINISTRAL_TRAINING_PROFILE,
+        "system_message_mode": "explicit_resolved_official",
+        "native_date_metadata": False,
+        "no_think": False,
+    }
+    verification = profile["native_token_verification"]
+    assert verification["row_count"] == 1
+    assert verification["sequence_count"] == 3
+    assert len(set(verification["token_id_sha256"].values())) == 1
+    assert example.row == original
+
+    verify_saved_native_token_profile(
+        [example],
+        tokenizer=FakeMinistralTokenizer(),
+        native_tokenizer=FakeMistralCommonBackend(),
+        config=config,
+        profile=profile,
+    )
+
+
+def test_ministral_native_token_mismatch_fails_with_pair_identity(
+    tmp_path: Path,
+) -> None:
+    config = _config(
+        tmp_path,
+        model_limit=262144,
+        system_message="Resolved system prompt for 2026-07-29.",
+        native_date_metadata=False,
+        training_profile=MINISTRAL_TRAINING_PROFILE,
+    )
+    example = _examples([("energy", "E1", ("record",))])[0]
+
+    with pytest.raises(
+        ValueError,
+        match=r"token verification failed.*pair.*line",
+    ):
+        render_and_profile(
+            [example],
+            tokenizer=FakeMinistralTokenizer(),
+            native_tokenizer=MismatchedMistralCommonBackend(),
+            config=config,
+            dataset_version="category_evidence",
+        )
+
+
 def test_over_limit_profile_names_identity_and_fails(tmp_path: Path) -> None:
     config = _config(
         tmp_path,
@@ -639,6 +858,32 @@ def test_context_limit_uses_model_config_not_tokenizer_limit(tmp_path: Path) -> 
     )
     with pytest.raises(ValueError, match="does not match"):
         validate_model_context_limit(mismatched)
+
+
+def test_ministral_context_limit_uses_nested_text_config(tmp_path: Path) -> None:
+    config = _config(
+        tmp_path,
+        model_limit=262144,
+        system_message="Resolved system message.",
+        native_date_metadata=False,
+        training_profile=MINISTRAL_TRAINING_PROFILE,
+    )
+    _write_json(
+        config.model.path / "config.json",
+        {
+            "text_config": {"max_position_embeddings": 262144},
+            "vision_config": {"max_position_embeddings": 4096},
+        },
+    )
+
+    assert validate_model_context_limit(config) == {
+        "model_max_position_embeddings": 262144,
+        "configured_limit": 262144,
+    }
+
+    _write_json(config.model.path / "config.json", {"text_config": {}})
+    with pytest.raises(ValueError, match="text_config.max_position_embeddings"):
+        validate_model_context_limit(config)
 
 
 def test_rendered_snapshots_round_trip_unicode_and_detect_changes(
@@ -754,8 +999,120 @@ def test_current_dpo_config_mapping_keeps_reference_resident(
     assert args["save_total_limit"] == 2
     assert args["report_to"] == "none"
     assert args["push_to_hub"] is False
+    assert "quantization_config" not in args["model_init_kwargs"]
     assert result["ref_model"] is None
     assert len(result["train_dataset"]) == len(result["eval_dataset"]) == 1
+
+
+def test_ministral_trainer_dequantizes_fp8_and_freezes_non_language_components(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(
+        tmp_path,
+        model_limit=262144,
+        system_message="Resolved system message.",
+        native_date_metadata=False,
+        training_profile=MINISTRAL_TRAINING_PROFILE,
+    )
+    captured: dict[str, Any] = {}
+
+    class FakeParameter:
+        def __init__(self, size: int) -> None:
+            self.size = size
+            self.requires_grad = True
+
+        def numel(self) -> int:
+            return self.size
+
+    class FakeModule:
+        def __init__(self, parameter: FakeParameter) -> None:
+            self.parameter = parameter
+
+        def parameters(self) -> list[FakeParameter]:
+            return [self.parameter]
+
+    vision = FakeParameter(10)
+    projector = FakeParameter(20)
+    language = FakeParameter(30)
+    lm_head = FakeParameter(40)
+
+    class FakeModel:
+        model = types.SimpleNamespace(
+            vision_tower=FakeModule(vision),
+            multi_modal_projector=FakeModule(projector),
+        )
+
+        def named_parameters(self) -> list[tuple[str, FakeParameter]]:
+            return [
+                ("model.vision_tower.weight", vision),
+                ("model.multi_modal_projector.weight", projector),
+                ("model.language_model.layers.0.weight", language),
+                ("lm_head.weight", lm_head),
+            ]
+
+    class FakeFineGrainedFP8Config:
+        def __init__(self, *, dequantize: bool) -> None:
+            self.dequantize = dequantize
+
+    class FakeDPOConfig:
+        def __init__(self, **kwargs: Any) -> None:
+            captured["args"] = kwargs
+
+    class FakeDataset:
+        @staticmethod
+        def from_list(rows: list[dict[str, str]]) -> list[dict[str, str]]:
+            return rows
+
+    monkeypatch.setitem(
+        sys.modules, "torch", types.SimpleNamespace(bfloat16="bfloat16")
+    )
+    monkeypatch.setitem(
+        sys.modules, "datasets", types.SimpleNamespace(Dataset=FakeDataset)
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "trl",
+        types.SimpleNamespace(DPOConfig=FakeDPOConfig, DPOTrainer=object),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(FineGrainedFP8Config=FakeFineGrainedFP8Config),
+    )
+
+    trainer = types.SimpleNamespace(model=FakeModel())
+
+    result = _create_trainer(
+        config=config,
+        dataset_version="question_only",
+        run_dir=tmp_path / "run",
+        tokenizer=FakeMinistralTokenizer(),
+        rendered_train=[{"prompt": "p", "chosen": "c", "rejected": "r"}],
+        rendered_test=[{"prompt": "p", "chosen": "c", "rejected": "r"}],
+        trainer_factory=lambda **_kwargs: trainer,
+    )
+
+    quantization = captured["args"]["model_init_kwargs"]["quantization_config"]
+    assert isinstance(quantization, FakeFineGrainedFP8Config)
+    assert quantization.dequantize is True
+    assert vision.requires_grad is False
+    assert projector.requires_grad is False
+    assert language.requires_grad is True
+    assert lm_head.requires_grad is True
+    assert result._dpo_frozen_components["trainable_parameter_count"] == 70
+    assert set(result._dpo_frozen_components["components"]) == {
+        "model.vision_tower",
+        "model.multi_modal_projector",
+    }
+
+
+def test_ministral_freezing_rejects_missing_or_unexpected_components() -> None:
+    class EmptyModel:
+        model = types.SimpleNamespace()
+
+    with pytest.raises(ValueError, match="vision_tower"):
+        _freeze_ministral_text_only_components(EmptyModel())
 
 
 def test_mocked_training_evaluates_before_and_after_and_saves_artifacts(
@@ -861,7 +1218,11 @@ def test_mocked_training_evaluates_before_and_after_and_saves_artifacts(
 
     trainer = FakeTrainer()
     monkeypatch.setattr(runner_module, "validate_inputs", lambda _config: validated)
-    monkeypatch.setattr(runner_module, "model_file_hashes", lambda _path: {"model": {}})
+    monkeypatch.setattr(
+        runner_module,
+        "model_file_hashes",
+        lambda _path, **_kwargs: {"model": {}},
+    )
     monkeypatch.setattr(
         runner_module,
         "validate_model_context_limit",
@@ -885,10 +1246,10 @@ def test_mocked_training_evaluates_before_and_after_and_saves_artifacts(
         lambda *_args, **_kwargs: (rendered, profile),
     )
     monkeypatch.setattr(
-        runner_module, "_validate_training_dependencies", lambda: None
+        runner_module, "_validate_training_dependencies", lambda _config: None
     )
     monkeypatch.setattr(
-        runner_module, "_environment_metadata", lambda: {"packages": {}}
+        runner_module, "_environment_metadata", lambda _config: {"packages": {}}
     )
     monkeypatch.setattr(runner_module, "_create_trainer", lambda **_kwargs: trainer)
 
@@ -962,6 +1323,36 @@ def test_model_fingerprint_covers_config_tokenizer_and_all_weight_shards(
         "model-00002-of-00002.safetensors",
     }.issubset(hashes)
     assert all(metadata["sha256"] for metadata in hashes.values())
+
+
+def test_ministral_model_fingerprint_covers_native_prompt_and_tokenizer_files(
+    tmp_path: Path,
+) -> None:
+    config = _config(
+        tmp_path,
+        training_profile=MINISTRAL_TRAINING_PROFILE,
+        system_message="Resolved system message.",
+        native_date_metadata=False,
+    )
+    for filename in (
+        "SYSTEM_PROMPT.txt",
+        "params.json",
+        "processor_config.json",
+        "tekken.json",
+    ):
+        (config.model.path / filename).write_text(filename, encoding="utf-8")
+
+    hashes = model_file_hashes(
+        config.model.path,
+        training_profile=config.model.training_profile,
+    )
+
+    assert {
+        "SYSTEM_PROMPT.txt",
+        "params.json",
+        "processor_config.json",
+        "tekken.json",
+    }.issubset(hashes)
 
 
 def test_model_fingerprint_supports_standard_pytorch_weight_files(
@@ -1072,6 +1463,55 @@ def test_llama_slurm_uses_approved_resources_config_and_command() -> None:
     assert 'python -m dpo_training.cli "${ARGS[@]}"' in script
 
 
+def test_ministral_phi_array_maps_all_experiments_and_guards_resume() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (
+        root / "submit_job_dpo_training_ministral_phi_array.slurm"
+    ).read_text(encoding="utf-8")
+
+    assert "#SBATCH --job-name=dpo_ministral_phi" in script
+    assert "#SBATCH --partition=quad_h200" in script
+    assert "#SBATCH --account=ecs" in script
+    assert "#SBATCH --nodes=1" in script
+    assert "#SBATCH --ntasks-per-node=1" in script
+    assert "#SBATCH --gres=gpu:1" in script
+    assert "#SBATCH --cpus-per-task=12" in script
+    assert "#SBATCH --mem=200G" in script
+    assert "#SBATCH --time=2-12:00:00" in script
+    assert "#SBATCH --array=0-3%1" in script
+    assert "#SBATCH --output=dpo_ministral_phi_%A_%a.out" in script
+    assert "#SBATCH --error=dpo_ministral_phi_%A_%a.err" in script
+    assert (
+        "dpo_training_ministral_3_3b_instruct_2512.json" in script
+    )
+    assert "dpo_training_phi_4_mini_instruct.json" in script
+    assert script.count('DATASET_VERSION="category_evidence"') == 2
+    assert script.count('DATASET_VERSION="question_only"') == 2
+    assert 'PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"' in script
+    assert 'RESUME_RUN_DIR="${RESUME_RUN_DIR:-}"' in script
+    assert "PREFLIGHT_ONLY=true cannot be combined with RESUME_RUN_DIR" in script
+    assert 'SLURM_ARRAY_TASK_COUNT:-0}" != "1"' in script
+    assert "Resume requires one task selected with sbatch --array=<task-id>" in script
+    assert "_validate_training_dependencies(config)" in script
+    assert "--config \"${CONFIG_PATH}\"" in script
+    assert "--dataset-version \"${DATASET_VERSION}\"" in script
+    assert "ARGS+=(--preflight-only)" in script
+    assert "ARGS+=(--resume \"${RESUME_RUN_DIR}\")" in script
+    assert 'python -m dpo_training.cli "${ARGS[@]}"' in script
+
+
+def test_ministral_phi_documentation_records_audited_revisions_and_commands() -> None:
+    root = Path(__file__).resolve().parents[1]
+    text = (root / "docs" / "dpo_training.md").read_text(encoding="utf-8")
+
+    assert "b35d4dfe56c142746f54dbd64f579faab2744308" in text
+    assert "cfbefacb99257ffa30c83adab238a50856ac3083" in text
+    assert 'python -m pip install -e ".[training-ministral]"' in text
+    assert "sbatch submit_job_dpo_training_ministral_phi_array.slurm" in text
+    assert "sbatch --array=0" in text
+    assert "PREFLIGHT_ONLY=true" in text
+
+
 def test_pyproject_registers_cli_package_and_pinned_training_dependencies() -> None:
     root = Path(__file__).resolve().parents[1]
     text = (root / "pyproject.toml").read_text(encoding="utf-8")
@@ -1082,6 +1522,9 @@ def test_pyproject_registers_cli_package_and_pinned_training_dependencies() -> N
     assert '"datasets>=4.1.0"' in text
     assert '"accelerate>=1.10.1"' in text
     assert '"torch>=2.8.0"' in text
+    assert "training-ministral = [" in text
+    assert '"transformers>=5.14.1,<6"' in text
+    assert '"mistral-common>=1.8.6"' in text
 
 
 class FakeTokenizer:
@@ -1202,12 +1645,116 @@ class FakeLlamaTokenizer:
         return {"input_ids": list(range(len(text)))}
 
 
+class FakeMinistralTokenizer:
+    chat_template = "fake-ministral-system-inst-template"
+    model_max_length = 262144
+    pad_token = "<pad>"
+    eos_token = "</s>"
+    padding_side = "right"
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+        return_dict: bool = False,
+    ) -> Any:
+        del add_generation_prompt
+        rendered = "<s>"
+        for message in messages:
+            if message["role"] == "system":
+                rendered += (
+                    f"[SYSTEM_PROMPT]{message['content']}[/SYSTEM_PROMPT]"
+                )
+            elif message["role"] == "user":
+                rendered += f"[INST]{message['content']}[/INST]"
+            elif message["role"] == "assistant":
+                rendered += f"{message['content']}</s>"
+            else:
+                raise AssertionError(f"Unexpected role: {message['role']}")
+        if not tokenize:
+            return rendered
+        encoded = {"input_ids": _character_ids(rendered)}
+        return encoded if return_dict else encoded["input_ids"]
+
+    def __call__(
+        self, text: str, *, add_special_tokens: bool, truncation: bool
+    ) -> dict[str, list[int]]:
+        assert add_special_tokens is False
+        assert truncation is False
+        return {"input_ids": _character_ids(text)}
+
+
+class FakeMistralCommonBackend(FakeMinistralTokenizer):
+    pass
+
+
+class MismatchedMistralCommonBackend(FakeMinistralTokenizer):
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+        return_dict: bool = False,
+    ) -> Any:
+        encoded = super().apply_chat_template(
+            messages,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            return_dict=return_dict,
+        )
+        if tokenize:
+            values = encoded["input_ids"] if return_dict else encoded
+            values[-1] += 1
+        return encoded
+
+
+class FakePhiTokenizer:
+    chat_template = "fake-phi-role-template"
+    model_max_length = 131072
+    pad_token = "<|endoftext|>"
+    eos_token = "<|endoftext|>"
+    padding_side = "right"
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+    ) -> str:
+        assert tokenize is False
+        rendered = "".join(
+            f"<|{message['role']}|>{message['content']}<|end|>"
+            for message in messages
+        )
+        return (
+            rendered + "<|assistant|>"
+            if add_generation_prompt
+            else rendered + self.eos_token
+        )
+
+    def __call__(
+        self, text: str, *, add_special_tokens: bool, truncation: bool
+    ) -> dict[str, list[int]]:
+        assert add_special_tokens is False
+        assert truncation is False
+        return {"input_ids": _character_ids(text)}
+
+
+def _character_ids(text: str) -> list[int]:
+    return [ord(character) for character in text]
+
+
 def _config(
     tmp_path: Path,
     *,
     model_limit: int = 65536,
     system_message: str | None = "/no_think",
     native_date_metadata: bool = True,
+    training_profile: str | None = None,
     expected_test: dict[str, int] | None = None,
     train_records: int = 1,
     test_records: int = 1,
@@ -1226,6 +1773,7 @@ def _config(
             trust_remote_code=False,
             dtype="bfloat16",
             max_position_embeddings=model_limit,
+            training_profile=training_profile,
         ),
         chat=ChatConfig(
             system_message=system_message,

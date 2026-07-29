@@ -11,7 +11,11 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Any, Callable
 
-from .config import DPOTrainingConfig, config_to_jsonable
+from .config import (
+    DPOTrainingConfig,
+    MINISTRAL_TRAINING_PROFILE,
+    config_to_jsonable,
+)
 from .data import (
     PreferenceExample,
     build_split_manifest,
@@ -29,6 +33,7 @@ from .preflight import (
     load_tokenizer,
     render_and_profile,
     validate_model_context_limit,
+    verify_saved_native_token_profile,
 )
 
 
@@ -64,7 +69,10 @@ def run_training(
         _set_state(manifest, "validating_inputs")
         _write_manifest(manifest_path, manifest)
         validated = validate_inputs(config)
-        model_hashes = model_file_hashes(config.model.path)
+        model_hashes = model_file_hashes(
+            config.model.path,
+            training_profile=config.model.training_profile,
+        )
         context_limits = validate_model_context_limit(config)
         source_fingerprint = canonical_json_sha256(validated.input_hashes)
         examples = validated.examples_by_version[dataset_version]
@@ -129,6 +137,12 @@ def run_training(
                 raise ValueError(
                     "Current tokenizer chat template differs from the saved run."
                 )
+            verify_saved_native_token_profile(
+                examples,
+                tokenizer=tokenizer,
+                config=config,
+                profile=profile,
+            )
             assert_within_context_limit(profile)
         else:
             _set_state(manifest, "token_preflight")
@@ -148,6 +162,14 @@ def run_training(
                 "chat_template_sha256": profile["chat_template_sha256"],
                 "over_limit_count": profile["over_limit_count"],
             }
+            if "prompt_policy" in profile:
+                manifest["token_profile"]["prompt_policy"] = profile[
+                    "prompt_policy"
+                ]
+            if "native_token_verification" in profile:
+                manifest["token_profile"]["native_token_verification"] = profile[
+                    "native_token_verification"
+                ]
             _write_manifest(manifest_path, manifest)
             assert_within_context_limit(profile)
             rendered_train, rendered_test = _split_rendered(
@@ -175,9 +197,9 @@ def run_training(
             _print_preflight_summary(run_dir, dataset_version, profile, split_manifest)
             return run_dir
 
-        _validate_training_dependencies()
+        _validate_training_dependencies(config)
         _set_state(manifest, "training")
-        manifest["environment"] = _environment_metadata()
+        manifest["environment"] = _environment_metadata(config)
         _write_manifest(manifest_path, manifest)
         trainer = _create_trainer(
             config=config,
@@ -188,6 +210,12 @@ def run_training(
             rendered_test=rendered_test,
             trainer_factory=trainer_factory,
         )
+        frozen_components = getattr(
+            trainer, "_dpo_frozen_components", None
+        )
+        if frozen_components is not None:
+            manifest["frozen_components"] = frozen_components
+            _write_manifest(manifest_path, manifest)
         saved_before_path = run_dir / "checkpoints" / "eval_before_results.json"
         if is_resume and saved_before_path.is_file():
             before_metrics = _read_json(saved_before_path)
@@ -277,14 +305,26 @@ def _create_trainer(
             "training optional dependency group."
         ) from exc
     trainer_config = config.trainer
+    model_init_kwargs: dict[str, Any] = {
+        "dtype": torch.bfloat16,
+        "local_files_only": config.model.local_files_only,
+        "trust_remote_code": config.model.trust_remote_code,
+    }
+    if config.model.training_profile == MINISTRAL_TRAINING_PROFILE:
+        try:
+            from transformers import FineGrainedFP8Config
+        except ImportError as exc:
+            raise RuntimeError(
+                "The Ministral training profile requires Transformers with "
+                "FineGrainedFP8Config support."
+            ) from exc
+        model_init_kwargs["quantization_config"] = FineGrainedFP8Config(
+            dequantize=True
+        )
     args = DPOConfig(
         output_dir=str(run_dir / "checkpoints"),
         run_name=f"{config.run_name}_{dataset_version}",
-        model_init_kwargs={
-            "dtype": torch.bfloat16,
-            "local_files_only": config.model.local_files_only,
-            "trust_remote_code": config.model.trust_remote_code,
-        },
+        model_init_kwargs=model_init_kwargs,
         trust_remote_code=config.model.trust_remote_code,
         per_device_train_batch_size=trainer_config.per_device_train_batch_size,
         per_device_eval_batch_size=trainer_config.per_device_eval_batch_size,
@@ -321,7 +361,7 @@ def _create_trainer(
         disable_dropout=trainer_config.disable_dropout,
     )
     factory = trainer_factory or DPOTrainer
-    return factory(
+    trainer = factory(
         model=str(config.model.path),
         ref_model=None,
         args=args,
@@ -329,6 +369,74 @@ def _create_trainer(
         eval_dataset=Dataset.from_list(rendered_test),
         processing_class=tokenizer,
     )
+    if config.model.training_profile == MINISTRAL_TRAINING_PROFILE:
+        frozen_components = _freeze_ministral_text_only_components(
+            trainer.model
+        )
+        setattr(trainer, "_dpo_frozen_components", frozen_components)
+    return trainer
+
+
+def _freeze_ministral_text_only_components(model: Any) -> dict[str, Any]:
+    multimodal_model = getattr(model, "model", None)
+    if multimodal_model is None:
+        raise ValueError(
+            "Ministral model has no top-level 'model' component."
+        )
+    component_metadata: dict[str, dict[str, int]] = {}
+    for component_name in ("vision_tower", "multi_modal_projector"):
+        component = getattr(multimodal_model, component_name, None)
+        if component is None:
+            raise ValueError(
+                f"Ministral model is missing model.{component_name}."
+            )
+        parameters = list(component.parameters())
+        if not parameters:
+            raise ValueError(
+                f"Ministral model component model.{component_name} has no "
+                "parameters."
+            )
+        parameter_count = sum(parameter.numel() for parameter in parameters)
+        for parameter in parameters:
+            parameter.requires_grad = False
+        if any(parameter.requires_grad for parameter in parameters):
+            raise ValueError(
+                f"Could not freeze Ministral model.{component_name}."
+            )
+        component_metadata[f"model.{component_name}"] = {
+            "parameter_tensors": len(parameters),
+            "parameter_count": parameter_count,
+        }
+
+    trainable_names = [
+        name for name, parameter in model.named_parameters() if parameter.requires_grad
+    ]
+    unexpected = [
+        name
+        for name in trainable_names
+        if not (
+            name.startswith("model.language_model.")
+            or name.startswith("lm_head.")
+        )
+    ]
+    if unexpected:
+        raise ValueError(
+            "Ministral text-only profile found trainable parameters outside the "
+            "language model: "
+            + ", ".join(unexpected[:10])
+        )
+    if not trainable_names:
+        raise ValueError("Ministral text-only profile has no trainable parameters.")
+    return {
+        "training_profile": MINISTRAL_TRAINING_PROFILE,
+        "components": component_metadata,
+        "trainable_parameter_tensors": len(trainable_names),
+        "trainable_parameter_count": sum(
+            parameter.numel()
+            for _name, parameter in model.named_parameters()
+            if parameter.requires_grad
+        ),
+    }
 
 
 def _start_run(
@@ -458,14 +566,25 @@ def _read_token_profile(
     return profile
 
 
-def _validate_training_dependencies() -> None:
+def _validate_training_dependencies(
+    config: DPOTrainingConfig | None = None,
+) -> None:
+    training_profile = (
+        config.model.training_profile if config is not None else None
+    )
     minimums = {
         "trl": (1, 9, 0),
-        "transformers": (4, 56, 1),
+        "transformers": (
+            (5, 14, 1)
+            if training_profile == MINISTRAL_TRAINING_PROFILE
+            else (4, 56, 1)
+        ),
         "datasets": (4, 1, 0),
         "accelerate": (1, 10, 1),
         "torch": (2, 8, 0),
     }
+    if training_profile == MINISTRAL_TRAINING_PROFILE:
+        minimums["mistral-common"] = (1, 8, 6)
     errors: list[str] = []
     installed: dict[str, tuple[str, tuple[int, int, int]]] = {}
     for package, minimum in minimums.items():
@@ -543,9 +662,17 @@ def _directory_hashes(root: Path) -> dict[str, dict[str, Any]]:
     }
 
 
-def _environment_metadata() -> dict[str, Any]:
+def _environment_metadata(
+    config: DPOTrainingConfig | None = None,
+) -> dict[str, Any]:
+    training_profile = (
+        config.model.training_profile if config is not None else None
+    )
     packages = {}
-    for package in ("trl", "transformers", "datasets", "accelerate", "torch"):
+    package_names = ["trl", "transformers", "datasets", "accelerate", "torch"]
+    if training_profile == MINISTRAL_TRAINING_PROFILE:
+        package_names.append("mistral-common")
+    for package in package_names:
         try:
             packages[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
