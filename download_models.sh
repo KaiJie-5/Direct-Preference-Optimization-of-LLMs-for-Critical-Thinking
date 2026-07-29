@@ -17,9 +17,13 @@ mkdir -p "$PROJECT_SCRATCH/logs/downloads"
 # hf download Qwen/Qwen3-4B-Instruct-2507 \
 #   --local-dir "$PROJECT_SCRATCH/models/student/Qwen__Qwen3-4B-Instruct-2507"
 
-echo "Downloading Ministral-3-3B-Instruct-2512 student model..."
-hf download mistralai/Ministral-3-3B-Instruct-2512 \
-  --local-dir "$PROJECT_SCRATCH/models/student/mistralai__Ministral-3-3B-Instruct-2512"
+# echo "Downloading Ministral-3-3B-Instruct-2512 student model..."
+# hf download mistralai/Ministral-3-3B-Instruct-2512 \
+#   --local-dir "$PROJECT_SCRATCH/models/student/mistralai__Ministral-3-3B-Instruct-2512"
+
+echo "Downloading Phi-4-mini-instruct student model..."
+hf download microsoft/Phi-4-mini-instruct \
+  --local-dir "$PROJECT_SCRATCH/models/student/microsoft__Phi-4-mini-instruct"
 
 # echo "Downloading Llama-3.2-3B-Instruct student model..."
 # hf download meta-llama/Llama-3.2-3B-Instruct \
