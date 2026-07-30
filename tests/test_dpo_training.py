@@ -33,7 +33,10 @@ from dpo_training.data import (
     validate_inputs,
 )
 from dpo_training.preflight import (
+    MinistralNativeTokenizers,
     assert_within_context_limit,
+    load_ministral_native_tokenizers,
+    load_tokenizer,
     render_and_profile,
     validate_model_context_limit,
     verify_saved_native_token_profile,
@@ -380,6 +383,165 @@ def test_ministral_dependency_guard_requires_new_transformers_and_mistral_common
     versions["mistral-common"] = "1.8.5"
     with pytest.raises(RuntimeError, match="transformers 5.13.0 is older"):
         _validate_training_dependencies(config)
+
+
+def test_standard_tokenizer_loader_keeps_auto_tokenizer_path(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(tmp_path)
+    tokenizer = FakeLoadableTokenizer("native template")
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeAutoTokenizer:
+        @classmethod
+        def from_pretrained(cls, path: str, **kwargs: Any) -> Any:
+            calls.append((path, kwargs))
+            return tokenizer
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(AutoTokenizer=FakeAutoTokenizer),
+    )
+
+    loaded = load_tokenizer(config)
+
+    assert loaded is tokenizer
+    assert calls == [
+        (
+            str(config.model.path),
+            {
+                "local_files_only": True,
+                "trust_remote_code": False,
+                "use_fast": True,
+            },
+        )
+    ]
+    assert loaded.padding_side == "left"
+
+
+def test_ministral_loader_uses_tokenizers_backend_and_exact_template(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(
+        tmp_path,
+        training_profile=MINISTRAL_TRAINING_PROFILE,
+        system_message="Resolved system message.",
+        native_date_metadata=False,
+    )
+    tokenizer = FakeLoadableTokenizer("native template")
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeTokenizersBackend:
+        @classmethod
+        def from_pretrained(cls, path: str, **kwargs: Any) -> Any:
+            calls.append((path, kwargs))
+            return tokenizer
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(TokenizersBackend=FakeTokenizersBackend),
+    )
+
+    loaded = load_tokenizer(config)
+
+    assert loaded is tokenizer
+    assert calls == [
+        (
+            str(config.model.path),
+            {
+                "local_files_only": True,
+                "trust_remote_code": False,
+            },
+        )
+    ]
+    assert loaded.padding_side == "left"
+
+
+@pytest.mark.parametrize(
+    ("template_state", "loaded_template", "error"),
+    [
+        ("missing", "native template", "Could not read Ministral chat template"),
+        ("empty", "", "Ministral chat template is empty"),
+        ("valid", None, "did not load chat_template.jinja"),
+        ("valid", "different template", "chat template differs"),
+    ],
+)
+def test_ministral_loader_rejects_invalid_template_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    template_state: str,
+    loaded_template: str | None,
+    error: str,
+) -> None:
+    config = _config(
+        tmp_path,
+        training_profile=MINISTRAL_TRAINING_PROFILE,
+        system_message="Resolved system message.",
+        native_date_metadata=False,
+    )
+    template_path = config.model.path / "chat_template.jinja"
+    if template_state == "missing":
+        template_path.unlink()
+    elif template_state == "empty":
+        template_path.write_text("", encoding="utf-8")
+
+    class FakeTokenizersBackend:
+        @classmethod
+        def from_pretrained(cls, _path: str, **_kwargs: Any) -> Any:
+            return FakeLoadableTokenizer(loaded_template)
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(TokenizersBackend=FakeTokenizersBackend),
+    )
+
+    with pytest.raises(ValueError, match=error):
+        load_tokenizer(config)
+
+
+def test_ministral_native_loader_uses_test_and_finetuning_modes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    config = _config(
+        tmp_path,
+        training_profile=MINISTRAL_TRAINING_PROFILE,
+        system_message="Resolved system message.",
+        native_date_metadata=False,
+    )
+    calls: list[tuple[str, dict[str, Any]]] = []
+
+    class FakeBackend:
+        @classmethod
+        def from_pretrained(cls, path: str, **kwargs: Any) -> Any:
+            calls.append((path, kwargs))
+            return types.SimpleNamespace(mode=kwargs["mode"])
+
+    monkeypatch.setitem(
+        sys.modules,
+        "transformers",
+        types.SimpleNamespace(MistralCommonBackend=FakeBackend),
+    )
+
+    tokenizers = load_ministral_native_tokenizers(config)
+
+    assert tokenizers.prompt.mode == "test"
+    assert tokenizers.completion.mode == "finetuning"
+    assert calls == [
+        (
+            str(config.model.path),
+            {"mode": "test", "local_files_only": True},
+        ),
+        (
+            str(config.model.path),
+            {"mode": "finetuning", "local_files_only": True},
+        ),
+    ]
 
 
 def test_validate_inputs_preserves_unicode_and_checks_every_aligned_hash(
@@ -754,7 +916,10 @@ def test_ministral_template_and_three_way_native_token_verification(
     rendered, profile = render_and_profile(
         [example],
         tokenizer=FakeMinistralTokenizer(),
-        native_tokenizer=FakeMistralCommonBackend(),
+        native_tokenizers=MinistralNativeTokenizers(
+            prompt=FakeMistralCommonBackend("test"),
+            completion=FakeMistralCommonBackend("finetuning"),
+        ),
         config=config,
         dataset_version="question_only",
     )
@@ -778,6 +943,20 @@ def test_ministral_template_and_three_way_native_token_verification(
         "no_think": False,
     }
     verification = profile["native_token_verification"]
+    assert verification["schema_version"] == (
+        "ministral_native_token_verification_v2"
+    )
+    assert verification["renderer_backend"] == "FakeMinistralTokenizer"
+    assert verification["chat_template_source"] == "chat_template.jinja"
+    assert verification["native_backends"] == {
+        "test": "FakeMistralCommonBackend",
+        "finetuning": "FakeMistralCommonBackend",
+    }
+    assert verification["native_modes"] == {
+        "prompt": "test",
+        "chosen_sequence": "finetuning",
+        "rejected_sequence": "finetuning",
+    }
     assert verification["row_count"] == 1
     assert verification["sequence_count"] == 3
     assert len(set(verification["token_id_sha256"].values())) == 1
@@ -786,7 +965,10 @@ def test_ministral_template_and_three_way_native_token_verification(
     verify_saved_native_token_profile(
         [example],
         tokenizer=FakeMinistralTokenizer(),
-        native_tokenizer=FakeMistralCommonBackend(),
+        native_tokenizers=MinistralNativeTokenizers(
+            prompt=FakeMistralCommonBackend("test"),
+            completion=FakeMistralCommonBackend("finetuning"),
+        ),
         config=config,
         profile=profile,
     )
@@ -804,17 +986,24 @@ def test_ministral_native_token_mismatch_fails_with_pair_identity(
     )
     example = _examples([("energy", "E1", ("record",))])[0]
 
-    with pytest.raises(
-        ValueError,
-        match=r"token verification failed.*pair.*line",
-    ):
+    with pytest.raises(ValueError) as exc_info:
         render_and_profile(
             [example],
             tokenizer=FakeMinistralTokenizer(),
-            native_tokenizer=MismatchedMistralCommonBackend(),
+            native_tokenizers=MinistralNativeTokenizers(
+                prompt=FakeMistralCommonBackend("test"),
+                completion=MismatchedMistralCommonBackend("finetuning"),
+            ),
             config=config,
             dataset_version="category_evidence",
         )
+    message = str(exc_info.value)
+    assert "token verification failed" in message
+    assert example.audit["pair_id"] in message
+    assert f"line {example.audit['line_number']}" in message
+    assert "chosen_sequence" in message
+    assert "native mode=finetuning" in message
+    assert "first mismatch index" in message
 
 
 def test_over_limit_profile_names_identity_and_fails(tmp_path: Path) -> None:
@@ -1500,6 +1689,44 @@ def test_ministral_phi_array_maps_all_experiments_and_guards_resume() -> None:
     assert 'python -m dpo_training.cli "${ARGS[@]}"' in script
 
 
+def test_dedicated_ministral_array_maps_both_datasets_and_guards_resume() -> None:
+    root = Path(__file__).resolve().parents[1]
+    script = (
+        root / "submit_job_dpo_training_ministral_3_3b_instruct_2512.slurm"
+    ).read_text(encoding="utf-8")
+
+    assert "#SBATCH --job-name=dpo_ministral_3b_2512" in script
+    assert "#SBATCH --partition=quad_h200" in script
+    assert "#SBATCH --account=ecs" in script
+    assert "#SBATCH --nodes=1" in script
+    assert "#SBATCH --ntasks-per-node=1" in script
+    assert "#SBATCH --gres=gpu:1" in script
+    assert "#SBATCH --cpus-per-task=12" in script
+    assert "#SBATCH --mem=200G" in script
+    assert "#SBATCH --time=2-12:00:00" in script
+    assert "#SBATCH --array=0-1%1" in script
+    assert "#SBATCH --output=dpo_ministral_3b_2512_%A_%a.out" in script
+    assert "#SBATCH --error=dpo_ministral_3b_2512_%A_%a.err" in script
+    assert (
+        "dpo_training_ministral_3_3b_instruct_2512.json" in script
+    )
+    assert "dpo_training_phi_4_mini_instruct.json" not in script
+    assert script.count('DATASET_VERSION="category_evidence"') == 1
+    assert script.count('DATASET_VERSION="question_only"') == 1
+    assert 'PREFLIGHT_ONLY="${PREFLIGHT_ONLY:-false}"' in script
+    assert 'RESUME_RUN_DIR="${RESUME_RUN_DIR:-}"' in script
+    assert "PREFLIGHT_ONLY=true cannot be combined with RESUME_RUN_DIR" in script
+    assert 'SLURM_ARRAY_TASK_COUNT:-0}" != "1"' in script
+    assert "Resume requires one task selected with sbatch --array=<task-id>" in script
+    assert "config.model.training_profile != MINISTRAL_TRAINING_PROFILE" in script
+    assert "_validate_training_dependencies(config)" in script
+    assert "--config \"${CONFIG_PATH}\"" in script
+    assert "--dataset-version \"${DATASET_VERSION}\"" in script
+    assert "ARGS+=(--preflight-only)" in script
+    assert "ARGS+=(--resume \"${RESUME_RUN_DIR}\")" in script
+    assert 'python -m dpo_training.cli "${ARGS[@]}"' in script
+
+
 def test_ministral_phi_documentation_records_audited_revisions_and_commands() -> None:
     root = Path(__file__).resolve().parents[1]
     text = (root / "docs" / "dpo_training.md").read_text(encoding="utf-8")
@@ -1507,9 +1734,17 @@ def test_ministral_phi_documentation_records_audited_revisions_and_commands() ->
     assert "b35d4dfe56c142746f54dbd64f579faab2744308" in text
     assert "cfbefacb99257ffa30c83adab238a50856ac3083" in text
     assert 'python -m pip install -e ".[training-ministral]"' in text
+    assert (
+        "sbatch submit_job_dpo_training_ministral_3_3b_instruct_2512.slurm"
+        in text
+    )
     assert "sbatch submit_job_dpo_training_ministral_phi_array.slurm" in text
     assert "sbatch --array=0" in text
     assert "PREFLIGHT_ONLY=true" in text
+    assert "MistralCommonBackend(mode=\"test\")" in text
+    assert '`mode="finetuning"`' in text
+    assert "array job `1335887`" in text
+    assert "no rendered snapshots, token profile," in text
 
 
 def test_pyproject_registers_cli_package_and_pinned_training_dependencies() -> None:
@@ -1566,6 +1801,16 @@ class FakeTokenizer:
         assert add_special_tokens is False
         assert truncation is False
         return {"input_ids": list(range(len(text.split())))}
+
+
+class FakeLoadableTokenizer:
+    model_max_length = 262144
+    pad_token = "<pad>"
+    eos_token = "</s>"
+    padding_side = "right"
+
+    def __init__(self, chat_template: str | None) -> None:
+        self.chat_template = chat_template
 
 
 class FakeQwenTokenizer:
@@ -1687,10 +1932,32 @@ class FakeMinistralTokenizer:
 
 
 class FakeMistralCommonBackend(FakeMinistralTokenizer):
-    pass
+    def __init__(self, mode: str) -> None:
+        self.mode = mode
+
+    def apply_chat_template(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        tokenize: bool,
+        add_generation_prompt: bool,
+        return_dict: bool = False,
+    ) -> Any:
+        if self.mode == "test":
+            assert messages[-1]["role"] == "user"
+        elif self.mode == "finetuning":
+            assert messages[-1]["role"] == "assistant"
+        else:
+            raise AssertionError(f"Unexpected native mode: {self.mode}")
+        return super().apply_chat_template(
+            messages,
+            tokenize=tokenize,
+            add_generation_prompt=add_generation_prompt,
+            return_dict=return_dict,
+        )
 
 
-class MismatchedMistralCommonBackend(FakeMinistralTokenizer):
+class MismatchedMistralCommonBackend(FakeMistralCommonBackend):
     def apply_chat_template(
         self,
         messages: list[dict[str, str]],

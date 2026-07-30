@@ -148,8 +148,19 @@ dates are explicit rather than generated dynamically. It does not receive
 Each completion is the unchanged source assistant text followed by `</s>`.
 For every real prompt, chosen sequence, and rejected sequence, preflight
 requires identical token IDs from direct Hugging Face template tokenization,
-rendered-string tokenization, and `MistralCommonBackend`. The run records the
-verification count, backend version, and aggregate token-ID hashes.
+rendered-string tokenization, and `MistralCommonBackend`. The string renderer
+is explicitly loaded as `TokenizersBackend` from `tokenizer.json` and must
+load exactly the checkpoint's standalone `chat_template.jinja`. This avoids
+Transformers 5 automatically selecting the native backend, whose
+`tokenize=false` output is not used as DPO training text.
+
+Native verification is mode-aware: prompt-only sequences use
+`MistralCommonBackend(mode="test")`, while complete chosen and rejected
+sequences use `mode="finetuning"`. This is necessary because mistral-common's
+test mode expects a generation request ending in a user message, whereas its
+finetuning mode requires an assistant message at the end. The run records the
+renderer, template source and hash, both native modes and backend classes,
+verification count, dependency versions, and aggregate token-ID hashes.
 
 Phi uses `system_message: null`, `native_date_metadata: false`, and the
 integrated Transformers implementation with `trust_remote_code=false`. It
@@ -264,8 +275,59 @@ sbatch --export=ALL,DATASET_VERSION=question_only \
   submit_job_dpo_training_llama_3_2_3b_instruct.slurm
 ```
 
-Ministral and Phi share a four-task array. The checked-in `%1` concurrency
+Use the dedicated Ministral launcher for the two corrected
+Ministral-3-3B-Instruct-2512 experiments. Its checked-in `%1` concurrency
 limit runs one task at a time:
+
+| Task ID | Dataset |
+| ---: | --- |
+| 0 | category-evidence |
+| 1 | question-only |
+
+Submit both fresh training runs:
+
+```bash
+sbatch submit_job_dpo_training_ministral_3_3b_instruct_2512.slurm
+```
+
+Run validation, rendering, three-way token verification, and token profiling
+for both tasks without loading model weights:
+
+```bash
+sbatch --export=ALL,PREFLIGHT_ONLY=true \
+  submit_job_dpo_training_ministral_3_3b_instruct_2512.slurm
+```
+
+Submit one dataset only:
+
+```bash
+# category-evidence
+sbatch --array=0 \
+  submit_job_dpo_training_ministral_3_3b_instruct_2512.slurm
+
+# question-only
+sbatch --array=1 \
+  submit_job_dpo_training_ministral_3_3b_instruct_2512.slurm
+```
+
+Resume a future interrupted run only when it has a valid training checkpoint,
+and select the matching single task:
+
+```bash
+sbatch --array=0 \
+  --export=ALL,RESUME_RUN_DIR=/iridisfs/scratch/kjl1a21/DPO/models/student/dpo_runs/existing_ministral_run \
+  submit_job_dpo_training_ministral_3_3b_instruct_2512.slurm
+```
+
+Do not resume either failed run from array job `1335887`. Those runs stopped
+at tokenizer initialization and contain no rendered snapshots, token profile,
+or training checkpoint; the corrected launcher must create fresh run
+directories. `PREFLIGHT_ONLY=true` cannot be combined with resume, and
+array-wide resume is rejected because one run directory cannot identify two
+independent experiments.
+
+The earlier combined Ministral/Phi launcher is retained as reproducibility
+history for the already completed Phi experiments. Its mapping was:
 
 | Task ID | Model | Dataset |
 | ---: | --- | --- |
@@ -274,37 +336,27 @@ limit runs one task at a time:
 | 2 | Phi-4-mini-instruct | category-evidence |
 | 3 | Phi-4-mini-instruct | question-only |
 
-Submit all four experiments:
+Historical combined submission:
 
 ```bash
 sbatch submit_job_dpo_training_ministral_phi_array.slurm
 ```
 
-Run validation, rendering, and token profiling for all four tasks without
-loading model weights:
+Historical combined preflight:
 
 ```bash
 sbatch --export=ALL,PREFLIGHT_ONLY=true \
   submit_job_dpo_training_ministral_phi_array.slurm
 ```
 
-Submit one task by overriding the array selection, for example Phi
-category-evidence:
+Historical single-task example for Phi category-evidence:
 
 ```bash
 sbatch --array=2 submit_job_dpo_training_ministral_phi_array.slurm
 ```
 
-Resume exactly one interrupted task by selecting its original task ID:
-
-```bash
-sbatch --array=0 \
-  --export=ALL,RESUME_RUN_DIR=/iridisfs/scratch/kjl1a21/DPO/models/student/dpo_runs/existing_ministral_run \
-  submit_job_dpo_training_ministral_phi_array.slurm
-```
-
-Array-wide resume is rejected because one `RESUME_RUN_DIR` cannot identify
-four independent runs. `PREFLIGHT_ONLY=true` cannot be combined with resume.
+The combined launcher is no longer the recommended way to start new
+Ministral jobs.
 
 To perform only validation, splitting, rendering, and token profiling in the
 same Slurm environment:

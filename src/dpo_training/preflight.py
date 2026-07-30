@@ -20,20 +20,42 @@ class RenderedExample:
     audit: dict[str, Any]
 
 
+@dataclass(frozen=True, slots=True)
+class MinistralNativeTokenizers:
+    prompt: Any
+    completion: Any
+
+
 def load_tokenizer(config: DPOTrainingConfig) -> Any:
-    try:
-        from transformers import AutoTokenizer
-    except ImportError as exc:
-        raise RuntimeError(
-            "Transformers is required for DPO token preflight. Install the "
-            "project's training optional dependencies."
-        ) from exc
-    tokenizer = AutoTokenizer.from_pretrained(
-        str(config.model.path),
-        local_files_only=config.model.local_files_only,
-        trust_remote_code=config.model.trust_remote_code,
-        use_fast=True,
-    )
+    if config.model.training_profile == MINISTRAL_TRAINING_PROFILE:
+        try:
+            from transformers import TokenizersBackend
+        except ImportError as exc:
+            raise RuntimeError(
+                "The Ministral training profile requires Transformers with "
+                "TokenizersBackend support. Install the project's "
+                "training-ministral optional dependency group."
+            ) from exc
+        tokenizer = TokenizersBackend.from_pretrained(
+            str(config.model.path),
+            local_files_only=config.model.local_files_only,
+            trust_remote_code=config.model.trust_remote_code,
+        )
+        _verify_ministral_chat_template(tokenizer, config.model.path)
+    else:
+        try:
+            from transformers import AutoTokenizer
+        except ImportError as exc:
+            raise RuntimeError(
+                "Transformers is required for DPO token preflight. Install the "
+                "project's training optional dependencies."
+            ) from exc
+        tokenizer = AutoTokenizer.from_pretrained(
+            str(config.model.path),
+            local_files_only=config.model.local_files_only,
+            trust_remote_code=config.model.trust_remote_code,
+            use_fast=True,
+        )
     tokenizer.padding_side = "left"
     if tokenizer.pad_token is None:
         if tokenizer.eos_token is None:
@@ -42,6 +64,28 @@ def load_tokenizer(config: DPOTrainingConfig) -> Any:
     if not getattr(tokenizer, "chat_template", None):
         raise ValueError("The configured model tokenizer has no chat template.")
     return tokenizer
+
+
+def _verify_ministral_chat_template(tokenizer: Any, model_path: Path) -> None:
+    template_path = model_path / "chat_template.jinja"
+    try:
+        expected = template_path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ValueError(
+            f"Could not read Ministral chat template {template_path}: {exc}"
+        ) from exc
+    if not expected.strip():
+        raise ValueError(f"Ministral chat template is empty: {template_path}")
+    loaded = getattr(tokenizer, "chat_template", None)
+    if not isinstance(loaded, str) or not loaded:
+        raise ValueError(
+            "Ministral TokenizersBackend did not load chat_template.jinja."
+        )
+    if loaded != expected:
+        raise ValueError(
+            "Ministral TokenizersBackend chat template differs from "
+            f"{template_path}."
+        )
 
 
 def validate_model_context_limit(config: DPOTrainingConfig) -> dict[str, int]:
@@ -78,7 +122,9 @@ def validate_model_context_limit(config: DPOTrainingConfig) -> dict[str, int]:
     }
 
 
-def load_ministral_native_tokenizer(config: DPOTrainingConfig) -> Any:
+def load_ministral_native_tokenizers(
+    config: DPOTrainingConfig,
+) -> MinistralNativeTokenizers:
     if config.model.training_profile != MINISTRAL_TRAINING_PROFILE:
         raise ValueError(
             "The native Ministral tokenizer is only valid for the Ministral "
@@ -92,9 +138,20 @@ def load_ministral_native_tokenizer(config: DPOTrainingConfig) -> Any:
             "MistralCommonBackend and mistral-common>=1.8.6. Install the "
             "project's training-ministral optional dependency group."
         ) from exc
-    return MistralCommonBackend.from_pretrained(
-        str(config.model.path),
-        local_files_only=config.model.local_files_only,
+    common_kwargs = {
+        "local_files_only": config.model.local_files_only,
+    }
+    return MinistralNativeTokenizers(
+        prompt=MistralCommonBackend.from_pretrained(
+            str(config.model.path),
+            mode="test",
+            **common_kwargs,
+        ),
+        completion=MistralCommonBackend.from_pretrained(
+            str(config.model.path),
+            mode="finetuning",
+            **common_kwargs,
+        ),
     )
 
 
@@ -104,7 +161,7 @@ def render_and_profile(
     tokenizer: Any,
     config: DPOTrainingConfig,
     dataset_version: str,
-    native_tokenizer: Any | None = None,
+    native_tokenizers: MinistralNativeTokenizers | None = None,
 ) -> tuple[list[RenderedExample], dict[str, Any]]:
     values = tuple(examples)
     rendered: list[RenderedExample] = []
@@ -123,7 +180,7 @@ def render_and_profile(
     native_verifier = _native_verifier(
         config,
         tokenizer=tokenizer,
-        native_tokenizer=native_tokenizer,
+        native_tokenizers=native_tokenizers,
     )
 
     for example in values:
@@ -248,7 +305,7 @@ def verify_saved_native_token_profile(
     tokenizer: Any,
     config: DPOTrainingConfig,
     profile: dict[str, Any],
-    native_tokenizer: Any | None = None,
+    native_tokenizers: MinistralNativeTokenizers | None = None,
 ) -> None:
     if config.model.training_profile != MINISTRAL_TRAINING_PROFILE:
         return
@@ -261,7 +318,7 @@ def verify_saved_native_token_profile(
     verifier = _native_verifier(
         config,
         tokenizer=tokenizer,
-        native_tokenizer=native_tokenizer,
+        native_tokenizers=native_tokenizers,
     )
     if verifier is None:  # pragma: no cover - guarded by the profile check above
         raise AssertionError("Ministral verifier was not created.")
@@ -370,10 +427,10 @@ class _NativeTokenVerifier:
         self,
         *,
         tokenizer: Any,
-        native_tokenizer: Any,
+        native_tokenizers: MinistralNativeTokenizers,
     ) -> None:
         self.tokenizer = tokenizer
-        self.native_tokenizer = native_tokenizer
+        self.native_tokenizers = native_tokenizers
         self.sequence_count = 0
         self._digests = {
             "huggingface_direct": sha256(),
@@ -390,6 +447,7 @@ class _NativeTokenVerifier:
         sequence_type: str,
         audit: dict[str, Any],
     ) -> None:
+        native_tokenizer, native_mode = self._native_tokenizer(sequence_type)
         direct_ids = _chat_template_input_ids(
             self.tokenizer,
             messages,
@@ -403,7 +461,7 @@ class _NativeTokenVerifier:
             )
         )
         native_ids = _chat_template_input_ids(
-            self.native_tokenizer,
+            native_tokenizer,
             messages,
             add_generation_prompt=add_generation_prompt,
         )
@@ -412,7 +470,8 @@ class _NativeTokenVerifier:
             raise ValueError(
                 "Ministral token verification failed for "
                 f"{sequence_type} at pair {audit['pair_id']} "
-                f"(line {audit['line_number']}, first mismatch index "
+                f"(line {audit['line_number']}, native mode={native_mode}, "
+                "first mismatch index "
                 f"{mismatch_index}, lengths: Hugging Face direct={len(direct_ids)}, "
                 f"rendered string={len(rendered_ids)}, "
                 f"mistral-common={len(native_ids)})."
@@ -421,6 +480,7 @@ class _NativeTokenVerifier:
             "line_number": audit["line_number"],
             "pair_id": audit["pair_id"],
             "sequence_type": sequence_type,
+            "native_mode": native_mode,
         }
         encoded = json.dumps(
             {**identity, "input_ids": direct_ids},
@@ -433,6 +493,15 @@ class _NativeTokenVerifier:
             digest.update(b"\n")
         self.sequence_count += 1
 
+    def _native_tokenizer(self, sequence_type: str) -> tuple[Any, str]:
+        if sequence_type == "prompt":
+            return self.native_tokenizers.prompt, "test"
+        if sequence_type in {"chosen_sequence", "rejected_sequence"}:
+            return self.native_tokenizers.completion, "finetuning"
+        raise ValueError(
+            f"Unsupported Ministral sequence type: {sequence_type}"
+        )
+
     def metadata(self, *, row_count: int) -> dict[str, Any]:
         try:
             mistral_common_version = importlib.metadata.version("mistral-common")
@@ -443,9 +512,19 @@ class _NativeTokenVerifier:
         except importlib.metadata.PackageNotFoundError:
             transformers_version = None
         return {
-            "schema_version": "ministral_native_token_verification_v1",
+            "schema_version": "ministral_native_token_verification_v2",
             "training_profile": MINISTRAL_TRAINING_PROFILE,
-            "native_backend": type(self.native_tokenizer).__name__,
+            "renderer_backend": type(self.tokenizer).__name__,
+            "chat_template_source": "chat_template.jinja",
+            "native_backends": {
+                "test": type(self.native_tokenizers.prompt).__name__,
+                "finetuning": type(self.native_tokenizers.completion).__name__,
+            },
+            "native_modes": {
+                "prompt": "test",
+                "chosen_sequence": "finetuning",
+                "rejected_sequence": "finetuning",
+            },
             "mistral_common_version": mistral_common_version,
             "transformers_version": transformers_version,
             "row_count": row_count,
@@ -461,15 +540,15 @@ def _native_verifier(
     config: DPOTrainingConfig,
     *,
     tokenizer: Any,
-    native_tokenizer: Any | None,
+    native_tokenizers: MinistralNativeTokenizers | None,
 ) -> _NativeTokenVerifier | None:
     if config.model.training_profile != MINISTRAL_TRAINING_PROFILE:
         return None
-    if native_tokenizer is None:
-        native_tokenizer = load_ministral_native_tokenizer(config)
+    if native_tokenizers is None:
+        native_tokenizers = load_ministral_native_tokenizers(config)
     return _NativeTokenVerifier(
         tokenizer=tokenizer,
-        native_tokenizer=native_tokenizer,
+        native_tokenizers=native_tokenizers,
     )
 
 
