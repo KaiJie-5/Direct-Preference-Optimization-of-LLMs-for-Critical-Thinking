@@ -418,6 +418,7 @@ def test_standard_tokenizer_loader_keeps_auto_tokenizer_path(
             },
         )
     ]
+    assert "fix_mistral_regex" not in calls[0][1]
     assert loaded.padding_side == "left"
 
 
@@ -455,6 +456,7 @@ def test_ministral_loader_uses_tokenizers_backend_and_exact_template(
             {
                 "local_files_only": True,
                 "trust_remote_code": False,
+                "fix_mistral_regex": True,
             },
         )
     ]

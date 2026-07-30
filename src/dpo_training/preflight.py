@@ -40,6 +40,7 @@ def load_tokenizer(config: DPOTrainingConfig) -> Any:
             str(config.model.path),
             local_files_only=config.model.local_files_only,
             trust_remote_code=config.model.trust_remote_code,
+            fix_mistral_regex=True,
         )
         _verify_ministral_chat_template(tokenizer, config.model.path)
     else:

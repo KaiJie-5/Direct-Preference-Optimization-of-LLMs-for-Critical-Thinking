@@ -154,6 +154,16 @@ load exactly the checkpoint's standalone `chat_template.jinja`. This avoids
 Transformers 5 automatically selecting the native backend, whose
 `tokenize=false` output is not used as DPO training text.
 
+The Ministral renderer is loaded with `fix_mistral_regex=True`, following the
+[Transformers tokenizer implementation](https://github.com/huggingface/transformers/blob/v5.14.1/src/transformers/tokenization_utils_tokenizers.py)
+and [Mistral's regex correction guidance](https://huggingface.co/mistralai/Mistral-Small-3.1-24B-Instruct-2503/discussions/84).
+Transformers 5.14.1 otherwise warns because the checkpoint records the
+development version `5.0.0.dev0`, even though its `tokenizer.json` and
+`tekken.json` already contain the corrected Mistral pre-tokenization pattern.
+The official flag applies that same corrected pattern explicitly and
+suppresses the false-positive warning. It is restricted to the Ministral
+profile; standard model tokenizers do not receive it.
+
 Native verification is mode-aware: prompt-only sequences use
 `MistralCommonBackend(mode="test")`, while complete chosen and rejected
 sequences use `mode="finetuning"`. This is necessary because mistral-common's
@@ -319,12 +329,13 @@ sbatch --array=0 \
   submit_job_dpo_training_ministral_3_3b_instruct_2512.slurm
 ```
 
-Do not resume either failed run from array job `1335887`. Those runs stopped
-at tokenizer initialization and contain no rendered snapshots, token profile,
-or training checkpoint; the corrected launcher must create fresh run
-directories. `PREFLIGHT_ONLY=true` cannot be combined with resume, and
-array-wide resume is rejected because one run directory cannot identify two
-independent experiments.
+Do not resume either failed run from array job `1335887` or the incomplete
+`ministral_3_3b_instruct_2512_reflective_dpo_category_evidence_20260730_055325`
+run. They stopped before producing the artifacts required for resume, so the
+corrected tokenizer path must start fresh run directories.
+`PREFLIGHT_ONLY=true` cannot be combined with resume, and array-wide resume is
+rejected because one run directory cannot identify two independent
+experiments.
 
 The earlier combined Ministral/Phi launcher is retained as reproducibility
 history for the already completed Phi experiments. Its mapping was:
