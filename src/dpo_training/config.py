@@ -37,9 +37,16 @@ class SplitConfig:
     expected_test_record_count: int
     expected_train_pair_count: int
     expected_test_pair_count: int
+    strategy: str = "transcript_fraction"
+    train_datasets: tuple[str, ...] = ()
+    test_datasets: tuple[str, ...] = ()
+    expected_train_record_counts: tuple[tuple[str, int], ...] = ()
 
     def expected_test_counts(self) -> dict[str, int]:
         return dict(self.expected_test_record_counts)
+
+    def expected_train_counts(self) -> dict[str, int]:
+        return dict(self.expected_train_record_counts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -85,6 +92,8 @@ class DPOTrainingConfig:
     dataset_files: tuple[tuple[str, str], ...]
     audit_filename: str
     source_manifest_filename: str
+    predefined_dataset_files: tuple[tuple[str, str, str], ...] = ()
+    predefined_audit_files: tuple[tuple[str, str], ...] = ()
 
     def dataset_file(self, version: str) -> Path:
         mapping = dict(self.dataset_files)
@@ -95,6 +104,26 @@ class DPOTrainingConfig:
             )
         return self.input_run_dir / mapping[version]
 
+    def predefined_dataset_file(self, version: str, split: str) -> Path:
+        if split not in {"train", "test"}:
+            raise ValueError("Predefined dataset split must be 'train' or 'test'.")
+        mapping = {
+            item_version: {"train": train, "test": test}
+            for item_version, train, test in self.predefined_dataset_files
+        }
+        if version not in mapping:
+            raise ValueError(
+                f"Unsupported predefined dataset version {version!r}; expected "
+                f"one of {sorted(mapping)}."
+            )
+        return self.input_run_dir / mapping[version][split]
+
+    def predefined_audit_path(self, split: str) -> Path:
+        mapping = dict(self.predefined_audit_files)
+        if split not in mapping:
+            raise ValueError(f"No predefined audit file configured for {split!r}.")
+        return self.input_run_dir / mapping[split]
+
     @property
     def audit_path(self) -> Path:
         return self.input_run_dir / self.audit_filename
@@ -104,33 +133,42 @@ class DPOTrainingConfig:
         return self.input_run_dir / self.source_manifest_filename
 
 
-def load_training_config(path: Path) -> DPOTrainingConfig:
+def load_training_config(
+    path: Path, *, input_run_dir_override: Path | None = None
+) -> DPOTrainingConfig:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
         raise ValueError(f"Could not read DPO training config {path}: {exc}") from exc
     if not isinstance(payload, dict):
         raise ValueError("DPO training config must be a JSON object.")
-    _require_exact_keys(
-        payload,
-        {
-            "run_name",
-            "input_run_dir",
-            "output_root",
-            "model",
-            "dataset_files",
-            "audit_filename",
-            "source_manifest_filename",
-            "chat",
-            "split",
-            "trainer",
-        },
-        "config",
-    )
+    base_keys = {
+        "run_name",
+        "input_run_dir",
+        "output_root",
+        "model",
+        "dataset_files",
+        "source_manifest_filename",
+        "chat",
+        "split",
+        "trainer",
+    }
+    actual_keys = set(payload)
+    if actual_keys == base_keys | {"audit_filename"}:
+        predefined_layout = False
+    elif actual_keys == base_keys | {"audit_files"}:
+        predefined_layout = True
+    else:
+        _require_exact_keys(payload, base_keys | {"audit_filename"}, "config")
+        raise AssertionError("unreachable")
 
     base_dir = path.parent
     run_name = _string(payload, "run_name")
-    input_run_dir = _path(payload, "input_run_dir", base_dir)
+    input_run_dir = (
+        input_run_dir_override.resolve()
+        if input_run_dir_override is not None
+        else _path(payload, "input_run_dir", base_dir)
+    )
     output_root = _path(payload, "output_root", base_dir)
 
     model_payload = _object(payload, "model")
@@ -185,9 +223,9 @@ def load_training_config(path: Path) -> DPOTrainingConfig:
     )
 
     split_payload = _object(payload, "split")
-    _require_exact_keys(
-        split_payload,
-        {
+    split_strategy = split_payload.get("strategy", "transcript_fraction")
+    if split_strategy == "transcript_fraction":
+        legacy_split_keys = {
             "test_fraction",
             "seed",
             "group_fields",
@@ -197,56 +235,121 @@ def load_training_config(path: Path) -> DPOTrainingConfig:
             "expected_test_record_count",
             "expected_train_pair_count",
             "expected_test_pair_count",
-        },
-        "split",
-    )
-    group_fields = split_payload.get("group_fields")
-    if (
-        not isinstance(group_fields, list)
-        or not group_fields
-        or not all(isinstance(value, str) and value for value in group_fields)
-    ):
-        raise ValueError("split.group_fields must be a non-empty string list.")
-    expected_counts_payload = _object(split_payload, "expected_test_record_counts")
-    expected_counts: list[tuple[str, int]] = []
-    for dataset, count in expected_counts_payload.items():
-        if not isinstance(dataset, str) or not dataset:
-            raise ValueError("Expected split dataset names must be non-empty strings.")
-        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
-            raise ValueError(
-                f"Expected test count for {dataset!r} must be a non-negative integer."
-            )
-        expected_counts.append((dataset, count))
-    test_fraction = _number(split_payload, "test_fraction")
-    if not 0.0 < test_fraction < 1.0:
-        raise ValueError("split.test_fraction must be between zero and one.")
-    optimize_for = _string(split_payload, "optimize_for")
-    if optimize_for != "source_records":
-        raise ValueError("split.optimize_for must be 'source_records'.")
-    if tuple(group_fields) != ("dataset", "transcript_id"):
-        raise ValueError(
-            "split.group_fields must be ['dataset', 'transcript_id'] to prevent "
-            "interview-context leakage."
+        }
+        allowed_legacy_keys = legacy_split_keys | {"strategy"}
+        if "strategy" in split_payload:
+            _require_exact_keys(split_payload, allowed_legacy_keys, "split")
+        else:
+            _require_exact_keys(split_payload, legacy_split_keys, "split")
+        group_fields = split_payload.get("group_fields")
+        if (
+            not isinstance(group_fields, list)
+            or not group_fields
+            or not all(isinstance(value, str) and value for value in group_fields)
+        ):
+            raise ValueError("split.group_fields must be a non-empty string list.")
+        expected_counts = _record_count_items(
+            split_payload, "expected_test_record_counts", allow_zero=True
         )
-    split = SplitConfig(
-        test_fraction=test_fraction,
-        seed=_nonnegative_int(split_payload, "seed"),
-        group_fields=tuple(group_fields),
-        optimize_for=optimize_for,
-        expected_test_record_counts=tuple(expected_counts),
-        expected_train_record_count=_positive_int(
-            split_payload, "expected_train_record_count"
-        ),
-        expected_test_record_count=_positive_int(
-            split_payload, "expected_test_record_count"
-        ),
-        expected_train_pair_count=_positive_int(
+        test_fraction = _number(split_payload, "test_fraction")
+        if not 0.0 < test_fraction < 1.0:
+            raise ValueError("split.test_fraction must be between zero and one.")
+        optimize_for = _string(split_payload, "optimize_for")
+        if optimize_for != "source_records":
+            raise ValueError("split.optimize_for must be 'source_records'.")
+        if tuple(group_fields) != ("dataset", "transcript_id"):
+            raise ValueError(
+                "split.group_fields must be ['dataset', 'transcript_id'] to prevent "
+                "interview-context leakage."
+            )
+        split = SplitConfig(
+            test_fraction=test_fraction,
+            seed=_nonnegative_int(split_payload, "seed"),
+            group_fields=tuple(group_fields),
+            optimize_for=optimize_for,
+            expected_test_record_counts=tuple(expected_counts),
+            expected_train_record_count=_positive_int(
+                split_payload, "expected_train_record_count"
+            ),
+            expected_test_record_count=_positive_int(
+                split_payload, "expected_test_record_count"
+            ),
+            expected_train_pair_count=_positive_int(
+                split_payload, "expected_train_pair_count"
+            ),
+            expected_test_pair_count=_positive_int(
+                split_payload, "expected_test_pair_count"
+            ),
+        )
+    elif split_strategy == "predefined_files":
+        _require_exact_keys(
+            split_payload,
+            {
+                "strategy",
+                "seed",
+                "train_datasets",
+                "test_datasets",
+                "expected_train_record_counts",
+                "expected_test_record_counts",
+                "expected_train_pair_count",
+                "expected_test_pair_count",
+            },
+            "split",
+        )
+        train_datasets = _unique_string_list(split_payload, "train_datasets")
+        test_datasets = _unique_string_list(split_payload, "test_datasets")
+        if set(train_datasets) & set(test_datasets):
+            raise ValueError("Predefined train and test datasets must be disjoint.")
+        expected_train_counts = _record_count_items(
+            split_payload, "expected_train_record_counts"
+        )
+        expected_test_counts = _record_count_items(
+            split_payload, "expected_test_record_counts"
+        )
+        if set(dict(expected_train_counts)) != set(train_datasets):
+            raise ValueError("Expected train counts must match train_datasets.")
+        if set(dict(expected_test_counts)) != set(test_datasets):
+            raise ValueError("Expected test counts must match test_datasets.")
+        expected_train_pair_count = _positive_int(
             split_payload, "expected_train_pair_count"
-        ),
-        expected_test_pair_count=_positive_int(
+        )
+        expected_test_pair_count = _positive_int(
             split_payload, "expected_test_pair_count"
-        ),
-    )
+        )
+        if expected_train_pair_count != sum(dict(expected_train_counts).values()) * 4:
+            raise ValueError(
+                "Predefined expected_train_pair_count must be four times the "
+                "train record count."
+            )
+        if expected_test_pair_count != sum(dict(expected_test_counts).values()) * 4:
+            raise ValueError(
+                "Predefined expected_test_pair_count must be four times the "
+                "test record count."
+            )
+        split = SplitConfig(
+            test_fraction=0.0,
+            seed=_nonnegative_int(split_payload, "seed"),
+            group_fields=(),
+            optimize_for="predefined_files",
+            expected_test_record_counts=tuple(expected_test_counts),
+            expected_train_record_count=sum(dict(expected_train_counts).values()),
+            expected_test_record_count=sum(dict(expected_test_counts).values()),
+            expected_train_pair_count=expected_train_pair_count,
+            expected_test_pair_count=expected_test_pair_count,
+            strategy="predefined_files",
+            train_datasets=train_datasets,
+            test_datasets=test_datasets,
+            expected_train_record_counts=tuple(expected_train_counts),
+        )
+    else:
+        raise ValueError(
+            "split.strategy must be 'transcript_fraction' or 'predefined_files'."
+        )
+    if predefined_layout != (split.strategy == "predefined_files"):
+        raise ValueError(
+            "Predefined split strategy requires nested dataset_files and audit_files; "
+            "legacy splits require audit_filename."
+        )
 
     trainer_payload = _object(payload, "trainer")
     _require_exact_keys(
@@ -349,10 +452,39 @@ def load_training_config(path: Path) -> DPOTrainingConfig:
         raise ValueError(
             "dataset_files must contain exactly category_evidence and question_only."
         )
-    dataset_files = tuple(
-        (version, _filename(dataset_payload, version))
-        for version in DATASET_VERSIONS
-    )
+    dataset_files: tuple[tuple[str, str], ...] = ()
+    predefined_dataset_files: tuple[tuple[str, str, str], ...] = ()
+    predefined_audit_files: tuple[tuple[str, str], ...] = ()
+    audit_filename = ""
+    if split.strategy == "predefined_files":
+        predefined_values: list[tuple[str, str, str]] = []
+        for version in DATASET_VERSIONS:
+            value = dataset_payload.get(version)
+            if not isinstance(value, dict):
+                raise ValueError(
+                    f"dataset_files.{version} must be an object with train/test files."
+                )
+            _require_exact_keys(value, {"train", "test"}, f"dataset_files.{version}")
+            predefined_values.append(
+                (
+                    version,
+                    _filename(value, "train"),
+                    _filename(value, "test"),
+                )
+            )
+        audit_payload = _object(payload, "audit_files")
+        _require_exact_keys(audit_payload, {"train", "test"}, "audit_files")
+        predefined_dataset_files = tuple(predefined_values)
+        predefined_audit_files = tuple(
+            (split_name, _filename(audit_payload, split_name))
+            for split_name in ("train", "test")
+        )
+    else:
+        dataset_files = tuple(
+            (version, _filename(dataset_payload, version))
+            for version in DATASET_VERSIONS
+        )
+        audit_filename = _filename(payload, "audit_filename")
 
     return DPOTrainingConfig(
         run_name=run_name,
@@ -363,8 +495,10 @@ def load_training_config(path: Path) -> DPOTrainingConfig:
         split=split,
         trainer=trainer,
         dataset_files=dataset_files,
-        audit_filename=_filename(payload, "audit_filename"),
+        audit_filename=audit_filename,
         source_manifest_filename=_filename(payload, "source_manifest_filename"),
+        predefined_dataset_files=predefined_dataset_files,
+        predefined_audit_files=predefined_audit_files,
     )
 
 
@@ -375,12 +509,69 @@ def config_to_jsonable(config: DPOTrainingConfig) -> dict[str, Any]:
     payload["model"]["path"] = str(config.model.path)
     if config.model.training_profile is None:
         payload["model"].pop("training_profile")
-    payload["split"]["group_fields"] = list(config.split.group_fields)
-    payload["split"]["expected_test_record_counts"] = (
-        config.split.expected_test_counts()
-    )
-    payload["dataset_files"] = dict(config.dataset_files)
+    if config.split.strategy == "predefined_files":
+        payload["split"] = {
+            "strategy": "predefined_files",
+            "seed": config.split.seed,
+            "train_datasets": list(config.split.train_datasets),
+            "test_datasets": list(config.split.test_datasets),
+            "expected_train_record_counts": config.split.expected_train_counts(),
+            "expected_test_record_counts": config.split.expected_test_counts(),
+            "expected_train_pair_count": config.split.expected_train_pair_count,
+            "expected_test_pair_count": config.split.expected_test_pair_count,
+        }
+        payload["dataset_files"] = {
+            version: {"train": train, "test": test}
+            for version, train, test in config.predefined_dataset_files
+        }
+        payload["audit_files"] = dict(config.predefined_audit_files)
+        payload.pop("audit_filename")
+    else:
+        payload["split"].pop("strategy")
+        payload["split"].pop("train_datasets")
+        payload["split"].pop("test_datasets")
+        payload["split"].pop("expected_train_record_counts")
+        payload["split"]["group_fields"] = list(config.split.group_fields)
+        payload["split"]["expected_test_record_counts"] = (
+            config.split.expected_test_counts()
+        )
+        payload["dataset_files"] = dict(config.dataset_files)
+    payload.pop("predefined_dataset_files")
+    payload.pop("predefined_audit_files")
     return payload
+
+
+def _unique_string_list(payload: dict[str, Any], key: str) -> tuple[str, ...]:
+    value = payload.get(key)
+    if (
+        not isinstance(value, list)
+        or not value
+        or not all(isinstance(item, str) and item for item in value)
+        or len(set(value)) != len(value)
+    ):
+        raise ValueError(f"Config field {key!r} must be a unique non-empty string list.")
+    return tuple(value)
+
+
+def _record_count_items(
+    payload: dict[str, Any], key: str, *, allow_zero: bool = False
+) -> list[tuple[str, int]]:
+    counts_payload = _object(payload, key)
+    counts: list[tuple[str, int]] = []
+    for dataset, count in counts_payload.items():
+        if not isinstance(dataset, str) or not dataset:
+            raise ValueError("Expected split dataset names must be non-empty strings.")
+        invalid_type = isinstance(count, bool) or not isinstance(count, int)
+        invalid_value = False if invalid_type else (
+            count < 0 if allow_zero else count <= 0
+        )
+        if invalid_type or invalid_value:
+            qualifier = "non-negative" if allow_zero else "positive"
+            raise ValueError(
+                f"Expected count for {dataset!r} must be a {qualifier} integer."
+            )
+        counts.append((dataset, count))
+    return counts
 
 
 def _object(payload: dict[str, Any], key: str) -> dict[str, Any]:

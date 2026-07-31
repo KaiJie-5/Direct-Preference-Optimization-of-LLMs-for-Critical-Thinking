@@ -55,7 +55,11 @@ def run_training(
     resume: Path | None = None,
     trainer_factory: TrainerFactory | None = None,
 ) -> Path:
-    config.dataset_file(dataset_version)
+    if config.split.strategy == "predefined_files":
+        config.predefined_dataset_file(dataset_version, "train")
+        config.predefined_dataset_file(dataset_version, "test")
+    else:
+        config.dataset_file(dataset_version)
     if preflight_only and resume is not None:
         raise ValueError("--preflight-only cannot be combined with --resume.")
 
@@ -486,6 +490,18 @@ def _start_run(
 def _split_rendered(
     rendered: list[RenderedExample], split_manifest: dict[str, Any]
 ) -> tuple[list[dict[str, str]], list[dict[str, str]]]:
+    if split_manifest.get("strategy", {}).get("name") == "predefined_files":
+        train = [
+            example.row for example in rendered if example.audit.get("split") == "train"
+        ]
+        test = [
+            example.row for example in rendered if example.audit.get("split") == "test"
+        ]
+        if len(train) != split_manifest["counts"]["train_pair_count"]:
+            raise ValueError("Rendered predefined train count does not match manifest.")
+        if len(test) != split_manifest["counts"]["test_pair_count"]:
+            raise ValueError("Rendered predefined test count does not match manifest.")
+        return train, test
     test_lines = set(split_manifest["test"]["line_numbers"])
     train: list[dict[str, str]] = []
     test: list[dict[str, str]] = []

@@ -1,0 +1,80 @@
+{
+  "run_name": "llama_3_2_3b_instruct_reflective_dpo_ukda_domain_holdout",
+  "input_run_dir": "/iridisfs/scratch/kjl1a21/DPO/data/dpo_preference_pairs/REQUIRED_DPO_INPUT_RUN_DIR",
+  "output_root": "/iridisfs/scratch/kjl1a21/DPO/models/student/dpo_runs",
+  "model": {
+    "path": "/iridisfs/scratch/kjl1a21/DPO/models/student/meta-llama__Llama-3.2-3B-Instruct",
+    "local_files_only": true,
+    "trust_remote_code": false,
+    "dtype": "bfloat16",
+    "max_position_embeddings": 131072
+  },
+  "dataset_files": {
+    "category_evidence": {
+      "train": "train_preference_pairs_category_evidence.jsonl",
+      "test": "test_preference_pairs_category_evidence.jsonl"
+    },
+    "question_only": {
+      "train": "train_preference_pairs_question_only.jsonl",
+      "test": "test_preference_pairs_question_only.jsonl"
+    }
+  },
+  "source_manifest_filename": "run_manifest.json",
+  "chat": {
+    "system_message": null,
+    "native_date_metadata": true
+  },
+  "split": {
+    "strategy": "predefined_files",
+    "seed": 42,
+    "train_datasets": [
+      "ukda-4688"
+    ],
+    "test_datasets": [
+      "energy",
+      "sexual-health"
+    ],
+    "expected_train_record_counts": {
+      "ukda-4688": 6304
+    },
+    "expected_test_record_counts": {
+      "energy": 103,
+      "sexual-health": 117
+    },
+    "expected_train_pair_count": 25216,
+    "expected_test_pair_count": 880
+  },
+  "trainer": {
+    "loss_type": "sigmoid",
+    "beta": 0.1,
+    "learning_rate": 5e-7,
+    "lr_scheduler_type": "cosine",
+    "warmup_ratio": 0.1,
+    "num_train_epochs": 1.0,
+    "per_device_train_batch_size": 1,
+    "per_device_eval_batch_size": 1,
+    "gradient_accumulation_steps": 8,
+    "max_grad_norm": 1.0,
+    "optimizer": "adamw_torch_fused",
+    "gradient_checkpointing": true,
+    "gradient_checkpointing_use_reentrant": false,
+    "use_cache": false,
+    "precompute_ref_log_probs": false,
+    "disable_dropout": true,
+    "logging_strategy": "steps",
+    "logging_steps": 10,
+    "logging_first_step": true,
+    "eval_strategy": "no",
+    "save_strategy": "steps",
+    "save_steps": 250,
+    "save_total_limit": 2,
+    "dataloader_num_workers": 4,
+    "report_to": "none",
+    "push_to_hub": false,
+    "max_length": null
+  },
+  "audit_files": {
+    "train": "train_preference_pair_audit.jsonl",
+    "test": "test_preference_pair_audit.jsonl"
+  }
+}

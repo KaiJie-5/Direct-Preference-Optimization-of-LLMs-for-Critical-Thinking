@@ -27,12 +27,17 @@ class ValidatedPreferenceData:
     examples_by_version: dict[str, tuple[PreferenceExample, ...]]
     source_manifest: dict[str, Any]
     input_hashes: dict[str, str]
+    predefined_examples_by_version: (
+        dict[str, dict[str, tuple[PreferenceExample, ...]]] | None
+    ) = None
 
 
 def validate_inputs(config: DPOTrainingConfig) -> ValidatedPreferenceData:
     _require_directory(config.input_run_dir, "input run directory")
     _require_directory(config.model.path, "model directory")
     _validate_model_files(config.model.path)
+    if config.split.strategy == "predefined_files":
+        return _validate_predefined_inputs(config)
     source_manifest = _read_json_object(
         config.source_manifest_path, "preference-pair source manifest"
     )
@@ -146,6 +151,10 @@ def build_split_manifest(
     source_fingerprint: str,
 ) -> dict[str, Any]:
     values = tuple(examples)
+    if config.split.strategy == "predefined_files":
+        return _build_predefined_split_manifest(
+            values, config, source_fingerprint=source_fingerprint
+        )
     records_by_group: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
     all_records: defaultdict[str, set[str]] = defaultdict(set)
     for example in values:
@@ -260,6 +269,14 @@ def build_split_manifest(
 def split_examples(
     examples: Iterable[PreferenceExample], split_manifest: dict[str, Any]
 ) -> tuple[list[PreferenceExample], list[PreferenceExample]]:
+    if split_manifest.get("strategy", {}).get("name") == "predefined_files":
+        train = [example for example in examples if example.audit.get("split") == "train"]
+        test = [example for example in examples if example.audit.get("split") == "test"]
+        if len(train) != split_manifest["counts"]["train_pair_count"]:
+            raise ValueError("Predefined train pair count does not match split manifest.")
+        if len(test) != split_manifest["counts"]["test_pair_count"]:
+            raise ValueError("Predefined test pair count does not match split manifest.")
+        return train, test
     test_lines = set(split_manifest["test"]["line_numbers"])
     train: list[PreferenceExample] = []
     test: list[PreferenceExample] = []
@@ -268,6 +285,267 @@ def split_examples(
             example
         )
     return train, test
+
+
+def _validate_predefined_inputs(config: DPOTrainingConfig) -> ValidatedPreferenceData:
+    source_manifest = _read_json_object(
+        config.source_manifest_path, "domain-holdout source manifest"
+    )
+    if source_manifest.get("schema_version") != "dpo_domain_holdout_run_v1":
+        raise ValueError("Unsupported predefined domain-holdout manifest schema.")
+    if source_manifest.get("run_state", {}).get("status") != "complete":
+        raise ValueError("Predefined domain-holdout source manifest is not complete.")
+    split_policy = source_manifest.get("split_policy")
+    if not isinstance(split_policy, dict) or split_policy.get("strategy") != (
+        "predefined_dataset_holdout"
+    ):
+        raise ValueError("Source manifest does not define a dataset holdout.")
+    if split_policy.get("model_visible_rows_preserved_byte_for_byte") is not True:
+        raise ValueError("Source manifest does not guarantee byte-preserved rows.")
+    if split_policy.get("pair_ids_and_row_hashes_preserved") is not True:
+        raise ValueError("Source manifest does not guarantee preserved pair lineage.")
+    if source_manifest.get("disjointness", {}).get("is_disjoint") is not True:
+        raise ValueError("Source manifest does not confirm train/test disjointness.")
+    if tuple(split_policy.get("train_datasets", ())) != config.split.train_datasets:
+        raise ValueError("Source/config train dataset assignments differ.")
+    if tuple(split_policy.get("test_datasets", ())) != config.split.test_datasets:
+        raise ValueError("Source/config test dataset assignments differ.")
+
+    paths: dict[str, Path] = {"source_manifest": config.source_manifest_path}
+    for split in ("train", "test"):
+        for version in DATASET_VERSIONS:
+            paths[f"{split}_{version}"] = config.predefined_dataset_file(
+                version, split
+            )
+        paths[f"{split}_audit"] = config.predefined_audit_path(split)
+    for name, path in paths.items():
+        _require_file(path, name)
+    input_hashes = {name: file_sha256(path) for name, path in paths.items()}
+    output_files = source_manifest.get("output_files")
+    if not isinstance(output_files, dict):
+        raise ValueError("Holdout manifest output_files must be an object.")
+    for split in ("train", "test"):
+        split_metadata = output_files.get(split)
+        if not isinstance(split_metadata, dict):
+            raise ValueError(f"Holdout manifest has no {split} output metadata.")
+        for name in (*DATASET_VERSIONS, "audit"):
+            metadata = split_metadata.get(name)
+            if (
+                not isinstance(metadata, dict)
+                or metadata.get("sha256") != input_hashes[f"{split}_{name}"]
+            ):
+                raise ValueError(
+                    f"Holdout manifest checksum mismatch for {split} {name}."
+                )
+
+    by_version: dict[str, dict[str, list[PreferenceExample]]] = {
+        version: {"train": [], "test": []} for version in DATASET_VERSIONS
+    }
+    record_rows: defaultdict[tuple[str, str], list[dict[str, Any]]] = defaultdict(list)
+    seen_pairs: set[str] = set()
+    records_by_split = {"train": set(), "test": set()}
+    for split in ("train", "test"):
+        seen_lines: set[int] = set()
+        files = {
+            version: config.predefined_dataset_file(version, split).open(
+                "r", encoding="utf-8"
+            )
+            for version in DATASET_VERSIONS
+        }
+        audit_path = config.predefined_audit_path(split)
+        audit_handle = audit_path.open("r", encoding="utf-8")
+        try:
+            iterables = [files[version] for version in DATASET_VERSIONS]
+            for index, values in enumerate(
+                zip_longest(*iterables, audit_handle, fillvalue=None), start=1
+            ):
+                evidence_line, question_line, audit_line = values
+                if evidence_line is None or question_line is None or audit_line is None:
+                    raise ValueError(
+                        f"Predefined {split} evidence, question-only, and audit "
+                        "files are not line-aligned."
+                    )
+                rows = {
+                    "category_evidence": _jsonl_object(
+                        evidence_line,
+                        config.predefined_dataset_file("category_evidence", split),
+                        index,
+                    ),
+                    "question_only": _jsonl_object(
+                        question_line,
+                        config.predefined_dataset_file("question_only", split),
+                        index,
+                    ),
+                }
+                audit = _jsonl_object(audit_line, audit_path, index)
+                _validate_holdout_audit(
+                    audit,
+                    line_number=index,
+                    split=split,
+                    seen_pairs=seen_pairs,
+                    seen_lines=seen_lines,
+                )
+                allowed_datasets = (
+                    config.split.train_datasets
+                    if split == "train"
+                    else config.split.test_datasets
+                )
+                if audit["dataset"] not in allowed_datasets:
+                    raise ValueError(
+                        f"Predefined {split} audit contains dataset "
+                        f"{audit['dataset']!r}."
+                    )
+                for version, row in rows.items():
+                    _validate_conversation_row(row, version, index)
+                    if audit.get(f"{version}_row_sha256") != canonical_row_sha256(row):
+                        raise ValueError(
+                            f"{split} {version} row hash mismatch at line {index}."
+                        )
+                    by_version[version][split].append(
+                        PreferenceExample(row=row, audit=audit)
+                    )
+                if (
+                    rows["question_only"]["chosen"][0]["content"]
+                    != audit["chosen_question"]
+                    or rows["question_only"]["rejected"][0]["content"]
+                    != audit["rejected_question"]
+                ):
+                    raise ValueError(
+                        f"{split} question-only row does not match audit at line {index}."
+                    )
+                identity = (audit["dataset"], audit["record_id"])
+                records_by_split[split].add(identity)
+                record_rows[identity].append(audit)
+        finally:
+            audit_handle.close()
+            for handle in files.values():
+                handle.close()
+
+    _validate_record_bundles(record_rows)
+    if records_by_split["train"] & records_by_split["test"]:
+        raise ValueError("At least one record crosses the predefined train/test split.")
+    train_counts = _record_counts(records_by_split["train"])
+    test_counts = _record_counts(records_by_split["test"])
+    if train_counts != config.split.expected_train_counts():
+        raise ValueError("Predefined train record counts do not match configuration.")
+    if test_counts != config.split.expected_test_counts():
+        raise ValueError("Predefined test record counts do not match configuration.")
+    for version in DATASET_VERSIONS:
+        if len(by_version[version]["train"]) != config.split.expected_train_pair_count:
+            raise ValueError("Predefined train pair count does not match configuration.")
+        if len(by_version[version]["test"]) != config.split.expected_test_pair_count:
+            raise ValueError("Predefined test pair count does not match configuration.")
+    frozen = {
+        version: {
+            split: tuple(values)
+            for split, values in split_values.items()
+        }
+        for version, split_values in by_version.items()
+    }
+    combined = {
+        version: frozen[version]["train"] + frozen[version]["test"]
+        for version in DATASET_VERSIONS
+    }
+    return ValidatedPreferenceData(
+        examples_by_version=combined,
+        source_manifest=source_manifest,
+        input_hashes=input_hashes,
+        predefined_examples_by_version=frozen,
+    )
+
+
+def _build_predefined_split_manifest(
+    values: tuple[PreferenceExample, ...],
+    config: DPOTrainingConfig,
+    *,
+    source_fingerprint: str,
+) -> dict[str, Any]:
+    train = [example for example in values if example.audit.get("split") == "train"]
+    test = [example for example in values if example.audit.get("split") == "test"]
+    if len(train) + len(test) != len(values):
+        raise ValueError("Every predefined example must declare train or test split.")
+
+    def records(examples: list[PreferenceExample]) -> set[tuple[str, str]]:
+        return {
+            (example.audit["dataset"], example.audit["record_id"])
+            for example in examples
+        }
+
+    train_records = records(train)
+    test_records = records(test)
+    if train_records & test_records:
+        raise ValueError("At least one source record crosses the predefined split.")
+    if len(train_records) != config.split.expected_train_record_count:
+        raise ValueError("Train record count does not match configured expectation.")
+    if len(test_records) != config.split.expected_test_record_count:
+        raise ValueError("Test record count does not match configured expectation.")
+    if len(train) != config.split.expected_train_pair_count:
+        raise ValueError("Train pair count does not match configured expectation.")
+    if len(test) != config.split.expected_test_pair_count:
+        raise ValueError("Test pair count does not match configured expectation.")
+
+    dataset_summaries: dict[str, dict[str, Any]] = {}
+    for split_name, examples, expected in (
+        ("train", train, config.split.expected_train_counts()),
+        ("test", test, config.split.expected_test_counts()),
+    ):
+        split_records = records(examples)
+        actual = _record_counts(split_records)
+        if actual != expected:
+            raise ValueError(
+                f"Predefined {split_name} per-dataset record counts differ from config."
+            )
+        for dataset, record_count in actual.items():
+            dataset_summaries[dataset] = {
+                "split": split_name,
+                "record_count": record_count,
+                "pair_count": sum(
+                    1 for example in examples if example.audit["dataset"] == dataset
+                ),
+            }
+
+    def split_payload(examples: list[PreferenceExample]) -> dict[str, Any]:
+        split_records = records(examples)
+        return {
+            "line_numbers": [example.audit["line_number"] for example in examples],
+            "source_line_numbers": [
+                example.audit["source_line_number"] for example in examples
+            ],
+            "pair_ids": [example.audit["pair_id"] for example in examples],
+            "record_ids": [
+                {"dataset": dataset, "record_id": record_id}
+                for dataset, record_id in sorted(split_records)
+            ],
+        }
+
+    manifest = {
+        "schema_version": "dpo_predefined_domain_split_v1",
+        "source_fingerprint": source_fingerprint,
+        "strategy": {
+            "name": "predefined_files",
+            "train_datasets": list(config.split.train_datasets),
+            "test_datasets": list(config.split.test_datasets),
+            "natural_source_frequencies": True,
+        },
+        "dataset_summaries": dataset_summaries,
+        "counts": {
+            "train_record_count": len(train_records),
+            "test_record_count": len(test_records),
+            "train_pair_count": len(train),
+            "test_pair_count": len(test),
+        },
+        "train": split_payload(train),
+        "test": split_payload(test),
+    }
+    manifest["split_sha256"] = canonical_json_sha256(manifest)
+    return manifest
+
+
+def _record_counts(records: set[tuple[str, str]]) -> dict[str, int]:
+    counts: defaultdict[str, int] = defaultdict(int)
+    for dataset, _record_id in records:
+        counts[dataset] += 1
+    return dict(sorted(counts.items()))
 
 
 def add_system_message(
@@ -588,6 +866,108 @@ def _validate_audit(
         raise ValueError(f"Duplicate audit pair_id {audit['pair_id']}.")
     if line_number in seen_lines:
         raise ValueError(f"Duplicate audit line number {line_number}.")
+    seen_pairs.add(audit["pair_id"])
+    seen_lines.add(line_number)
+
+
+def _validate_holdout_audit(
+    audit: dict[str, Any],
+    *,
+    line_number: int,
+    split: str,
+    seen_pairs: set[str],
+    seen_lines: set[int],
+) -> None:
+    legacy_fields = {
+        "line_number",
+        "pair_id",
+        "source_name",
+        "source_trace_path",
+        "dataset",
+        "record_id",
+        "transcript_id",
+        "segment_id",
+        "context_scope",
+        "context_turns_before",
+        "context_turns_after",
+        "target_category",
+        "target_code_label",
+        "chosen_question",
+        "rejected_source_category",
+        "rejected_code_label",
+        "rejected_question",
+        "category_evidence_row_sha256",
+        "question_only_row_sha256",
+    }
+    expected_fields = legacy_fields | {
+        "schema_version",
+        "source_schema_version",
+        "source_line_number",
+        "split",
+    }
+    if set(audit) != expected_fields:
+        raise ValueError(
+            f"Holdout audit line {line_number} has invalid fields: "
+            f"{sorted(set(audit) ^ expected_fields)}."
+        )
+    if audit.get("schema_version") != "domain_holdout_preference_pair_audit_v1":
+        raise ValueError(f"Holdout audit line {line_number} has unsupported schema.")
+    if audit.get("source_schema_version") != "preference_pair_audit_v1":
+        raise ValueError(
+            f"Holdout audit line {line_number} has unsupported source schema."
+        )
+    if audit.get("line_number") != line_number:
+        raise ValueError(f"Holdout audit line number mismatch at line {line_number}.")
+    source_line = audit.get("source_line_number")
+    if isinstance(source_line, bool) or not isinstance(source_line, int) or source_line <= 0:
+        raise ValueError(f"Holdout audit line {line_number} has invalid source line.")
+    if audit.get("split") != split:
+        raise ValueError(f"Holdout audit line {line_number} has incorrect split.")
+    required_strings = (
+        "pair_id",
+        "source_name",
+        "source_trace_path",
+        "dataset",
+        "record_id",
+        "transcript_id",
+        "segment_id",
+        "context_scope",
+        "target_category",
+        "target_code_label",
+        "chosen_question",
+        "rejected_source_category",
+        "rejected_code_label",
+        "rejected_question",
+        "category_evidence_row_sha256",
+        "question_only_row_sha256",
+    )
+    for field in required_strings:
+        if not isinstance(audit.get(field), str) or not audit[field]:
+            raise ValueError(f"Holdout audit line {line_number} has invalid {field}.")
+    if audit["target_category"] == audit["rejected_source_category"]:
+        raise ValueError(f"Holdout audit line {line_number} rejects its target.")
+    if audit["context_scope"] == "full_interview":
+        if audit["context_turns_before"] is not None or audit["context_turns_after"] is not None:
+            raise ValueError(
+                f"Holdout audit line {line_number} full interview has turn limits."
+            )
+    elif audit["context_scope"] == "turn_window":
+        if not all(
+            isinstance(value, int) and not isinstance(value, bool) and value >= 0
+            for value in (
+                audit["context_turns_before"],
+                audit["context_turns_after"],
+            )
+        ):
+            raise ValueError(
+                f"Holdout audit line {line_number} has invalid context limits."
+            )
+    else:
+        raise ValueError(f"Holdout audit line {line_number} has invalid context scope.")
+    if audit["pair_id"] in seen_pairs:
+        raise ValueError(f"Duplicate holdout pair_id {audit['pair_id']}.")
+    if line_number in seen_lines:
+        raise ValueError(f"Duplicate holdout audit line number {line_number}.")
     seen_pairs.add(audit["pair_id"])
     seen_lines.add(line_number)
 

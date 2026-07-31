@@ -1,0 +1,22 @@
+{
+  "source_run_dir": "/iridisfs/scratch/kjl1a21/DPO/data/dpo_preference_pairs/reflective_question_dpo_pairs_20260725_110033",
+  "output_root": "/iridisfs/scratch/kjl1a21/DPO/data/dpo_preference_pairs",
+  "run_name": "ukda4688_train_energy_sexual_health_test",
+  "train_datasets": [
+    "ukda-4688"
+  ],
+  "test_datasets": [
+    "energy",
+    "sexual-health"
+  ],
+  "expected_record_counts": {
+    "ukda-4688": 6304,
+    "energy": 103,
+    "sexual-health": 117
+  },
+  "expected_pair_counts": {
+    "ukda-4688": 25216,
+    "energy": 412,
+    "sexual-health": 468
+  }
+}

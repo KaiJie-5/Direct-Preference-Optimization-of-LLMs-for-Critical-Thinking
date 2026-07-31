@@ -90,6 +90,62 @@ Transformers 5.14.1.
 
 ## Data validation and split
 
+### UKDA training with unseen energy and sexual-health evaluation
+
+The domain-holdout workflow is additive; the historical mixed-domain 90/10
+workflow below remains supported. First construct the explicit split:
+
+```bash
+dpo-build-domain-holdout --config configs/dpo_domain_holdout.json
+```
+
+The constructor prints a timestamped run directory. Submit all ten experiments
+by passing that exact directory:
+
+```bash
+sbatch \
+  --export=ALL,DPO_INPUT_RUN_DIR=/iridisfs/scratch/kjl1a21/DPO/data/dpo_preference_pairs/ukda4688_train_energy_sexual_health_test_TIMESTAMP \
+  submit_job_dpo_training_domain_holdout_array.slurm
+```
+
+The predefined split is:
+
+| Split | Domains | Source records | Preference pairs per version |
+| --- | --- | ---: | ---: |
+| Train | UKDA-4688 | 6,304 | 25,216 |
+| Test | energy + sexual health | 220 | 880 |
+
+No UKDA record appears in test and no energy or sexual-health record appears in
+train. The existing before/after evaluation is computed once over the combined
+880-pair unseen-domain test set. Model, chat-template, optimizer, loss,
+checkpoint, and one-epoch settings are copied unchanged into five
+`*_domain_holdout.json` configurations.
+
+The launcher uses `--array=0-9%1`, so only one GPU training task is active at a
+time. Tasks 0-1 are SmolLM3, 2-3 Qwen, 4-5 Llama, 6-7 Ministral, and 8-9 Phi;
+each pair is category-evidence followed by question-only. Slurm may schedule
+eligible array elements out of numeric order. `DPO_INPUT_RUN_DIR` is mandatory
+and is saved in the resolved config and immutable resume fingerprint.
+
+Run tokenizer/preflight validation instead of training by adding
+`PREFLIGHT_ONLY=true`:
+
+```bash
+sbatch \
+  --export=ALL,DPO_INPUT_RUN_DIR=/path/to/holdout/run,PREFLIGHT_ONLY=true \
+  submit_job_dpo_training_domain_holdout_array.slurm
+```
+
+Resume one selected task only, using the same holdout input directory:
+
+```bash
+sbatch --array=0 \
+  --export=ALL,DPO_INPUT_RUN_DIR=/path/to/holdout/run,RESUME_RUN_DIR=/path/to/incomplete/training/run \
+  submit_job_dpo_training_domain_holdout_array.slurm
+```
+
+### Historical mixed-domain 90/10 split
+
 The configured input run is:
 
 ```text

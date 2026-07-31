@@ -478,3 +478,42 @@ With all reflective traces repaired successfully, expected totals are:
 | sexual-health | 117 | 468 |
 | ukda-4688 | 6,315 | 25,260 |
 | **Total** | **6,536** | **26,144** |
+
+### Constructing the UKDA domain holdout
+
+The unseen-domain experiment partitions the already completed preference-pair
+run, rather than rebuilding from reflective traces. This is important because
+the original constructor sampled rejected responses with unseeded system
+randomness. Partitioning preserves every model-visible JSONL row, chosen and
+rejected response, pair ID, and row hash.
+
+```bash
+dpo-build-domain-holdout --config configs/dpo_domain_holdout.json
+```
+
+The checked-in configuration reads:
+
+```text
+/iridisfs/scratch/kjl1a21/DPO/data/dpo_preference_pairs/reflective_question_dpo_pairs_20260725_110033
+```
+
+It validates the complete source manifest, all three source checksums, JSONL
+alignment, row hashes, audit identities, and four-pair record bundles. The
+timestamped output has this layout:
+
+```text
+train_preference_pairs_category_evidence.jsonl
+train_preference_pairs_question_only.jsonl
+train_preference_pair_audit.jsonl
+test_preference_pairs_category_evidence.jsonl
+test_preference_pairs_question_only.jsonl
+test_preference_pair_audit.jsonl
+run_manifest.json
+```
+
+The train files contain 6,304 UKDA records and 25,216 pairs per version. The
+test files contain 103 energy records plus 117 sexual-health records, or 880
+pairs per version. Split-local audits retain the source line number and use a
+new local line number; the manifest records complete source lineage, counts,
+checksums, and train/test disjointness. A failed construction retains its
+failed manifest but removes all temporary or finalized data files.

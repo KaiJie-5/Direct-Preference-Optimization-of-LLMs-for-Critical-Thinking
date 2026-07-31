@@ -164,6 +164,27 @@ records as skips, and writes line-aligned training and audit JSONL files under a
 timestamped scratch run directory. See `docs/enrichment_phase.md` for the
 formats, validation policy, and expected record totals.
 
+To create the UKDA-to-unseen-domains experiment without resampling any rejected
+response from the completed mixed-domain run, use:
+
+```bash
+dpo-build-domain-holdout --config configs/dpo_domain_holdout.json
+```
+
+This writes explicit train files containing all 6,304 accepted UKDA records
+and explicit test files containing all 103 energy and 117 sexual-health
+records. Copy the printed run directory into the training submission:
+
+```bash
+sbatch \
+  --export=ALL,DPO_INPUT_RUN_DIR=/iridisfs/scratch/kjl1a21/DPO/data/dpo_preference_pairs/ukda4688_train_energy_sexual_health_test_TIMESTAMP \
+  submit_job_dpo_training_domain_holdout_array.slurm
+```
+
+The `0-9%1` array runs category-evidence and question-only training for
+SmolLM3, Qwen, Llama, Ministral, and Phi with at most one active task. Slurm
+does not guarantee numeric task order.
+
 ## DPO training
 
 Install the dedicated training dependencies into the existing `dpo`

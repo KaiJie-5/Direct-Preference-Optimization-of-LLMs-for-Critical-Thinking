@@ -41,6 +41,7 @@ legacy-gptq = ["auto-gptq"]
 dpo-enrich = "enrichment.cli:main"
 dpo-reflective-enrich = "reflective_enrichment.cli:main"
 dpo-build-preferences = "preference_pairs.cli:main"
+dpo-build-domain-holdout = "preference_pairs.domain_holdout_cli:main"
 dpo-train = "dpo_training.cli:main"
 dpo-preprocess = "preprocessing.cli:main"
 dpo-debate = "debate.cli:main"

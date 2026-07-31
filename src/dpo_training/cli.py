@@ -22,6 +22,14 @@ def build_parser() -> argparse.ArgumentParser:
         choices=DATASET_VERSIONS,
     )
     parser.add_argument(
+        "--input-run-dir",
+        type=Path,
+        help=(
+            "Override config.input_run_dir, including for timestamped predefined "
+            "domain-holdout runs."
+        ),
+    )
+    parser.add_argument(
         "--preflight-only",
         action="store_true",
         help="Validate, split, render, and tokenize without loading model weights.",
@@ -37,7 +45,9 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        config = load_training_config(args.config)
+        config = load_training_config(
+            args.config, input_run_dir_override=args.input_run_dir
+        )
         run_dir = run_training(
             config,
             dataset_version=args.dataset_version,
